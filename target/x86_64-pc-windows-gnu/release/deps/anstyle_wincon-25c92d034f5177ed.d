@@ -1,0 +1,10 @@
+/home/blkkk/Projects/41swara/41Swara-tool/smart-contract-scanner/target/x86_64-pc-windows-gnu/release/deps/anstyle_wincon-25c92d034f5177ed.d: /home/blkkk/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/anstyle-wincon-3.0.10/src/lib.rs /home/blkkk/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/anstyle-wincon-3.0.10/src/ansi.rs /home/blkkk/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/anstyle-wincon-3.0.10/src/stream.rs /home/blkkk/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/anstyle-wincon-3.0.10/src/windows.rs
+
+/home/blkkk/Projects/41swara/41Swara-tool/smart-contract-scanner/target/x86_64-pc-windows-gnu/release/deps/libanstyle_wincon-25c92d034f5177ed.rlib: /home/blkkk/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/anstyle-wincon-3.0.10/src/lib.rs /home/blkkk/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/anstyle-wincon-3.0.10/src/ansi.rs /home/blkkk/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/anstyle-wincon-3.0.10/src/stream.rs /home/blkkk/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/anstyle-wincon-3.0.10/src/windows.rs
+
+/home/blkkk/Projects/41swara/41Swara-tool/smart-contract-scanner/target/x86_64-pc-windows-gnu/release/deps/libanstyle_wincon-25c92d034f5177ed.rmeta: /home/blkkk/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/anstyle-wincon-3.0.10/src/lib.rs /home/blkkk/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/anstyle-wincon-3.0.10/src/ansi.rs /home/blkkk/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/anstyle-wincon-3.0.10/src/stream.rs /home/blkkk/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/anstyle-wincon-3.0.10/src/windows.rs
+
+/home/blkkk/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/anstyle-wincon-3.0.10/src/lib.rs:
+/home/blkkk/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/anstyle-wincon-3.0.10/src/ansi.rs:
+/home/blkkk/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/anstyle-wincon-3.0.10/src/stream.rs:
+/home/blkkk/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/anstyle-wincon-3.0.10/src/windows.rs:
