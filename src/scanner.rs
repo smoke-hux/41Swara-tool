@@ -1,6 +1,6 @@
 use std::path::Path;
 use std::io;
-use crate::parser::{SolidityParser, CompilerVersion};
+use crate::parser::SolidityParser;
 use crate::vulnerabilities::{Vulnerability, VulnerabilityRule, create_vulnerability_rules, create_version_specific_rules};
 
 pub struct ContractScanner {
@@ -43,6 +43,28 @@ impl ContractScanner {
         
         // Detect compiler version for version-specific checks
         let compiler_version = self.parser.get_compiler_version(content);
+        
+        // Check for detailed version vulnerabilities
+        if let Some(detailed_version) = self.parser.get_detailed_version(content) {
+            let version_vulns = self.parser.is_version_vulnerable(&detailed_version);
+            for (_idx, vuln_desc) in version_vulns.iter().enumerate() {
+                vulnerabilities.push(Vulnerability {
+                    severity: if vuln_desc.contains("CRITICAL") {
+                        crate::vulnerabilities::VulnerabilitySeverity::Critical
+                    } else if vuln_desc.contains("0.4.") || vuln_desc.contains("0.5.") {
+                        crate::vulnerabilities::VulnerabilitySeverity::High
+                    } else {
+                        crate::vulnerabilities::VulnerabilitySeverity::Medium
+                    },
+                    category: crate::vulnerabilities::VulnerabilityCategory::CompilerBug,
+                    title: format!("Compiler Version Vulnerability"),
+                    description: vuln_desc.clone(),
+                    line_number: 1, // Pragma is usually on line 1 or 2
+                    code_snippet: self.parser.get_pragma_version(content).unwrap_or_default(),
+                    recommendation: "Upgrade to Solidity 0.8.28 or later for the latest security fixes".to_string(),
+                });
+            }
+        }
         
         // Scan with general rules
         for rule in &self.rules {

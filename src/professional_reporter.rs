@@ -33,6 +33,7 @@ pub struct DetailedFinding {
     pub id: String,
     pub severity: VulnerabilitySeverity,
     pub title: String,
+    #[allow(dead_code)]
     pub contract_function: String,
     pub github_links: Vec<String>,
     pub summary: String,
@@ -41,8 +42,11 @@ pub struct DetailedFinding {
     pub proof_of_concept: Option<String>,
     pub recommended_mitigation: String,
     pub tools_used: String,
+    #[allow(dead_code)]
     pub line_number: usize,
+    #[allow(dead_code)]
     pub code_snippet: String,
+    #[allow(dead_code)]
     pub category: VulnerabilityCategory,
 }
 

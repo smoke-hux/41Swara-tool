@@ -43,6 +43,7 @@ pub enum VulnerabilityCategory {
     DelegateCalls,
     StorageDoSAttacks,
     PrecisionLoss,
+    CompilerBug,
 }
 
 pub struct VulnerabilityRule {
@@ -699,6 +700,7 @@ impl VulnerabilityCategory {
             VulnerabilityCategory::DelegateCalls => "Delegate Call Vulnerabilities",
             VulnerabilityCategory::StorageDoSAttacks => "Storage DoS Attacks",
             VulnerabilityCategory::PrecisionLoss => "Precision Loss",
+            VulnerabilityCategory::CompilerBug => "Compiler Bug",
         }
     }
 }
