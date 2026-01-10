@@ -9,10 +9,13 @@ mod parser;
 mod reporter;
 mod professional_reporter;
 mod project_scanner;
+mod advanced_analysis;
+mod abi_scanner;
 
 use scanner::ContractScanner;
 use reporter::VulnerabilityReporter;
 use vulnerabilities::Vulnerability;
+use abi_scanner::ABIScanner;
 use professional_reporter::{ProfessionalReporter, AuditInfo};
 
 #[derive(Parser)]
@@ -38,6 +41,9 @@ EXAMPLES:
     
     # Scan directory recursively
     solidity-scanner --path ./contracts --verbose
+
+    # Scan ABI JSON file for security issues
+    solidity-scanner --path MyContract.abi.json --abi
 
 VULNERABILITY CATEGORIES:
     • Reentrancy attacks (Critical)
@@ -87,6 +93,9 @@ struct Args {
     
     #[arg(long, help = "Enable advanced project-wide analysis with cross-file vulnerability detection")]
     project_analysis: bool,
+
+    #[arg(long, help = "Scan ABI JSON file for security vulnerabilities")]
+    abi: bool,
 }
 
 fn main() {
@@ -131,15 +140,23 @@ fn main() {
                 } else {
                     scan_file(&scanner, &mut reporter, &path);
                 }
+            } else if extension == "json" && args.abi {
+                scan_abi_file(&path, &args);
+            } else if args.abi {
+                eprintln!("{} ABI scanning requires .json files. Found: {}",
+                    "❌ Error:".red().bold(),
+                    extension.to_string_lossy()
+                );
+                std::process::exit(1);
             } else {
-                eprintln!("{} Only .sol files are supported. Found: {}", 
-                    "❌ Error:".red().bold(), 
+                eprintln!("{} Only .sol files are supported (or .json with --abi). Found: {}",
+                    "❌ Error:".red().bold(),
                     extension.to_string_lossy()
                 );
                 std::process::exit(1);
             }
         } else {
-            eprintln!("{} File has no extension. Only .sol files are supported.", "❌ Error:".red().bold());
+            eprintln!("{} File has no extension. Supported: .sol files or .json with --abi.", "❌ Error:".red().bold());
             std::process::exit(1);
         }
     } else if path.is_dir() {
@@ -424,4 +441,123 @@ fn scan_directory(scanner: &ContractScanner, reporter: &mut VulnerabilityReporte
         let path = entry.path().to_path_buf();
         scan_file(scanner, reporter, &path);
     }
+}
+
+fn scan_abi_file(path: &PathBuf, args: &Args) {
+    println!("\n{} {}", "📋 Scanning ABI file:".green(), path.display());
+
+    let abi_scanner = ABIScanner::new(args.verbose);
+
+    // Read the ABI file
+    match std::fs::read_to_string(path) {
+        Ok(abi_content) => {
+            // Parse the ABI
+            match abi_scanner.parse_abi(&abi_content) {
+                Ok(analysis) => {
+                    println!("✅ Successfully parsed ABI: {} functions, {} events",
+                        analysis.functions.len(), analysis.events.len());
+
+                    // Scan for vulnerabilities
+                    let vulnerabilities = abi_scanner.scan_abi(&analysis);
+
+                    if args.format == "json" {
+                        // Output JSON format
+                        match serde_json::to_string_pretty(&vulnerabilities) {
+                            Ok(json) => println!("{}", json),
+                            Err(e) => eprintln!("❌ Error serializing to JSON: {}", e),
+                        }
+                    } else {
+                        // Output text format
+                        print_abi_vulnerabilities(&vulnerabilities, path);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("{} Failed to parse ABI: {}", "❌ Error:".red().bold(), e);
+                    std::process::exit(1);
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("{} Failed to read file {}: {}", "❌ Error:".red().bold(), path.display(), e);
+            std::process::exit(1);
+        }
+    }
+}
+
+fn print_abi_vulnerabilities(vulnerabilities: &[Vulnerability], path: &PathBuf) {
+    println!("\n🔍 ABI SECURITY ANALYSIS RESULTS FOR {}", path.display());
+    println!("{}", "━".repeat(80).bright_blue());
+
+    if vulnerabilities.is_empty() {
+        println!("✅ {}", "No security issues found in ABI!".green().bold());
+        return;
+    }
+
+    // Group vulnerabilities by category
+    let mut categories: std::collections::HashMap<String, Vec<&Vulnerability>> = std::collections::HashMap::new();
+
+    for vuln in vulnerabilities {
+        categories.entry(vuln.category.as_str().to_string())
+            .or_insert_with(Vec::new)
+            .push(vuln);
+    }
+
+    // Print vulnerabilities by category
+    for (category, vulns) in categories {
+        println!("\n📋 {}", category.bright_cyan().bold());
+        println!();
+
+        for vuln in vulns {
+            let severity_icon = match vuln.severity {
+                crate::vulnerabilities::VulnerabilitySeverity::Critical => "🚨",
+                crate::vulnerabilities::VulnerabilitySeverity::High => "⚠️ ",
+                crate::vulnerabilities::VulnerabilitySeverity::Medium => "⚡",
+                crate::vulnerabilities::VulnerabilitySeverity::Low => "💡",
+                crate::vulnerabilities::VulnerabilitySeverity::Info => "ℹ️ ",
+            };
+
+            println!("  {} {} [ABI Item {}]",
+                severity_icon,
+                vuln.title.color(vuln.severity.color()).bold(),
+                vuln.line_number
+            );
+            println!("     Description: {}", vuln.description);
+            println!("     Code: {}", vuln.code_snippet.bright_white());
+            println!("     Recommendation: {}", vuln.recommendation);
+            println!("     Severity: {}", vuln.severity.as_str().color(vuln.severity.color()).bold());
+            println!();
+        }
+    }
+
+    // Print summary
+    println!("{}", "━".repeat(80).bright_blue());
+    println!("📊 {}", "ABI SECURITY SUMMARY".bright_blue().bold());
+    println!("{}", "━".repeat(40).bright_blue());
+    println!("📁 ABI file analyzed: 1");
+    println!("🔍 Total issues found: {}", vulnerabilities.len());
+    println!();
+
+    // Severity breakdown
+    let mut severity_counts = std::collections::HashMap::new();
+    for vuln in vulnerabilities {
+        *severity_counts.entry(vuln.severity.as_str()).or_insert(0) += 1;
+    }
+
+    println!("🎯 {}", "SEVERITY BREAKDOWN".bright_yellow().bold());
+    for (severity, count) in &severity_counts {
+        let (icon, color) = match *severity {
+            "CRITICAL" => ("🚨", colored::Color::Red),
+            "HIGH" => ("⚠️ ", colored::Color::Red),
+            "MEDIUM" => ("⚡", colored::Color::Yellow),
+            "LOW" => ("💡", colored::Color::Blue),
+            "INFO" => ("ℹ️ ", colored::Color::Green),
+            _ => ("•", colored::Color::White),
+        };
+        println!("  {} {}: {}", icon, severity.color(color).bold(), count);
+    }
+
+    println!();
+    println!("{}", "━".repeat(40).bright_blue());
+    println!("⚠️  Review the issues above and verify the actual contract implementation.");
+    println!("🔒 Remember: ABI analysis shows interface-level concerns. Always audit the actual contract code.");
 }
