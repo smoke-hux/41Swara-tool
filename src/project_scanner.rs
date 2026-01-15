@@ -15,11 +15,15 @@ pub struct ProjectScanner {
 
 #[derive(Debug, Clone)]
 pub struct ContractInfo {
+    #[allow(dead_code)] // Used in debug output and future analysis
     pub path: PathBuf,
     pub name: String,
     pub imports: Vec<String>,
+    #[allow(dead_code)] // Reserved for function-level cross-file analysis
     pub functions: Vec<String>,
+    #[allow(dead_code)] // Reserved for modifier propagation analysis
     pub modifiers: Vec<String>,
+    #[allow(dead_code)] // Reserved for state variable collision detection
     pub state_variables: Vec<String>,
     pub vulnerabilities: Vec<Vulnerability>,
 }

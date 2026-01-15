@@ -92,9 +92,9 @@ impl ContractScanner {
             "revert Unauthorized",
         ];
 
-        for idx in function_start..function_end.min(lines.len()) {
+        for line in lines.iter().take(function_end.min(lines.len())).skip(function_start) {
             for pattern in &check_patterns {
-                if lines[idx].contains(pattern) {
+                if line.contains(pattern) {
                     return true;
                 }
             }
@@ -163,7 +163,7 @@ impl ContractScanner {
         // Check for detailed version vulnerabilities
         if let Some(detailed_version) = self.parser.get_detailed_version(content) {
             let version_vulns = self.parser.is_version_vulnerable(&detailed_version);
-            for (_idx, vuln_desc) in version_vulns.iter().enumerate() {
+            for vuln_desc in version_vulns.iter() {
                 vulnerabilities.push(Vulnerability {
                     severity: if vuln_desc.contains("CRITICAL") {
                         crate::vulnerabilities::VulnerabilitySeverity::Critical
@@ -173,7 +173,7 @@ impl ContractScanner {
                         crate::vulnerabilities::VulnerabilitySeverity::Medium
                     },
                     category: crate::vulnerabilities::VulnerabilityCategory::CompilerBug,
-                    title: format!("Compiler Version Vulnerability"),
+                    title: "Compiler Version Vulnerability".to_string(),
                     description: vuln_desc.clone(),
                     line_number: 1, // Pragma is usually on line 1 or 2
                     code_snippet: self.parser.get_pragma_version(content).unwrap_or_default(),
@@ -196,9 +196,9 @@ impl ContractScanner {
             let version_rules = create_version_specific_rules(&version);
             for rule in &version_rules {
                 if rule.multiline {
-                    vulnerabilities.extend(self.scan_multiline_pattern(content, &rule));
+                    vulnerabilities.extend(self.scan_multiline_pattern(content, rule));
                 } else {
-                    vulnerabilities.extend(self.scan_line_patterns(&lines, &rule));
+                    vulnerabilities.extend(self.scan_line_patterns(&lines, rule));
                 }
             }
         }
@@ -403,6 +403,7 @@ impl ContractScanner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[allow(unused_imports)]
     use crate::vulnerabilities::VulnerabilitySeverity;
     
     #[test]

@@ -79,6 +79,29 @@ pub enum VulnerabilityCategory {
     ABIEventSecurity,
     ABIUpgradeability,
     ABITokenStandard,
+    // Advanced ABI vulnerabilities (Ethereum Foundation-level analysis)
+    ABISelectorCollision,
+    ABIReentrancyIndicator,
+    ABIFlashLoanRisk,
+    ABIOracleManipulation,
+    ABIDEXInteraction,
+    ABISignatureVulnerability,
+    ABIPermitVulnerability,
+    ABIGovernanceRisk,
+    ABITimelockBypass,
+    ABIMEVExposure,
+    ABIFrontrunningRisk,
+    ABICrossContractRisk,
+    ABICallbackInjection,
+    ABIStorageCollision,
+    ABIInitializerVulnerability,
+    ABISelfDestruct,
+    ABIDelegateCallRisk,
+    ABIArbitraryCall,
+    ABIPriceManipulation,
+    ABIBridgeVulnerability,
+    ABIMultisigBypass,
+    ABIEmergencyBypass,
 }
 
 pub struct VulnerabilityRule {
@@ -1111,6 +1134,167 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
         false,
     ).unwrap());
 
+    // ============================================================================
+    // 2025 SECURITY PATTERNS - Additional critical vulnerabilities
+    // ============================================================================
+
+    // EIP-4337 Account Abstraction - validateUserOp without proper validation
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::AccessControl,
+        VulnerabilitySeverity::Critical,
+        r"function\s+validateUserOp\s*\([^)]*\)\s+(external|public)",
+        "EIP-4337 validateUserOp Exposure".to_string(),
+        "Account abstraction entry point must validate signatures and prevent replay".to_string(),
+        "Verify signature, check nonce, validate gas limits, and ensure proper return value".to_string(),
+        false,
+    ).unwrap());
+
+    // CREATE2 with attacker-controlled salt
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::ArbitraryExternalCall,
+        VulnerabilitySeverity::High,
+        r"create2\s*\([^,]*,\s*\w+\s*,",
+        "CREATE2 Predictable Address Attack".to_string(),
+        "CREATE2 with user-controlled salt enables address prediction attacks".to_string(),
+        "Use msg.sender in salt computation to prevent address hijacking".to_string(),
+        false,
+    ).unwrap());
+
+    // ERC-2612 permit without deadline validation
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::SignatureReplay,
+        VulnerabilitySeverity::High,
+        r"function\s+permit\s*\([^)]*deadline[^)]*\)",
+        "ERC-2612 Permit Implementation".to_string(),
+        "Permit function requires deadline validation before processing".to_string(),
+        "Add require(block.timestamp <= deadline, 'Permit expired') at function start".to_string(),
+        false,
+    ).unwrap());
+
+    // Fee-on-transfer token handling
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::InputValidationFailure,
+        VulnerabilitySeverity::High,
+        r"transferFrom\s*\([^)]*amount[^)]*\).*=.*amount",
+        "Fee-on-Transfer Token Vulnerability".to_string(),
+        "Assuming received amount equals transferred amount fails with fee tokens".to_string(),
+        "Check actual received: uint256 received = balanceAfter - balanceBefore".to_string(),
+        false,
+    ).unwrap());
+
+    // Rebasing token balance assumptions
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::InputValidationFailure,
+        VulnerabilitySeverity::Medium,
+        r"balance\w*\s*\+=\s*\w+\s*;|balance\w*\s*=\s*balance\w*\s*\+",
+        "Rebasing Token Balance Tracking".to_string(),
+        "Direct balance tracking fails with rebasing tokens (stETH, AMPL, etc.)".to_string(),
+        "Use shares-based accounting or check compatibility with rebasing tokens".to_string(),
+        false,
+    ).unwrap());
+
+    // Self-destruct in proxy implementation
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::UnprotectedProxyUpgrade,
+        VulnerabilitySeverity::Critical,
+        r"selfdestruct\s*\(|suicide\s*\(",
+        "Self-Destruct in Implementation Contract".to_string(),
+        "Self-destruct in proxy implementation destroys the logic contract permanently".to_string(),
+        "Remove selfdestruct or protect with onlyOwner AND verify not called via delegatecall".to_string(),
+        false,
+    ).unwrap());
+
+    // Missing ERC-165 interface check before calls
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::UnsafeExternalCalls,
+        VulnerabilitySeverity::Medium,
+        r"IERC721\(|IERC1155\(|IERC20\(",
+        "Missing Interface Support Check".to_string(),
+        "Casting to interface without ERC-165 check may call non-compliant contracts".to_string(),
+        "Use IERC165(addr).supportsInterface(interfaceId) before interface calls".to_string(),
+        false,
+    ).unwrap());
+
+    // Unchecked block.number usage for randomness
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::BadPRNG,
+        VulnerabilitySeverity::High,
+        r"block\.number\s*%|block\.number\s*\^|keccak256.*block\.number",
+        "Block Number Based Randomness".to_string(),
+        "Block number is predictable and manipulable by miners/validators".to_string(),
+        "Use Chainlink VRF, commit-reveal, or other secure randomness sources".to_string(),
+        false,
+    ).unwrap());
+
+    // Cross-chain message verification
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::CrossChainReplay,
+        VulnerabilitySeverity::Critical,
+        r"function\s+(receiveMessage|processMessage|onMessage)\w*\s*\([^)]*\)\s+(external|public)",
+        "Cross-Chain Message Handler".to_string(),
+        "Cross-chain message handlers must verify source chain and sender".to_string(),
+        "Verify srcChainId, trustedRemote sender, and implement replay protection".to_string(),
+        false,
+    ).unwrap());
+
+    // Unsafe ABI.encode for hashing
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::SignatureVulnerabilities,
+        VulnerabilitySeverity::High,
+        r"keccak256\s*\(\s*abi\.encode\s*\(",
+        "Hash Collision Risk with abi.encode".to_string(),
+        "abi.encode can produce collisions with dynamic types - use encodePacked carefully".to_string(),
+        "Use abi.encodePacked with fixed-length types or add length prefixes".to_string(),
+        false,
+    ).unwrap());
+
+    // Unprotected callback functions
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::CallbackReentrancy,
+        VulnerabilitySeverity::High,
+        r"function\s+(onERC721Received|onERC1155Received|tokensReceived)\s*\(",
+        "Callback Function Exposure".to_string(),
+        "Token callback functions can be exploited for reentrancy attacks".to_string(),
+        "Add ReentrancyGuard and validate the callback source (operator/from)".to_string(),
+        false,
+    ).unwrap());
+
+    // Hardcoded gas limits
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::GasOptimization,
+        VulnerabilitySeverity::Medium,
+        r"\.call\{.*gas:\s*\d+|\.call\{[^}]*\}\{gas:\s*\d+",
+        "Hardcoded Gas Limit".to_string(),
+        "Hardcoded gas limits may become insufficient with EVM upgrades or repricing".to_string(),
+        "Use gasleft() with safety margin or remove gas limit for trusted calls".to_string(),
+        false,
+    ).unwrap());
+
+    // Incorrect use of address(0) checks
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::InputValidationFailure,
+        VulnerabilitySeverity::Medium,
+        r"require\s*\([^)]*==\s*address\(0\)",
+        "Inverted Zero Address Check".to_string(),
+        "Requiring address equals zero may be inverted logic (should be !=)".to_string(),
+        "Verify the check is intentional - most cases should be != address(0)".to_string(),
+        false,
+    ).unwrap());
+
+    // Unsafe downcasting without checks
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::ArithmeticIssues,
+        VulnerabilitySeverity::High,
+        r"uint8\s*\(\w+\)|uint16\s*\(\w+\)|uint32\s*\(\w+\)|uint64\s*\(\w+\)|uint128\s*\(\w+\)",
+        "Unsafe Integer Downcast".to_string(),
+        "Downcasting without bounds check can silently truncate values".to_string(),
+        "Use SafeCast library or add require(value <= type(uintX).max) before casting".to_string(),
+        false,
+    ).unwrap());
+
+    // Note: Missing receive/fallback detection requires AST analysis
+    // and is handled in advanced_analysis.rs for contracts receiving ETH
+
     rules
 }
 
@@ -1192,6 +1376,29 @@ impl VulnerabilityCategory {
             VulnerabilityCategory::ABIEventSecurity => "ABI Event Security",
             VulnerabilityCategory::ABIUpgradeability => "ABI Upgradeability",
             VulnerabilityCategory::ABITokenStandard => "ABI Token Standard",
+            // Advanced ABI categories
+            VulnerabilityCategory::ABISelectorCollision => "ABI Selector Collision",
+            VulnerabilityCategory::ABIReentrancyIndicator => "ABI Reentrancy Indicator",
+            VulnerabilityCategory::ABIFlashLoanRisk => "ABI Flash Loan Risk",
+            VulnerabilityCategory::ABIOracleManipulation => "ABI Oracle Manipulation",
+            VulnerabilityCategory::ABIDEXInteraction => "ABI DEX Interaction Risk",
+            VulnerabilityCategory::ABISignatureVulnerability => "ABI Signature Vulnerability",
+            VulnerabilityCategory::ABIPermitVulnerability => "ABI Permit Vulnerability",
+            VulnerabilityCategory::ABIGovernanceRisk => "ABI Governance Risk",
+            VulnerabilityCategory::ABITimelockBypass => "ABI Timelock Bypass",
+            VulnerabilityCategory::ABIMEVExposure => "ABI MEV Exposure",
+            VulnerabilityCategory::ABIFrontrunningRisk => "ABI Frontrunning Risk",
+            VulnerabilityCategory::ABICrossContractRisk => "ABI Cross-Contract Risk",
+            VulnerabilityCategory::ABICallbackInjection => "ABI Callback Injection",
+            VulnerabilityCategory::ABIStorageCollision => "ABI Storage Collision",
+            VulnerabilityCategory::ABIInitializerVulnerability => "ABI Initializer Vulnerability",
+            VulnerabilityCategory::ABISelfDestruct => "ABI Self-Destruct Risk",
+            VulnerabilityCategory::ABIDelegateCallRisk => "ABI Delegate Call Risk",
+            VulnerabilityCategory::ABIArbitraryCall => "ABI Arbitrary Call Risk",
+            VulnerabilityCategory::ABIPriceManipulation => "ABI Price Manipulation Risk",
+            VulnerabilityCategory::ABIBridgeVulnerability => "ABI Bridge Vulnerability",
+            VulnerabilityCategory::ABIMultisigBypass => "ABI Multisig Bypass Risk",
+            VulnerabilityCategory::ABIEmergencyBypass => "ABI Emergency Bypass Risk",
         }
     }
 }

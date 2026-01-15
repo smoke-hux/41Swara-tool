@@ -1,7 +1,6 @@
 use std::path::PathBuf;
 use std::collections::HashMap;
 use colored::*;
-use serde_json;
 
 use crate::vulnerabilities::{Vulnerability, VulnerabilitySeverity};
 

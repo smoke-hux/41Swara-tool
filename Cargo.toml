@@ -1,15 +1,35 @@
 [package]
 name = "solidity_scanner"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
-description = "A Rust-based smart contract vulnerability scanner"
-authors = ["Your Name <your.email@example.com>"]
+description = "High-performance smart contract vulnerability scanner for blockchain security researchers"
+authors = ["41Swara Security Team"]
+keywords = ["solidity", "security", "smart-contracts", "blockchain", "audit"]
+categories = ["development-tools", "command-line-utilities"]
+
+[[bin]]
+name = "41"
+path = "src/main.rs"
 
 [dependencies]
-regex = "1.7"
-clap = { version = "4.0", features = ["derive"] }
-colored = "2.0"
-walkdir = "2.3"
+regex = "1.10"
+clap = { version = "4.4", features = ["derive"] }
+colored = "2.1"
+walkdir = "2.4"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 chrono = { version = "0.4", features = ["serde"] }
+
+# Performance improvements
+rayon = "1.8"                 # Parallel file scanning (4-10x speedup)
+
+# Git integration
+git2 = "0.18"                 # Git diff mode for incremental scanning
+
+# File watching
+notify = "6.1"                # Watch mode for continuous scanning
+
+[profile.release]
+lto = true                    # Link-time optimization
+codegen-units = 1             # Better optimization
+strip = true                  # Smaller binary

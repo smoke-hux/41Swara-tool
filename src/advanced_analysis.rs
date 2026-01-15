@@ -3,6 +3,7 @@ use regex::Regex;
 use crate::vulnerabilities::{Vulnerability, VulnerabilitySeverity, VulnerabilityCategory};
 
 pub struct AdvancedAnalyzer {
+    #[allow(dead_code)] // Reserved for future verbose diagnostic output
     verbose: bool,
 }
 
@@ -321,7 +322,7 @@ impl AdvancedAnalyzer {
         let storage_write_pattern = Regex::new(r"(\w+)\s*=\s*").unwrap();
         let mut storage_writes = HashMap::new();
 
-        for (idx, line) in content.lines().enumerate() {
+        for line in content.lines() {
             if storage_write_pattern.is_match(line) {
                 *storage_writes.entry(line).or_insert(0) += 1;
             }
@@ -1185,11 +1186,13 @@ impl AdvancedAnalyzer {
     }
 }
 
-// Cross-contract vulnerability detection
+// Cross-contract vulnerability detection (reserved for future project-wide analysis)
+#[allow(dead_code)]
 pub struct CrossContractAnalyzer {
     contracts: HashMap<String, String>,
 }
 
+#[allow(dead_code)]
 impl CrossContractAnalyzer {
     pub fn new() -> Self {
         Self {
