@@ -9,8 +9,126 @@ pub struct Vulnerability {
     pub title: String,
     pub description: String,
     pub line_number: usize,
+    pub end_line_number: Option<usize>,  // For multi-line vulnerabilities
     pub code_snippet: String,
+    pub context_before: Option<String>,  // Lines before the vulnerability for context
+    pub context_after: Option<String>,   // Lines after the vulnerability for context
     pub recommendation: String,
+    pub confidence: VulnerabilityConfidence,  // How confident we are this is a real issue
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum VulnerabilityConfidence {
+    High,    // Very likely a real vulnerability
+    Medium,  // Likely a vulnerability, needs review
+    Low,     // Possible vulnerability, may be false positive
+}
+
+impl Vulnerability {
+    /// Create a new vulnerability with default values for optional fields
+    pub fn new(
+        severity: VulnerabilitySeverity,
+        category: VulnerabilityCategory,
+        title: String,
+        description: String,
+        line_number: usize,
+        code_snippet: String,
+        recommendation: String,
+    ) -> Self {
+        Self {
+            severity,
+            category,
+            title,
+            description,
+            line_number,
+            end_line_number: None,
+            code_snippet,
+            context_before: None,
+            context_after: None,
+            recommendation,
+            confidence: VulnerabilityConfidence::Medium,
+        }
+    }
+
+    /// Create a vulnerability with high confidence (definitely a real issue)
+    pub fn high_confidence(
+        severity: VulnerabilitySeverity,
+        category: VulnerabilityCategory,
+        title: String,
+        description: String,
+        line_number: usize,
+        code_snippet: String,
+        recommendation: String,
+    ) -> Self {
+        let mut vuln = Self::new(severity, category, title, description, line_number, code_snippet, recommendation);
+        vuln.confidence = VulnerabilityConfidence::High;
+        vuln
+    }
+
+    /// Create a vulnerability with low confidence (may be false positive)
+    pub fn low_confidence(
+        severity: VulnerabilitySeverity,
+        category: VulnerabilityCategory,
+        title: String,
+        description: String,
+        line_number: usize,
+        code_snippet: String,
+        recommendation: String,
+    ) -> Self {
+        let mut vuln = Self::new(severity, category, title, description, line_number, code_snippet, recommendation);
+        vuln.confidence = VulnerabilityConfidence::Low;
+        vuln
+    }
+
+    /// Add context lines around the vulnerability
+    pub fn with_context(mut self, before: Option<String>, after: Option<String>) -> Self {
+        self.context_before = before;
+        self.context_after = after;
+        self
+    }
+
+    /// Set end line for multi-line vulnerabilities
+    pub fn with_end_line(mut self, end_line: usize) -> Self {
+        self.end_line_number = Some(end_line);
+        self
+    }
+
+    /// Set confidence level
+    pub fn with_confidence(mut self, confidence: VulnerabilityConfidence) -> Self {
+        self.confidence = confidence;
+        self
+    }
+
+    /// Extract context from content given a line number
+    pub fn extract_context(content: &str, line_number: usize, context_lines: usize) -> (Option<String>, Option<String>) {
+        let lines: Vec<&str> = content.lines().collect();
+
+        let before = if line_number > 1 {
+            let start = if line_number > context_lines { line_number - context_lines - 1 } else { 0 };
+            let end = line_number - 1;
+            if start < end && end <= lines.len() {
+                Some(lines[start..end].join("\n"))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let after = if line_number < lines.len() {
+            let start = line_number;
+            let end = (line_number + context_lines).min(lines.len());
+            if start < end {
+                Some(lines[start..end].join("\n"))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        (before, after)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -102,6 +220,15 @@ pub enum VulnerabilityCategory {
     ABIBridgeVulnerability,
     ABIMultisigBypass,
     ABIEmergencyBypass,
+    // 2025 OWASP Smart Contract Top 10 & Recent Exploits
+    FlashLoanAttack,           // OWASP #4 - $33.8M in 2024
+    LogicError,                // OWASP #2 - $63.8M in 2024
+    MetaTransactionVulnerability, // KiloEx $7.4M - MinimalForwarder exploit
+    UncheckedMathOperation,    // Cetus $223M - unchecked overflow in calculations
+    TrustedForwarderBypass,    // Meta-tx trust issues
+    GovernanceAttack,          // Flash loan governance attacks (Beanstalk $182M)
+    LiquidityManipulation,     // LP token/pool manipulation
+    BridgeVulnerability,       // Cross-chain bridge exploits
 }
 
 pub struct VulnerabilityRule {
@@ -1295,6 +1422,373 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
     // Note: Missing receive/fallback detection requires AST analysis
     // and is handled in advanced_analysis.rs for contracts receiving ETH
 
+    // ============================================================================
+    // 2025 OWASP SMART CONTRACT TOP 10 & RECENT EXPLOIT PATTERNS
+    // Based on $1.42B in losses documented in 2024
+    // ============================================================================
+
+    // ===========================================
+    // FLASH LOAN ATTACK PATTERNS (OWASP #4 - $33.8M)
+    // ===========================================
+
+    // Flash loan callback without validation
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::FlashLoanAttack,
+        VulnerabilitySeverity::Critical,
+        r"function\s+(executeOperation|onFlashLoan|uniswapV2Call|uniswapV3FlashCallback|pancakeCall)\s*\(",
+        "Flash Loan Callback Function".to_string(),
+        "Flash loan callback detected - verify proper validation of loan initiator and amount".to_string(),
+        "Verify msg.sender is the lending pool, validate initiator == address(this), check amounts match".to_string(),
+        false,
+    ).unwrap());
+
+    // Flash loan amount not validated
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::FlashLoanAttack,
+        VulnerabilitySeverity::Critical,
+        r"function\s+\w+\([^)]*uint\w*\s+(amount|loanAmount)[^)]*\).*flashLoan",
+        "Flash Loan Amount Manipulation Risk".to_string(),
+        "Flash loan amount passed to critical logic without validation enables price manipulation".to_string(),
+        "Validate flash loan amounts against protocol limits and check price impact".to_string(),
+        true,
+    ).unwrap());
+
+    // Price calculation using spot reserves (vulnerable to flash loans)
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::FlashLoanAttack,
+        VulnerabilitySeverity::Critical,
+        r"getReserves\(\).*price|reserve\d\s*/\s*reserve\d|token\d+\.balanceOf.*price",
+        "Flash Loan Price Manipulation Vector".to_string(),
+        "Using spot reserves/balances for pricing is manipulable via flash loans (Abracadabra $13M)".to_string(),
+        "Use TWAP oracles, Chainlink feeds, or implement flash loan guards".to_string(),
+        false,
+    ).unwrap());
+
+    // Missing flash loan protection in governance
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::GovernanceAttack,
+        VulnerabilitySeverity::Critical,
+        r"function\s+(propose|vote|castVote)\w*\([^)]*\).*external|public",
+        "Flash Loan Governance Attack Vector (Beanstalk $182M)".to_string(),
+        "Governance function without flash loan protection - Beanstalk style attack possible".to_string(),
+        "Implement voting power snapshots, time-locks, or flash loan guards".to_string(),
+        false,
+    ).unwrap());
+
+    // ===========================================
+    // LOGIC ERROR PATTERNS (OWASP #2 - $63.8M)
+    // ===========================================
+
+    // Incorrect reward calculation (common DeFi bug)
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::LogicError,
+        VulnerabilitySeverity::High,
+        r"reward\w*\s*=\s*\w+\s*\*\s*\w+\s*/\s*\w+\s*\*",
+        "Potential Reward Calculation Logic Error".to_string(),
+        "Complex reward calculation with multiple operations - verify order of operations".to_string(),
+        "Use explicit parentheses and add unit tests for edge cases (0, max values)".to_string(),
+        false,
+    ).unwrap());
+
+    // Missing check for zero shares/supply (division by zero in DeFi)
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::LogicError,
+        VulnerabilitySeverity::Critical,
+        r"assets?\s*\*\s*totalSupply\s*/|shares?\s*\*\s*totalAssets\s*/",
+        "ERC-4626 Vault Logic - Zero Supply Risk".to_string(),
+        "Vault share calculation without zero supply check leads to first depositor attack".to_string(),
+        "Add require(totalSupply > 0) or use virtual shares (INITIAL_SHARES offset)".to_string(),
+        false,
+    ).unwrap());
+
+    // Incorrect withdrawal logic
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::LogicError,
+        VulnerabilitySeverity::High,
+        r"function\s+withdraw.*\{[^}]*balance\s*-=|function\s+withdraw.*\{[^}]*balance\s*=\s*balance\s*-",
+        "Withdrawal Balance Update Logic".to_string(),
+        "Withdrawal function modifies balance - verify it happens BEFORE external transfer".to_string(),
+        "Follow CEI: update balance, then transfer. Add reentrancy guard.".to_string(),
+        true,
+    ).unwrap());
+
+    // Token approval logic error
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::LogicError,
+        VulnerabilitySeverity::Medium,
+        r"approve\s*\([^)]*,\s*\w+\s*\)|allowance.*\+=",
+        "Token Approval Logic Pattern".to_string(),
+        "Approval pattern detected - verify against front-running and double-spend issues".to_string(),
+        "Use increaseAllowance/decreaseAllowance or require current allowance is 0".to_string(),
+        false,
+    ).unwrap());
+
+    // ===========================================
+    // META-TRANSACTION / TRUSTED FORWARDER (KiloEx $7.4M)
+    // ===========================================
+
+    // MinimalForwarder pattern (KiloEx exploit)
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::MetaTransactionVulnerability,
+        VulnerabilitySeverity::Critical,
+        r"MinimalForwarder|MinimalForwarderUpgradeable|TrustedForwarder",
+        "CRITICAL: MinimalForwarder Pattern (KiloEx $7.4M)".to_string(),
+        "MinimalForwarder detected - exact pattern from KiloEx $7.4M exploit".to_string(),
+        "Verify execute() validates signatures against provided data, check trustedForwarder list".to_string(),
+        false,
+    ).unwrap());
+
+    // Trusted forwarder without signature validation
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::TrustedForwarderBypass,
+        VulnerabilitySeverity::Critical,
+        r"function\s+execute\s*\([^)]*ForwardRequest[^)]*\)",
+        "Meta-Transaction Execute Function".to_string(),
+        "Meta-transaction execute function must properly validate signatures against request data".to_string(),
+        "Verify signature matches (from, to, value, gas, nonce, data) and increment nonce".to_string(),
+        false,
+    ).unwrap());
+
+    // _msgSender() without proper forwarder validation
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::MetaTransactionVulnerability,
+        VulnerabilitySeverity::High,
+        r"_msgSender\(\)|_msgData\(\)",
+        "Meta-Transaction Context Functions".to_string(),
+        "_msgSender()/_msgData() used - verify trusted forwarder is properly validated".to_string(),
+        "Ensure isTrustedForwarder() checks are secure and forwarder can't be manipulated".to_string(),
+        false,
+    ).unwrap());
+
+    // ERC2771Context misuse
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::MetaTransactionVulnerability,
+        VulnerabilitySeverity::High,
+        r"ERC2771Context|isTrustedForwarder",
+        "ERC-2771 Meta-Transaction Context".to_string(),
+        "ERC-2771 context detected - verify trusted forwarder cannot be exploited".to_string(),
+        "Validate forwarder address is immutable and correctly set in constructor".to_string(),
+        false,
+    ).unwrap());
+
+    // ===========================================
+    // UNCHECKED MATH OPERATIONS (Cetus $223M style)
+    // ===========================================
+
+    // Custom overflow check implementation
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::UncheckedMathOperation,
+        VulnerabilitySeverity::Critical,
+        r"function\s+\w*(checked|safe)\w*(Mul|Add|Sub|Div|Shl|Shr)\w*\(",
+        "Custom Safe Math Implementation (Cetus Pattern)".to_string(),
+        "Custom overflow checks detected - Cetus $223M exploit used flawed checked_shlw".to_string(),
+        "Prefer OpenZeppelin SafeMath or Solidity 0.8+ built-in checks over custom implementations".to_string(),
+        false,
+    ).unwrap());
+
+    // Bit shift operations without overflow check
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::UncheckedMathOperation,
+        VulnerabilitySeverity::High,
+        r"<<\s*\d+|>>\s*\d+|<<\s*\w+|>>\s*\w+",
+        "Bit Shift Operation (Cetus Pattern)".to_string(),
+        "Bit shifts don't revert on overflow in Solidity - Cetus $223M used flawed shift check".to_string(),
+        "Validate shift amount < 256, check for overflow BEFORE shift operation".to_string(),
+        false,
+    ).unwrap());
+
+    // Unchecked block with complex calculations
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::UncheckedMathOperation,
+        VulnerabilitySeverity::Critical,
+        r"unchecked\s*\{[^}]*(<<|>>|\*\*|sqrt|exp)",
+        "Unchecked Complex Math Operation".to_string(),
+        "Complex math in unchecked block - bit shifts and exponents don't revert on overflow".to_string(),
+        "Move complex operations outside unchecked block or add explicit overflow checks".to_string(),
+        true,
+    ).unwrap());
+
+    // Liquidity calculation patterns (AMM vulnerability)
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::UncheckedMathOperation,
+        VulnerabilitySeverity::Critical,
+        r"liquidity\s*=.*sqrt|deltaLiquidity|getLiquidity.*<<",
+        "AMM Liquidity Calculation (Cetus Pattern)".to_string(),
+        "Liquidity calculation with sqrt/shifts - exact pattern from Cetus $223M exploit".to_string(),
+        "Validate inputs before calculation, add bounds checking, use well-audited math libraries".to_string(),
+        false,
+    ).unwrap());
+
+    // ===========================================
+    // GOVERNANCE ATTACK PATTERNS
+    // ===========================================
+
+    // Voting without timelock
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::GovernanceAttack,
+        VulnerabilitySeverity::High,
+        r"function\s+execute\w*\([^)]*proposalId[^)]*\).*external",
+        "Governance Execution Without Timelock".to_string(),
+        "Governance execution should have timelock delay for community review".to_string(),
+        "Add TimelockController with minimum delay (e.g., 24-48 hours)".to_string(),
+        false,
+    ).unwrap());
+
+    // Emergency functions bypassing governance
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::GovernanceAttack,
+        VulnerabilitySeverity::High,
+        r"function\s+emergency\w*\([^)]*\)\s+(external|public)",
+        "Emergency Function Bypassing Governance".to_string(),
+        "Emergency functions can bypass normal governance - ensure proper access control".to_string(),
+        "Require multi-sig or DAO vote for emergency actions, add cooldown period".to_string(),
+        false,
+    ).unwrap());
+
+    // Quorum not checked
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::GovernanceAttack,
+        VulnerabilitySeverity::Medium,
+        r"function\s+execute.*proposal|function\s+queue.*proposal",
+        "Governance Proposal Execution".to_string(),
+        "Proposal execution detected - verify quorum and vote threshold are checked".to_string(),
+        "Add require(quorumReached(proposalId) && voteSucceeded(proposalId))".to_string(),
+        false,
+    ).unwrap());
+
+    // ===========================================
+    // LIQUIDITY MANIPULATION PATTERNS
+    // ===========================================
+
+    // Unprotected addLiquidity
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::LiquidityManipulation,
+        VulnerabilitySeverity::High,
+        r"function\s+addLiquidity\w*\([^)]*\)\s+(external|public)\s*\{",
+        "Unprotected Add Liquidity Function".to_string(),
+        "Add liquidity function without minimum output check enables sandwich attacks".to_string(),
+        "Add minLiquidity parameter and deadline, verify price hasn't moved significantly".to_string(),
+        false,
+    ).unwrap());
+
+    // LP token manipulation in single transaction
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::LiquidityManipulation,
+        VulnerabilitySeverity::Critical,
+        r"mint.*burn|burn.*mint|addLiquidity.*removeLiquidity",
+        "LP Token Manipulation in Single Transaction".to_string(),
+        "Minting and burning LP tokens in same context enables flash LP attacks".to_string(),
+        "Add per-block minting/burning limits or same-block transfer restrictions".to_string(),
+        true,
+    ).unwrap());
+
+    // First depositor/LP attack vector
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::LiquidityManipulation,
+        VulnerabilitySeverity::Critical,
+        r"totalSupply\s*==\s*0.*mint|if\s*\(\s*totalSupply\s*==\s*0\s*\)",
+        "First Depositor Attack Vector".to_string(),
+        "First deposit special case can be exploited to steal subsequent deposits".to_string(),
+        "Mint initial shares to address(0) or use virtual shares offset (e.g., 1e3)".to_string(),
+        true,
+    ).unwrap());
+
+    // ===========================================
+    // BRIDGE VULNERABILITY PATTERNS
+    // ===========================================
+
+    // Cross-chain message without source verification
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::BridgeVulnerability,
+        VulnerabilitySeverity::Critical,
+        r"function\s+(receive|handle|process)\w*Message\w*\([^)]*\)\s+(external|public)",
+        "Cross-Chain Message Handler (Bridge Vulnerability)".to_string(),
+        "Bridge message handler must verify source chain, sender, and message integrity".to_string(),
+        "Verify srcChainId matches expected, validate trustedRemote[srcChain] == srcAddress".to_string(),
+        false,
+    ).unwrap());
+
+    // Bridge withdraw without proof verification
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::BridgeVulnerability,
+        VulnerabilitySeverity::Critical,
+        r"function\s+\w*(claim|withdraw|redeem)\w*\([^)]*bytes\s+(calldata\s+)?proof[^)]*\)",
+        "Bridge Proof Verification".to_string(),
+        "Bridge claim function with proof parameter - verify Merkle/signature proof thoroughly".to_string(),
+        "Use well-audited proof verification, check for replay (mark claimed), validate amounts".to_string(),
+        false,
+    ).unwrap());
+
+    // LayerZero/Wormhole/Axelar integration
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::BridgeVulnerability,
+        VulnerabilitySeverity::High,
+        r"lzReceive|_nonblockingLzReceive|receiveWormholeMessages|_execute.*axelar",
+        "Cross-Chain Protocol Integration".to_string(),
+        "Cross-chain protocol integration detected - verify proper source validation".to_string(),
+        "Validate srcChainId, srcAddress against trusted remotes, implement replay protection".to_string(),
+        false,
+    ).unwrap());
+
+    // Bridge relayer trust
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::BridgeVulnerability,
+        VulnerabilitySeverity::High,
+        r"mapping.*relayer|onlyRelayer|trustedRelayer",
+        "Bridge Relayer Trust Pattern".to_string(),
+        "Trusted relayer pattern - single relayer compromise breaks bridge security".to_string(),
+        "Implement multi-relayer consensus, fraud proofs, or optimistic verification".to_string(),
+        false,
+    ).unwrap());
+
+    // ===========================================
+    // ENHANCED ACCESS CONTROL (OWASP #1 - $953M)
+    // ===========================================
+
+    // Function selector collision risk
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::AccessControl,
+        VulnerabilitySeverity::High,
+        r"fallback\s*\(\s*\)\s*external.*delegatecall",
+        "Fallback Delegatecall - Selector Collision Risk".to_string(),
+        "Fallback with delegatecall allows calling any function via selector collision".to_string(),
+        "Use explicit function routing, avoid fallback delegatecall pattern".to_string(),
+        true,
+    ).unwrap());
+
+    // Unprotected initializer (proxy pattern)
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::AccessControl,
+        VulnerabilitySeverity::Critical,
+        r"function\s+initialize\s*\([^)]*\)\s+(external|public)\s*\{",
+        "Unprotected Initialize Function".to_string(),
+        "Initialize function without initializer modifier can be called multiple times".to_string(),
+        "Add initializer modifier from OpenZeppelin Initializable contract".to_string(),
+        false,
+    ).unwrap());
+
+    // tx.origin for authentication
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::AccessControl,
+        VulnerabilitySeverity::Critical,
+        r"require\s*\(\s*tx\.origin\s*==|if\s*\(\s*tx\.origin\s*==",
+        "tx.origin Authentication (Phishing Risk)".to_string(),
+        "Using tx.origin for authentication enables phishing attacks".to_string(),
+        "Use msg.sender instead of tx.origin for all authentication checks".to_string(),
+        false,
+    ).unwrap());
+
+    // Missing two-step ownership transfer
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::AccessControl,
+        VulnerabilitySeverity::Medium,
+        r"function\s+transferOwnership\s*\([^)]*address\s+newOwner[^)]*\)",
+        "Single-Step Ownership Transfer".to_string(),
+        "Single-step ownership transfer can lock contract if wrong address is used".to_string(),
+        "Implement two-step transfer: propose owner, then new owner accepts".to_string(),
+        false,
+    ).unwrap());
+
     rules
 }
 
@@ -1399,6 +1893,15 @@ impl VulnerabilityCategory {
             VulnerabilityCategory::ABIBridgeVulnerability => "ABI Bridge Vulnerability",
             VulnerabilityCategory::ABIMultisigBypass => "ABI Multisig Bypass Risk",
             VulnerabilityCategory::ABIEmergencyBypass => "ABI Emergency Bypass Risk",
+            // 2025 OWASP & Recent Exploits
+            VulnerabilityCategory::FlashLoanAttack => "Flash Loan Attack Vector",
+            VulnerabilityCategory::LogicError => "Logic Error",
+            VulnerabilityCategory::MetaTransactionVulnerability => "Meta-Transaction Vulnerability",
+            VulnerabilityCategory::UncheckedMathOperation => "Unchecked Math Operation",
+            VulnerabilityCategory::TrustedForwarderBypass => "Trusted Forwarder Bypass",
+            VulnerabilityCategory::GovernanceAttack => "Governance Attack Vector",
+            VulnerabilityCategory::LiquidityManipulation => "Liquidity Manipulation Risk",
+            VulnerabilityCategory::BridgeVulnerability => "Bridge Vulnerability",
         }
     }
 }

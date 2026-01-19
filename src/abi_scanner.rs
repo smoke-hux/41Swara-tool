@@ -672,7 +672,7 @@ impl ABIScanner {
     }
 
     fn vuln(&self, severity: VulnerabilitySeverity, category: VulnerabilityCategory, title: String, desc: String, snippet: String, rec: String) -> Vulnerability {
-        Vulnerability { severity, category, title, description: desc, line_number: 0, code_snippet: snippet, recommendation: rec }
+        Vulnerability::new(severity, category, title, desc, 0, snippet, rec)
     }
 
     fn sig(&self, func: &ABIFunction) -> String {

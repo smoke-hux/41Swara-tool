@@ -23,7 +23,21 @@ A Rust-based static analysis tool that detects **80+ vulnerability patterns** in
 - **NFT Security Issues**: Callback reentrancy, minting vulnerabilities
 - **Cross-File Analysis**: Dependency tracking with `--project-analysis`
 
-### Advanced ABI Analysis (NEW)
+### Smart False Positive Reduction
+- **Context-Aware Filtering**: Detects SafeMath, ReentrancyGuard, OpenZeppelin patterns
+- **Interface/Library Detection**: Skips pure interface files automatically
+- **Test Contract Recognition**: Relaxed checks for test/mock contracts
+- **Solidity Version Aware**: Different rules for 0.4.x vs 0.8.x+
+- **Comment Detection**: Ignores vulnerabilities in commented code
+- **~60% false positive reduction** compared to raw pattern matching
+
+### Precise Vulnerability Location Display
+- **Line Numbers**: Exact location of each vulnerability
+- **Line Ranges**: For multi-line issues (e.g., "Lines 15-20")
+- **Code Context**: Shows 2 lines before and after the vulnerable code
+- **Confidence Levels**: High (●), Medium (◐), Low (○) indicators
+
+### Advanced ABI Analysis
 - **Contract Type Detection**: ERC-20, ERC-721, ERC-1155, ERC-4626, Proxy, DEX, Lending, Bridge, and more
 - **Security Scoring**: 0-100 score across 5 dimensions
 - **DeFi Pattern Recognition**: Flash loans, oracles, DEX interactions
@@ -37,7 +51,29 @@ A Rust-based static analysis tool that detects **80+ vulnerability patterns** in
 
 ## Installation
 
-### Build from Source
+### Global Installation (Recommended)
+
+Install globally to use `41` or `41swara` commands from anywhere:
+
+```bash
+# Clone the repository
+git clone https://github.com/41swara/smart-contract-scanner
+cd smart-contract-scanner
+
+# Install globally
+cargo install --path .
+```
+
+This installs two commands:
+- `41` - Short command (quick to type)
+- `41swara` - Full project name
+
+**Note**: Make sure `~/.cargo/bin` is in your PATH. Add this to your `~/.bashrc` or `~/.zshrc` if needed:
+```bash
+export PATH="$HOME/.cargo/bin:$PATH"
+```
+
+### Build from Source (Development)
 ```bash
 git clone https://github.com/41swara/smart-contract-scanner
 cd smart-contract-scanner
@@ -45,9 +81,11 @@ cargo build --release
 ./target/release/41 --help
 ```
 
-### Quick Install
+### Update Installation
 ```bash
-cargo install --path .
+cd smart-contract-scanner
+git pull
+cargo install --path . --force
 ```
 
 ## Quick Start
@@ -62,6 +100,9 @@ cargo install --path .
 
 # Verbose output with performance stats
 41 -p contracts/ -v --stats
+
+# Using full command name
+41swara -p contracts/
 ```
 
 ### Performance Optimization
@@ -81,6 +122,56 @@ cargo install --path .
 # Critical + High severity
 41 -p . --min-severity high
 ```
+
+## Example Output
+
+The scanner shows precise vulnerability locations with context:
+
+```
+🔍 SCAN RESULTS FOR contracts/Vault.sol (Line-by-line Analysis)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📋 Access Control
+
+  🚨 ● Unprotected Critical Function: withdrawAll [Line 21]
+     Description: Critical function lacks access control modifiers
+     Context:
+         19 │
+         20 │     // Vulnerable: External call without reentrancy guard
+     Vulnerable Code:
+         21 │ function withdrawAll() external {
+         22 │         uint256 balance = deposits[msg.sender];
+         23 │         deposits[msg.sender] = 0;
+     Recommendation: Add appropriate access control modifiers (onlyOwner, onlyRole, etc.)
+     Severity: CRITICAL | Confidence: High
+
+📋 Reentrancy
+
+  🚨 ● Critical: State Change After External Call [Line 16]
+     Description: State modification detected after external call - violates CEI pattern
+     Vulnerable Code:
+         16 │         token.transfer(address(this), amount);
+     Recommendation: Move all state changes before external calls to prevent reentrancy
+     Severity: CRITICAL | Confidence: High
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📊 VULNERABILITY SCAN SUMMARY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📁 Files scanned: 1
+🔍 Total issues found: 16
+
+🎯 SEVERITY BREAKDOWN
+  🚨 CRITICAL: 5
+  ⚠️  HIGH: 3
+  ⚡ MEDIUM: 6
+  💡 LOW: 2
+```
+
+### Confidence Indicators
+- **●** (High): Very likely a real vulnerability - prioritize fixing
+- **◐** (Medium): Likely a vulnerability - review recommended
+- **○** (Low): Possible issue - may be false positive, verify manually
 
 ## Advanced ABI Security Analysis
 
@@ -128,7 +219,7 @@ Security Score: 54/100
 └── MEV Exposure:      60/100
 ```
 
-### ABI Vulnerability Categories (22 NEW)
+### ABI Vulnerability Categories (22)
 
 | Category | Severity | Description |
 |----------|----------|-------------|
@@ -154,54 +245,6 @@ Security Score: 54/100
 | **ABIEventSecurity** | Medium | Event security issues |
 | **ABITokenStandard** | Medium | ERC standard compliance |
 | **ABIEmergencyBypass** | Medium | Missing pause mechanisms |
-
-### Example ABI Analysis Output
-
-```
-41Swara Smart Contract Scanner v0.2.0
-=======================================================
-
-Scanning ABI: contracts/DeFiProtocol.json
-Parsed: 14 functions, 2 events
-
-Advanced ABI Analysis Complete:
-   Contract Type: Proxy
-   Security Score: 54/100
-   Functions: 14, Events: 2
-   Patterns Detected: 8
-   Vulnerabilities Found: 45
-
-Results ABI ANALYSIS: contracts/DeFiProtocol.json
-======================================================================
-
-Category: ABI Flash Loan Risk
-  !! Flash Loan Receiver Callback: 'executeOperation' [CRITICAL]
-     Function 'executeOperation' is a flash loan callback. High-risk for:
-     - Callback injection attacks
-     - Unauthorized loan initiators
-     - Price manipulation during callback
-
-Category: ABI Oracle Manipulation
-  !  Oracle Dependency: 'latestRoundData' [HIGH]
-     Contract calls oracle function 'latestRoundData'. Risks include:
-     - Spot price manipulation via flash loans
-     - Stale price data
-     - Oracle downtime
-
-Category: ABI DEX Interaction Risk
-  !  DEX Function Without Slippage Protection: 'swap' [HIGH]
-     Without minAmountOut protection, vulnerable to sandwich attacks.
-
-Category: ABI Permit Vulnerability
-  !  EIP-2612 Permit Function Detected [HIGH]
-     Potential issues:
-     - Signature replay across chains
-     - Signature malleability
-     - Front-running of permit transactions
-
-======================================================================
-Total issues: 45
-```
 
 ## Git Diff Mode (Incremental Scanning)
 ```bash
@@ -246,12 +289,12 @@ jobs:
         with:
           toolchain: stable
 
-      - name: Build Scanner
-        run: cargo build --release
+      - name: Install Scanner
+        run: cargo install --git https://github.com/41swara/smart-contract-scanner
 
       - name: Run Security Scan
         run: |
-          ./target/release/41 -p contracts/ \
+          41 -p contracts/ \
             --fail-on high \
             --format sarif \
             --min-severity high \
@@ -268,8 +311,8 @@ jobs:
 security-scan:
   stage: test
   script:
-    - cargo build --release
-    - ./target/release/41 -p contracts/ --fail-on critical --format json
+    - cargo install --git https://github.com/41swara/smart-contract-scanner
+    - 41 -p contracts/ --fail-on critical --format json
   artifacts:
     reports:
       junit: security-report.json
@@ -344,7 +387,7 @@ Example output:
 Project: DeFi Lending Protocol - Security Analysis
 Sponsor: Protocol DAO
 Auditor: 41Swara Security Team
-Period: January 15, 2026
+Period: January 19, 2026
 
 FINDINGS SUMMARY
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -374,6 +417,7 @@ LOW:       3
 ```
 USAGE:
     41 [OPTIONS] --path <FILE_OR_DIR>
+    41swara [OPTIONS] --path <FILE_OR_DIR>
 
 OPTIONS:
     -p, --path <FILE_OR_DIR>          Path to scan (required)
@@ -421,10 +465,18 @@ INFORMATIONAL:
 4. **Cross-File** - Project-wide dependency tracking
 
 ### False Positive Reduction
-- SafeMath detection → Skip overflow warnings
-- ReentrancyGuard detection → Skip reentrancy alerts
-- Version-aware rules → Different rules for Solidity 0.4-0.8
-- Context filtering → ~60% false positive reduction
+The scanner uses intelligent context-aware filtering:
+
+| Check | Action |
+|-------|--------|
+| SafeMath detected | Skip arithmetic overflow warnings |
+| ReentrancyGuard detected | Skip reentrancy alerts |
+| OpenZeppelin Ownable | Trust access control patterns |
+| Solidity 0.8+ | Skip overflow warnings (built-in) |
+| View/Pure functions | Skip reentrancy/access control for read-only |
+| Interface files | Skip entirely (no implementation) |
+| Test/Mock contracts | Relaxed security checks |
+| Commented code | Ignore vulnerabilities in comments |
 
 ## Integration with Other Tools
 
@@ -453,6 +505,7 @@ mythril analyze flagged-contract.sol
 | DeFi Patterns | Yes | Partial | No |
 | Security Score | Yes | No | No |
 | CI/CD Ready | Yes | Yes | No |
+| False Positive Reduction | Advanced | Basic | Basic |
 
 ## Roadmap
 
@@ -472,7 +525,9 @@ mythril analyze flagged-contract.sol
   - [x] Flash loan risk analysis
   - [x] Oracle manipulation detection
   - [x] Signature/permit vulnerability analysis
-- [ ] Confidence scoring system
+- [x] **Confidence scoring system** (v0.2.0)
+- [x] **Enhanced location display with context** (v0.2.0)
+- [x] **Smart false positive reduction** (v0.2.0)
 - [ ] Custom rule engine (YAML/TOML)
 - [ ] LSP server for IDE integration
 - [ ] Web dashboard for results visualization
@@ -503,7 +558,7 @@ cargo build
 cargo test
 
 # Run on test contracts
-cargo run -- -p examples/vulnerable.sol -v
+cargo run -- -p test_contracts/ -v
 
 # Test ABI scanner
 cargo test abi_scanner

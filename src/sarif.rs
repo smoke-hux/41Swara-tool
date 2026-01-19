@@ -296,15 +296,15 @@ mod tests {
 
     #[test]
     fn test_sarif_creation() {
-        let vuln = Vulnerability {
-            severity: VulnerabilitySeverity::Critical,
-            category: VulnerabilityCategory::Reentrancy,
-            title: "Reentrancy Vulnerability".to_string(),
-            description: "Potential reentrancy attack".to_string(),
-            line_number: 42,
-            code_snippet: "msg.sender.call{value: amount}(\"\")".to_string(),
-            recommendation: "Use ReentrancyGuard".to_string(),
-        };
+        let vuln = Vulnerability::high_confidence(
+            VulnerabilitySeverity::Critical,
+            VulnerabilityCategory::Reentrancy,
+            "Reentrancy Vulnerability".to_string(),
+            "Potential reentrancy attack".to_string(),
+            42,
+            "msg.sender.call{value: amount}(\"\")".to_string(),
+            "Use ReentrancyGuard".to_string(),
+        );
 
         let results = vec![(PathBuf::from("test.sol"), vec![vuln])];
         let report = SarifReport::new(results, "0.2.0");

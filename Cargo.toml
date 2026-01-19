@@ -4,9 +4,19 @@ version = "0.2.0"
 edition = "2021"
 description = "High-performance smart contract vulnerability scanner for blockchain security researchers"
 authors = ["41Swara Security Team"]
+license = "MIT"
+readme = "README.md"
+homepage = "https://github.com/41swara/smart-contract-scanner"
+repository = "https://github.com/41swara/smart-contract-scanner"
 keywords = ["solidity", "security", "smart-contracts", "blockchain", "audit"]
 categories = ["development-tools", "command-line-utilities"]
 
+# Main binary - run with: 41swara
+[[bin]]
+name = "41swara"
+path = "src/main.rs"
+
+# Short alias - run with: 41
 [[bin]]
 name = "41"
 path = "src/main.rs"

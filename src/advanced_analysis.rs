@@ -71,15 +71,15 @@ impl AdvancedAnalyzer {
                     if state_change_pattern.is_match(future_line) && !future_line.contains("==") {
                         // Make sure it's actual state modification, not local variable
                         if !future_line.contains("memory") && !future_line.contains("calldata") {
-                            return Some(Vulnerability {
-                                severity: VulnerabilitySeverity::Critical,
-                                category: VulnerabilityCategory::Reentrancy,
-                                title: "Critical: State Change After External Call".to_string(),
-                                description: "State modification detected after external call - violates Checks-Effects-Interactions pattern".to_string(),
-                                line_number: idx + 1,
-                                code_snippet: line.to_string(),
-                                recommendation: "Move all state changes before external calls to prevent reentrancy attacks".to_string(),
-                            });
+                            return Some(Vulnerability::high_confidence(
+                                VulnerabilitySeverity::Critical,
+                                VulnerabilityCategory::Reentrancy,
+                                "Critical: State Change After External Call".to_string(),
+                                "State modification detected after external call - violates Checks-Effects-Interactions pattern".to_string(),
+                                idx + 1,
+                                line.to_string(),
+                                "Move all state changes before external calls to prevent reentrancy attacks".to_string(),
+                            ));
                         }
                     }
                 }
@@ -97,15 +97,15 @@ impl AdvancedAnalyzer {
         if flash_loan_pattern.is_match(content) || price_dependency.is_match(content) {
             for (idx, line) in content.lines().enumerate() {
                 if price_dependency.is_match(line) {
-                    return Some(Vulnerability {
-                        severity: VulnerabilitySeverity::Critical,
-                        category: VulnerabilityCategory::OracleManipulation,
-                        title: "Flash Loan Attack Vector Detected".to_string(),
-                        description: "Contract relies on manipulable price sources vulnerable to flash loans".to_string(),
-                        line_number: idx + 1,
-                        code_snippet: line.to_string(),
-                        recommendation: "Use TWAP oracles or Chainlink price feeds instead of spot prices".to_string(),
-                    });
+                    return Some(Vulnerability::high_confidence(
+                        VulnerabilitySeverity::Critical,
+                        VulnerabilityCategory::OracleManipulation,
+                        "Flash Loan Attack Vector Detected".to_string(),
+                        "Contract relies on manipulable price sources vulnerable to flash loans".to_string(),
+                        idx + 1,
+                        line.to_string(),
+                        "Use TWAP oracles or Chainlink price feeds instead of spot prices".to_string(),
+                    ));
                 }
             }
         }
@@ -121,15 +121,15 @@ impl AdvancedAnalyzer {
         if swap_pattern.is_match(content) && !slippage_pattern.is_match(content) {
             for (idx, line) in content.lines().enumerate() {
                 if swap_pattern.is_match(line) {
-                    return Some(Vulnerability {
-                        severity: VulnerabilitySeverity::High,
-                        category: VulnerabilityCategory::FrontRunning,
-                        title: "MEV/Sandwich Attack Vulnerability".to_string(),
-                        description: "Swap function without slippage protection is vulnerable to sandwich attacks".to_string(),
-                        line_number: idx + 1,
-                        code_snippet: line.to_string(),
-                        recommendation: "Implement slippage protection and consider using commit-reveal pattern".to_string(),
-                    });
+                    return Some(Vulnerability::new(
+                        VulnerabilitySeverity::High,
+                        VulnerabilityCategory::FrontRunning,
+                        "MEV/Sandwich Attack Vulnerability".to_string(),
+                        "Swap function without slippage protection is vulnerable to sandwich attacks".to_string(),
+                        idx + 1,
+                        line.to_string(),
+                        "Implement slippage protection and consider using commit-reveal pattern".to_string(),
+                    ));
                 }
             }
         }
@@ -182,15 +182,15 @@ impl AdvancedAnalyzer {
                             in_function = false;
 
                             if complexity > 10 {
-                                vulnerabilities.push(Vulnerability {
-                                    severity: VulnerabilitySeverity::Low,
-                                    category: VulnerabilityCategory::ComplexityIssues,
-                                    title: format!("High Complexity in {}", function_name),
-                                    description: format!("Function has cyclomatic complexity of {}", complexity),
-                                    line_number: function_start,
-                                    code_snippet: format!("function {}", function_name),
-                                    recommendation: "Consider breaking down complex functions into smaller pieces".to_string(),
-                                });
+                                vulnerabilities.push(Vulnerability::new(
+                                    VulnerabilitySeverity::Low,
+                                    VulnerabilityCategory::ComplexityIssues,
+                                    format!("High Complexity in {}", function_name),
+                                    format!("Function has cyclomatic complexity of {}", complexity),
+                                    function_start,
+                                    format!("function {}", function_name),
+                                    "Consider breaking down complex functions into smaller pieces".to_string(),
+                                ));
                             }
                         }
                     }
@@ -234,15 +234,15 @@ impl AdvancedAnalyzer {
                         let has_modifier = modifiers.iter().any(|m| line.contains(m));
 
                         if !has_modifier && !line.contains("private") && !line.contains("internal") {
-                            vulnerabilities.push(Vulnerability {
-                                severity: VulnerabilitySeverity::Critical,
-                                category: VulnerabilityCategory::AccessControl,
-                                title: format!("Unprotected Critical Function: {}", function_name),
-                                description: "Critical function lacks access control modifiers".to_string(),
-                                line_number: idx + 1,
-                                code_snippet: line.to_string(),
-                                recommendation: "Add appropriate access control modifiers (onlyOwner, onlyRole, etc.)".to_string(),
-                            });
+                            vulnerabilities.push(Vulnerability::high_confidence(
+                                VulnerabilitySeverity::Critical,
+                                VulnerabilityCategory::AccessControl,
+                                format!("Unprotected Critical Function: {}", function_name),
+                                "Critical function lacks access control modifiers".to_string(),
+                                idx + 1,
+                                line.to_string(),
+                                "Add appropriate access control modifiers (onlyOwner, onlyRole, etc.)".to_string(),
+                            ));
                         }
                     }
                 }
@@ -260,28 +260,28 @@ impl AdvancedAnalyzer {
         if content.contains("Initializable") || content.contains("upgradeable") {
             // Check for proper storage gaps
             if !content.contains("uint256[50] private __gap") && !content.contains("__gap") {
-                vulnerabilities.push(Vulnerability {
-                    severity: VulnerabilitySeverity::High,
-                    category: VulnerabilityCategory::StateVariable,
-                    title: "Missing Storage Gap in Upgradeable Contract".to_string(),
-                    description: "Upgradeable contract lacks storage gap for future variables".to_string(),
-                    line_number: 1,
-                    code_snippet: "contract ... is Upgradeable".to_string(),
-                    recommendation: "Add 'uint256[50] private __gap;' at the end of storage variables".to_string(),
-                });
+                vulnerabilities.push(Vulnerability::new(
+                    VulnerabilitySeverity::High,
+                    VulnerabilityCategory::StateVariable,
+                    "Missing Storage Gap in Upgradeable Contract".to_string(),
+                    "Upgradeable contract lacks storage gap for future variables".to_string(),
+                    1,
+                    "contract ... is Upgradeable".to_string(),
+                    "Add 'uint256[50] private __gap;' at the end of storage variables".to_string(),
+                ));
             }
 
             // Check for constructor usage in upgradeable contracts
             if content.contains("constructor(") || content.contains("constructor (") {
-                vulnerabilities.push(Vulnerability {
-                    severity: VulnerabilitySeverity::Critical,
-                    category: VulnerabilityCategory::StateVariable,
-                    title: "Constructor in Upgradeable Contract".to_string(),
-                    description: "Upgradeable contracts should not use constructors".to_string(),
-                    line_number: 1,
-                    code_snippet: "constructor()".to_string(),
-                    recommendation: "Use initializer functions instead of constructors in upgradeable contracts".to_string(),
-                });
+                vulnerabilities.push(Vulnerability::high_confidence(
+                    VulnerabilitySeverity::Critical,
+                    VulnerabilityCategory::StateVariable,
+                    "Constructor in Upgradeable Contract".to_string(),
+                    "Upgradeable contracts should not use constructors".to_string(),
+                    1,
+                    "constructor()".to_string(),
+                    "Use initializer functions instead of constructors in upgradeable contracts".to_string(),
+                ));
             }
         }
 
@@ -303,15 +303,15 @@ impl AdvancedAnalyzer {
                 // Check next few lines for storage reads
                 for check_idx in (idx + 1)..lines.len().min(idx + 5) {
                     if storage_read_pattern.is_match(lines[check_idx]) {
-                        vulnerabilities.push(Vulnerability {
-                            severity: VulnerabilitySeverity::Low,
-                            category: VulnerabilityCategory::GasOptimization,
-                            title: "Storage Read in Loop".to_string(),
-                            description: "Reading from storage in loops is expensive".to_string(),
-                            line_number: check_idx + 1,
-                            code_snippet: lines[check_idx].to_string(),
-                            recommendation: "Cache storage values in memory variables before loops".to_string(),
-                        });
+                        vulnerabilities.push(Vulnerability::new(
+                            VulnerabilitySeverity::Low,
+                            VulnerabilityCategory::GasOptimization,
+                            "Storage Read in Loop".to_string(),
+                            "Reading from storage in loops is expensive".to_string(),
+                            check_idx + 1,
+                            lines[check_idx].to_string(),
+                            "Cache storage values in memory variables before loops".to_string(),
+                        ));
                         break;
                     }
                 }
@@ -330,15 +330,15 @@ impl AdvancedAnalyzer {
 
         for (line, count) in storage_writes {
             if count > 2 {
-                vulnerabilities.push(Vulnerability {
-                    severity: VulnerabilitySeverity::Info,
-                    category: VulnerabilityCategory::GasOptimization,
-                    title: "Multiple Storage Writes".to_string(),
-                    description: format!("Variable written {} times - consider batching", count),
-                    line_number: 1,
-                    code_snippet: line.to_string(),
-                    recommendation: "Batch storage operations to save gas".to_string(),
-                });
+                vulnerabilities.push(Vulnerability::new(
+                    VulnerabilitySeverity::Info,
+                    VulnerabilityCategory::GasOptimization,
+                    "Multiple Storage Writes".to_string(),
+                    format!("Variable written {} times - consider batching", count),
+                    1,
+                    line.to_string(),
+                    "Batch storage operations to save gas".to_string(),
+                ));
             }
         }
 
@@ -347,15 +347,15 @@ impl AdvancedAnalyzer {
 
         for (idx, line) in content.lines().enumerate() {
             if string_pattern.is_match(line) {
-                vulnerabilities.push(Vulnerability {
-                    severity: VulnerabilitySeverity::Info,
-                    category: VulnerabilityCategory::GasOptimization,
-                    title: "Short String Could Be bytes32".to_string(),
-                    description: "Short strings are more efficient as bytes32".to_string(),
-                    line_number: idx + 1,
-                    code_snippet: line.to_string(),
-                    recommendation: "Consider using bytes32 for short fixed-length strings".to_string(),
-                });
+                vulnerabilities.push(Vulnerability::new(
+                    VulnerabilitySeverity::Info,
+                    VulnerabilityCategory::GasOptimization,
+                    "Short String Could Be bytes32".to_string(),
+                    "Short strings are more efficient as bytes32".to_string(),
+                    idx + 1,
+                    line.to_string(),
+                    "Consider using bytes32 for short fixed-length strings".to_string(),
+                ));
             }
         }
 
@@ -397,15 +397,15 @@ impl AdvancedAnalyzer {
                     // Check if there's TWAP or price validation
                     if !content.contains("TWAP") && !content.contains("Chainlink") &&
                        !content.contains("priceValidation") && !content.contains("minPrice") {
-                        return Some(Vulnerability {
-                            severity: VulnerabilitySeverity::Critical,
-                            category: VulnerabilityCategory::OracleManipulation,
-                            title: "Price Oracle Manipulation Risk".to_string(),
-                            description: format!("{} - vulnerable to flash loan attacks", desc),
-                            line_number: idx + 1,
-                            code_snippet: line.to_string(),
-                            recommendation: "Use Chainlink price feeds, TWAP oracles, or multiple oracle sources".to_string(),
-                        });
+                        return Some(Vulnerability::high_confidence(
+                            VulnerabilitySeverity::Critical,
+                            VulnerabilityCategory::OracleManipulation,
+                            "Price Oracle Manipulation Risk".to_string(),
+                            format!("{} - vulnerable to flash loan attacks", desc),
+                            idx + 1,
+                            line.to_string(),
+                            "Use Chainlink price feeds, TWAP oracles, or multiple oracle sources".to_string(),
+                        ));
                     }
                 }
             }
@@ -423,15 +423,15 @@ impl AdvancedAnalyzer {
                 // Check if function has slippage protection parameters
                 if !line.contains("minAmount") && !line.contains("amountOutMin") &&
                    !line.contains("slippage") && !line.contains("minReturn") {
-                    vulnerabilities.push(Vulnerability {
-                        severity: VulnerabilitySeverity::High,
-                        category: VulnerabilityCategory::FrontRunning,
-                        title: "Missing Slippage Protection".to_string(),
-                        description: "Swap function lacks slippage protection parameters".to_string(),
-                        line_number: idx + 1,
-                        code_snippet: line.to_string(),
-                        recommendation: "Add amountOutMin or similar slippage protection parameter".to_string(),
-                    });
+                    vulnerabilities.push(Vulnerability::new(
+                        VulnerabilitySeverity::High,
+                        VulnerabilityCategory::FrontRunning,
+                        "Missing Slippage Protection".to_string(),
+                        "Swap function lacks slippage protection parameters".to_string(),
+                        idx + 1,
+                        line.to_string(),
+                        "Add amountOutMin or similar slippage protection parameter".to_string(),
+                    ));
                 }
             }
         }
@@ -454,15 +454,15 @@ impl AdvancedAnalyzer {
                 );
 
                 if !has_balance_check {
-                    vulnerabilities.push(Vulnerability {
-                        severity: VulnerabilitySeverity::Medium,
-                        category: VulnerabilityCategory::DoSAttacks,
-                        title: "Insufficient Balance Validation".to_string(),
-                        description: "Liquidity removal function may not properly validate balances".to_string(),
-                        line_number: idx + 1,
-                        code_snippet: line.to_string(),
-                        recommendation: "Add proper balance validation before liquidity operations".to_string(),
-                    });
+                    vulnerabilities.push(Vulnerability::new(
+                        VulnerabilitySeverity::Medium,
+                        VulnerabilityCategory::DoSAttacks,
+                        "Insufficient Balance Validation".to_string(),
+                        "Liquidity removal function may not properly validate balances".to_string(),
+                        idx + 1,
+                        line.to_string(),
+                        "Add proper balance validation before liquidity operations".to_string(),
+                    ));
                 }
             }
         }
@@ -482,15 +482,15 @@ impl AdvancedAnalyzer {
                     // Check for proper precision handling
                     if !content.contains("1e18") && !content.contains("PRECISION") &&
                        !content.contains("MULTIPLIER") && line.contains("/") {
-                        vulnerabilities.push(Vulnerability {
-                            severity: VulnerabilitySeverity::Medium,
-                            category: VulnerabilityCategory::PrecisionLoss,
-                            title: "Reward Calculation Precision Loss".to_string(),
-                            description: "Reward calculations may lose precision without proper scaling".to_string(),
-                            line_number: idx + 1,
-                            code_snippet: line.to_string(),
-                            recommendation: "Use proper precision constants (e.g., 1e18) for reward calculations".to_string(),
-                        });
+                        vulnerabilities.push(Vulnerability::new(
+                            VulnerabilitySeverity::Medium,
+                            VulnerabilityCategory::PrecisionLoss,
+                            "Reward Calculation Precision Loss".to_string(),
+                            "Reward calculations may lose precision without proper scaling".to_string(),
+                            idx + 1,
+                            line.to_string(),
+                            "Use proper precision constants (e.g., 1e18) for reward calculations".to_string(),
+                        ));
                     }
                 }
             }
@@ -527,15 +527,15 @@ impl AdvancedAnalyzer {
                                     content.contains("totalSupply() <") || content.contains("require(_tokenId");
 
                 if !has_supply_cap {
-                    vulnerabilities.push(Vulnerability {
-                        severity: VulnerabilitySeverity::Medium,
-                        category: VulnerabilityCategory::AccessControl,
-                        title: "NFT Unlimited Minting".to_string(),
-                        description: "Mint function lacks supply cap, allowing unlimited minting".to_string(),
-                        line_number: idx + 1,
-                        code_snippet: line.to_string(),
-                        recommendation: "Implement maximum supply check to prevent unlimited minting".to_string(),
-                    });
+                    vulnerabilities.push(Vulnerability::new(
+                        VulnerabilitySeverity::Medium,
+                        VulnerabilityCategory::AccessControl,
+                        "NFT Unlimited Minting".to_string(),
+                        "Mint function lacks supply cap, allowing unlimited minting".to_string(),
+                        idx + 1,
+                        line.to_string(),
+                        "Implement maximum supply check to prevent unlimited minting".to_string(),
+                    ));
                 }
 
                 // Check for duplicate token ID protection
@@ -543,15 +543,15 @@ impl AdvancedAnalyzer {
                                       content.contains("require(!_exists");
 
                 if !has_exists_check {
-                    vulnerabilities.push(Vulnerability {
-                        severity: VulnerabilitySeverity::High,
-                        category: VulnerabilityCategory::AccessControl,
-                        title: "NFT Duplicate Token ID Risk".to_string(),
-                        description: "Mint function may not prevent duplicate token IDs".to_string(),
-                        line_number: idx + 1,
-                        code_snippet: line.to_string(),
-                        recommendation: "Add _exists() check before minting to prevent duplicates".to_string(),
-                    });
+                    vulnerabilities.push(Vulnerability::new(
+                        VulnerabilitySeverity::High,
+                        VulnerabilityCategory::AccessControl,
+                        "NFT Duplicate Token ID Risk".to_string(),
+                        "Mint function may not prevent duplicate token IDs".to_string(),
+                        idx + 1,
+                        line.to_string(),
+                        "Add _exists() check before minting to prevent duplicates".to_string(),
+                    ));
                 }
             }
         }
@@ -566,15 +566,15 @@ impl AdvancedAnalyzer {
         if content.contains("transferFrom") && !content.contains("safeTransferFrom") {
             for (idx, line) in content.lines().enumerate() {
                 if line.contains("transferFrom") && !line.contains("safeTransferFrom") {
-                    vulnerabilities.push(Vulnerability {
-                        severity: VulnerabilitySeverity::Medium,
-                        category: VulnerabilityCategory::UnsafeExternalCalls,
-                        title: "Unsafe NFT Transfer".to_string(),
-                        description: "Using transferFrom instead of safeTransferFrom can lead to locked NFTs".to_string(),
-                        line_number: idx + 1,
-                        code_snippet: line.to_string(),
-                        recommendation: "Use safeTransferFrom to ensure recipient can handle ERC721 tokens".to_string(),
-                    });
+                    vulnerabilities.push(Vulnerability::new(
+                        VulnerabilitySeverity::Medium,
+                        VulnerabilityCategory::UnsafeExternalCalls,
+                        "Unsafe NFT Transfer".to_string(),
+                        "Using transferFrom instead of safeTransferFrom can lead to locked NFTs".to_string(),
+                        idx + 1,
+                        line.to_string(),
+                        "Use safeTransferFrom to ensure recipient can handle ERC721 tokens".to_string(),
+                    ));
                 }
             }
         }
@@ -597,15 +597,15 @@ impl AdvancedAnalyzer {
                 );
 
                 if has_mutable_metadata {
-                    vulnerabilities.push(Vulnerability {
-                        severity: VulnerabilitySeverity::Medium,
-                        category: VulnerabilityCategory::AccessControl,
-                        title: "Mutable NFT Metadata".to_string(),
-                        description: "Token metadata can be changed after minting".to_string(),
-                        line_number: idx + 1,
-                        code_snippet: line.to_string(),
-                        recommendation: "Consider making metadata immutable or clearly document mutability risks".to_string(),
-                    });
+                    vulnerabilities.push(Vulnerability::new(
+                        VulnerabilitySeverity::Medium,
+                        VulnerabilityCategory::AccessControl,
+                        "Mutable NFT Metadata".to_string(),
+                        "Token metadata can be changed after minting".to_string(),
+                        idx + 1,
+                        line.to_string(),
+                        "Consider making metadata immutable or clearly document mutability risks".to_string(),
+                    ));
                 }
             }
         }
@@ -630,15 +630,15 @@ impl AdvancedAnalyzer {
                     );
 
                     if !has_validation {
-                        vulnerabilities.push(Vulnerability {
-                            severity: VulnerabilitySeverity::Medium,
-                            category: VulnerabilityCategory::AccessControl,
-                            title: "Uncapped NFT Royalty".to_string(),
-                            description: "Royalty percentage lacks upper bound validation".to_string(),
-                            line_number: idx + 1,
-                            code_snippet: line.to_string(),
-                            recommendation: "Add require() to cap royalty percentage at 100% (10000 basis points)".to_string(),
-                        });
+                        vulnerabilities.push(Vulnerability::new(
+                            VulnerabilitySeverity::Medium,
+                            VulnerabilityCategory::AccessControl,
+                            "Uncapped NFT Royalty".to_string(),
+                            "Royalty percentage lacks upper bound validation".to_string(),
+                            idx + 1,
+                            line.to_string(),
+                            "Add require() to cap royalty percentage at 100% (10000 basis points)".to_string(),
+                        ));
                     }
                 }
             }
@@ -695,15 +695,15 @@ impl AdvancedAnalyzer {
                 }
 
                 if has_call && has_state_update_after && !content.contains("nonReentrant") {
-                    vulnerabilities.push(Vulnerability {
-                        severity: VulnerabilitySeverity::Critical,
-                        category: VulnerabilityCategory::Reentrancy,
-                        title: "DAO Attack Pattern Detected".to_string(),
-                        description: "Classic DAO attack pattern: external call before balance update in withdraw function".to_string(),
-                        line_number: idx + 1,
-                        code_snippet: line.to_string(),
-                        recommendation: "Update balance before external call and use ReentrancyGuard".to_string(),
-                    });
+                    vulnerabilities.push(Vulnerability::high_confidence(
+                        VulnerabilitySeverity::Critical,
+                        VulnerabilityCategory::Reentrancy,
+                        "DAO Attack Pattern Detected".to_string(),
+                        "Classic DAO attack pattern: external call before balance update in withdraw function".to_string(),
+                        idx + 1,
+                        line.to_string(),
+                        "Update balance before external call and use ReentrancyGuard".to_string(),
+                    ));
                 }
             }
         }
@@ -724,15 +724,15 @@ impl AdvancedAnalyzer {
                     line.contains("target") || line.contains("implementation")) &&
                    !line.contains("require(") {
 
-                    vulnerabilities.push(Vulnerability {
-                        severity: VulnerabilitySeverity::Critical,
-                        category: VulnerabilityCategory::DelegateCalls,
-                        title: "Parity Wallet Bug Pattern".to_string(),
-                        description: "Delegatecall with potentially user-controlled address without validation".to_string(),
-                        line_number: idx + 1,
-                        code_snippet: line.to_string(),
-                        recommendation: "Whitelist allowed delegatecall targets and validate all addresses".to_string(),
-                    });
+                    vulnerabilities.push(Vulnerability::high_confidence(
+                        VulnerabilitySeverity::Critical,
+                        VulnerabilityCategory::DelegateCalls,
+                        "Parity Wallet Bug Pattern".to_string(),
+                        "Delegatecall with potentially user-controlled address without validation".to_string(),
+                        idx + 1,
+                        line.to_string(),
+                        "Whitelist allowed delegatecall targets and validate all addresses".to_string(),
+                    ));
                 }
             }
         }
@@ -754,15 +754,15 @@ impl AdvancedAnalyzer {
                 if (line.contains("balances[") || line.contains("_balances[")) &&
                    (line.contains("+=") || line.contains("-=") || line.contains("+") || line.contains("-")) {
 
-                    vulnerabilities.push(Vulnerability {
-                        severity: VulnerabilitySeverity::Critical,
-                        category: VulnerabilityCategory::ArithmeticIssues,
-                        title: "Token Integer Overflow Risk".to_string(),
-                        description: "Token balance arithmetic without SafeMath in pre-0.8.0 Solidity".to_string(),
-                        line_number: idx + 1,
-                        code_snippet: line.to_string(),
-                        recommendation: "Use SafeMath library or upgrade to Solidity 0.8.0+".to_string(),
-                    });
+                    vulnerabilities.push(Vulnerability::high_confidence(
+                        VulnerabilitySeverity::Critical,
+                        VulnerabilityCategory::ArithmeticIssues,
+                        "Token Integer Overflow Risk".to_string(),
+                        "Token balance arithmetic without SafeMath in pre-0.8.0 Solidity".to_string(),
+                        idx + 1,
+                        line.to_string(),
+                        "Use SafeMath library or upgrade to Solidity 0.8.0+".to_string(),
+                    ));
                 }
             }
         }
@@ -788,15 +788,15 @@ impl AdvancedAnalyzer {
                 };
 
                 if !is_checked && !next_line_checked {
-                    vulnerabilities.push(Vulnerability {
-                        severity: VulnerabilitySeverity::High,
-                        category: VulnerabilityCategory::UncheckedReturnValues,
-                        title: "Unchecked Low-Level Call".to_string(),
-                        description: "Low-level call return value not checked - silent failures possible".to_string(),
-                        line_number: idx + 1,
-                        code_snippet: line.to_string(),
-                        recommendation: "Check return value: (bool success, ) = target.call(...); require(success);".to_string(),
-                    });
+                    vulnerabilities.push(Vulnerability::new(
+                        VulnerabilitySeverity::High,
+                        VulnerabilityCategory::UncheckedReturnValues,
+                        "Unchecked Low-Level Call".to_string(),
+                        "Low-level call return value not checked - silent failures possible".to_string(),
+                        idx + 1,
+                        line.to_string(),
+                        "Check return value: (bool success, ) = target.call(...); require(success);".to_string(),
+                    ));
                 }
             }
         }
@@ -852,15 +852,15 @@ impl AdvancedAnalyzer {
                 );
 
                 if !has_access_control {
-                    vulnerabilities.push(Vulnerability {
-                        severity: VulnerabilitySeverity::Critical,
-                        category: VulnerabilityCategory::ProxyAdminVulnerability,
-                        title: "CRITICAL: Aevo-Pattern Proxy Vulnerability".to_string(),
-                        description: "Unprotected transferOwnership in proxy contract - exact pattern from $2.7M Aevo exploit".to_string(),
-                        line_number: idx + 1,
-                        code_snippet: line.to_string(),
-                        recommendation: "URGENT: Add onlyOwner/onlyAdmin modifier - this is a known exploit pattern".to_string(),
-                    });
+                    vulnerabilities.push(Vulnerability::high_confidence(
+                        VulnerabilitySeverity::Critical,
+                        VulnerabilityCategory::ProxyAdminVulnerability,
+                        "CRITICAL: Aevo-Pattern Proxy Vulnerability".to_string(),
+                        "Unprotected transferOwnership in proxy contract - exact pattern from $2.7M Aevo exploit".to_string(),
+                        idx + 1,
+                        line.to_string(),
+                        "URGENT: Add onlyOwner/onlyAdmin modifier - this is a known exploit pattern".to_string(),
+                    ));
                 }
             }
         }
@@ -877,15 +877,15 @@ impl AdvancedAnalyzer {
                     );
 
                     if !has_protection {
-                        vulnerabilities.push(Vulnerability {
-                            severity: VulnerabilitySeverity::Critical,
-                            category: VulnerabilityCategory::OracleManipulation,
-                            title: "Unprotected Oracle Configuration (Aevo Pattern)".to_string(),
-                            description: "Oracle configuration functions must be protected - Aevo exploit modified oracle to manipulate prices".to_string(),
-                            line_number: idx + 1,
-                            code_snippet: line.to_string(),
-                            recommendation: "Add governance/timelock protection for oracle modifications".to_string(),
-                        });
+                        vulnerabilities.push(Vulnerability::high_confidence(
+                            VulnerabilitySeverity::Critical,
+                            VulnerabilityCategory::OracleManipulation,
+                            "Unprotected Oracle Configuration (Aevo Pattern)".to_string(),
+                            "Oracle configuration functions must be protected - Aevo exploit modified oracle to manipulate prices".to_string(),
+                            idx + 1,
+                            line.to_string(),
+                            "Add governance/timelock protection for oracle modifications".to_string(),
+                        ));
                     }
                 }
             }
@@ -945,15 +945,15 @@ impl AdvancedAnalyzer {
                     }
 
                     if state_change_after {
-                        vulnerabilities.push(Vulnerability {
-                            severity: VulnerabilitySeverity::Critical,
-                            category: VulnerabilityCategory::CallbackReentrancy,
-                            title: "CRITICAL: Omni-Pattern Callback Reentrancy".to_string(),
-                            description: "State changes after safeTransferFrom enable onERC721Received reentrancy - exact $1.43M Omni exploit pattern".to_string(),
-                            line_number: idx + 1,
-                            code_snippet: line.to_string(),
-                            recommendation: "URGENT: Add ReentrancyGuard OR move all state changes before safeTransferFrom".to_string(),
-                        });
+                        vulnerabilities.push(Vulnerability::high_confidence(
+                            VulnerabilitySeverity::Critical,
+                            VulnerabilityCategory::CallbackReentrancy,
+                            "CRITICAL: Omni-Pattern Callback Reentrancy".to_string(),
+                            "State changes after safeTransferFrom enable onERC721Received reentrancy - exact $1.43M Omni exploit pattern".to_string(),
+                            idx + 1,
+                            line.to_string(),
+                            "URGENT: Add ReentrancyGuard OR move all state changes before safeTransferFrom".to_string(),
+                        ));
                     }
                 }
             }
@@ -984,15 +984,15 @@ impl AdvancedAnalyzer {
                 );
 
                 if !has_validation {
-                    vulnerabilities.push(Vulnerability {
-                        severity: VulnerabilitySeverity::Critical,
-                        category: VulnerabilityCategory::InputValidationFailure,
-                        title: format!("CRITICAL: Unchecked Calldata in {}", func_name),
-                        description: "Calldata parameter without validation - #1 exploit vector (34.6% of hacks)".to_string(),
-                        line_number: idx + 1,
-                        code_snippet: line.to_string(),
-                        recommendation: "Decode and validate ALL calldata inputs before processing".to_string(),
-                    });
+                    vulnerabilities.push(Vulnerability::high_confidence(
+                        VulnerabilitySeverity::Critical,
+                        VulnerabilityCategory::InputValidationFailure,
+                        format!("CRITICAL: Unchecked Calldata in {}", func_name),
+                        "Calldata parameter without validation - #1 exploit vector (34.6% of hacks)".to_string(),
+                        idx + 1,
+                        line.to_string(),
+                        "Decode and validate ALL calldata inputs before processing".to_string(),
+                    ));
                 }
             }
         }
@@ -1013,15 +1013,15 @@ impl AdvancedAnalyzer {
                 );
 
                 if !has_length_check {
-                    vulnerabilities.push(Vulnerability {
-                        severity: VulnerabilitySeverity::High,
-                        category: VulnerabilityCategory::InputValidationFailure,
-                        title: format!("Missing Array Length Validation in {}", func_name),
-                        description: "Array parameter without length validation - enables DoS and manipulation".to_string(),
-                        line_number: idx + 1,
-                        code_snippet: line.to_string(),
-                        recommendation: "Add require(array.length > 0 && array.length <= MAX_LENGTH)".to_string(),
-                    });
+                    vulnerabilities.push(Vulnerability::new(
+                        VulnerabilitySeverity::High,
+                        VulnerabilityCategory::InputValidationFailure,
+                        format!("Missing Array Length Validation in {}", func_name),
+                        "Array parameter without length validation - enables DoS and manipulation".to_string(),
+                        idx + 1,
+                        line.to_string(),
+                        "Add require(array.length > 0 && array.length <= MAX_LENGTH)".to_string(),
+                    ));
                 }
             }
         }
@@ -1051,15 +1051,15 @@ impl AdvancedAnalyzer {
                 );
 
                 if !has_nonce_mapping || !uses_nonce {
-                    vulnerabilities.push(Vulnerability {
-                        severity: VulnerabilitySeverity::Critical,
-                        category: VulnerabilityCategory::SignatureReplay,
-                        title: "Signature Replay Attack Risk".to_string(),
-                        description: "Signature verification without nonce tracking allows replay attacks".to_string(),
-                        line_number: idx + 1,
-                        code_snippet: line.to_string(),
-                        recommendation: "Implement nonce mapping and increment after each signature use".to_string(),
-                    });
+                    vulnerabilities.push(Vulnerability::high_confidence(
+                        VulnerabilitySeverity::Critical,
+                        VulnerabilityCategory::SignatureReplay,
+                        "Signature Replay Attack Risk".to_string(),
+                        "Signature verification without nonce tracking allows replay attacks".to_string(),
+                        idx + 1,
+                        line.to_string(),
+                        "Implement nonce mapping and increment after each signature use".to_string(),
+                    ));
                 }
 
                 // Missing chain ID
@@ -1068,15 +1068,15 @@ impl AdvancedAnalyzer {
                 );
 
                 if !uses_chainid {
-                    vulnerabilities.push(Vulnerability {
-                        severity: VulnerabilitySeverity::Critical,
-                        category: VulnerabilityCategory::CrossChainReplay,
-                        title: "Cross-Chain Signature Replay Risk".to_string(),
-                        description: "Signature verification without chain ID enables cross-chain replay attacks".to_string(),
-                        line_number: idx + 1,
-                        code_snippet: line.to_string(),
-                        recommendation: "Include block.chainid in EIP-712 domain separator".to_string(),
-                    });
+                    vulnerabilities.push(Vulnerability::high_confidence(
+                        VulnerabilitySeverity::Critical,
+                        VulnerabilityCategory::CrossChainReplay,
+                        "Cross-Chain Signature Replay Risk".to_string(),
+                        "Signature verification without chain ID enables cross-chain replay attacks".to_string(),
+                        idx + 1,
+                        line.to_string(),
+                        "Include block.chainid in EIP-712 domain separator".to_string(),
+                    ));
                 }
             }
         }
@@ -1098,15 +1098,15 @@ impl AdvancedAnalyzer {
                 let has_deadline = line.contains("deadline");
 
                 if !has_slippage || !has_deadline {
-                    vulnerabilities.push(Vulnerability {
-                        severity: VulnerabilitySeverity::Critical,
-                        category: VulnerabilityCategory::MEVExploitable,
-                        title: "MEV Sandwich Attack Vulnerability".to_string(),
-                        description: "Swap without slippage+deadline protection - vulnerable to $675M MEV attack surface".to_string(),
-                        line_number: idx + 1,
-                        code_snippet: line.to_string(),
-                        recommendation: "Add both minAmountOut AND deadline parameters, verify deadline <= block.timestamp".to_string(),
-                    });
+                    vulnerabilities.push(Vulnerability::high_confidence(
+                        VulnerabilitySeverity::Critical,
+                        VulnerabilityCategory::MEVExploitable,
+                        "MEV Sandwich Attack Vulnerability".to_string(),
+                        "Swap without slippage+deadline protection - vulnerable to $675M MEV attack surface".to_string(),
+                        idx + 1,
+                        line.to_string(),
+                        "Add both minAmountOut AND deadline parameters, verify deadline <= block.timestamp".to_string(),
+                    ));
                 }
             }
         }
@@ -1124,15 +1124,15 @@ impl AdvancedAnalyzer {
                 );
 
                 if !has_mev_protection {
-                    vulnerabilities.push(Vulnerability {
-                        severity: VulnerabilitySeverity::High,
-                        category: VulnerabilityCategory::MEVExploitable,
-                        title: "Public Liquidation MEV Target".to_string(),
-                        description: "Public liquidation function is prime MEV target - bots will front-run profitable liquidations".to_string(),
-                        line_number: idx + 1,
-                        code_snippet: line.to_string(),
-                        recommendation: "Consider MEV protection: private mempool, Flashbots, or liquidation auctions".to_string(),
-                    });
+                    vulnerabilities.push(Vulnerability::new(
+                        VulnerabilitySeverity::High,
+                        VulnerabilityCategory::MEVExploitable,
+                        "Public Liquidation MEV Target".to_string(),
+                        "Public liquidation function is prime MEV target - bots will front-run profitable liquidations".to_string(),
+                        idx + 1,
+                        line.to_string(),
+                        "Consider MEV protection: private mempool, Flashbots, or liquidation auctions".to_string(),
+                    ));
                 }
             }
         }
@@ -1152,15 +1152,15 @@ impl AdvancedAnalyzer {
         let has_1e8 = decimal_1e8.is_match(content);
 
         if has_1e18 && has_1e8 {
-            vulnerabilities.push(Vulnerability {
-                severity: VulnerabilitySeverity::Critical,
-                category: VulnerabilityCategory::DecimalPrecisionMismatch,
-                title: "CRITICAL: Mixed Decimal Precision (Aevo Pattern)".to_string(),
-                description: "Contract mixes 1e18 and 1e8 decimals - exact Aevo $2.7M exploit pattern".to_string(),
-                line_number: 1,
-                code_snippet: "Multiple decimal standards detected".to_string(),
-                recommendation: "Normalize ALL values to single precision (preferably 1e18) before any operations".to_string(),
-            });
+            vulnerabilities.push(Vulnerability::high_confidence(
+                VulnerabilitySeverity::Critical,
+                VulnerabilityCategory::DecimalPrecisionMismatch,
+                "CRITICAL: Mixed Decimal Precision (Aevo Pattern)".to_string(),
+                "Contract mixes 1e18 and 1e8 decimals - exact Aevo $2.7M exploit pattern".to_string(),
+                1,
+                "Multiple decimal standards detected".to_string(),
+                "Normalize ALL values to single precision (preferably 1e18) before any operations".to_string(),
+            ));
         }
 
         // Division before multiplication in pricing (precision loss)
@@ -1170,15 +1170,456 @@ impl AdvancedAnalyzer {
 
         for (idx, line) in content.lines().enumerate() {
             if price_calc_pattern.is_match(line) {
-                vulnerabilities.push(Vulnerability {
-                    severity: VulnerabilitySeverity::High,
-                    category: VulnerabilityCategory::PrecisionLoss,
-                    title: "Precision Loss in Price Calculation".to_string(),
-                    description: "Division before multiplication loses precision in price/value calculations".to_string(),
-                    line_number: idx + 1,
-                    code_snippet: line.to_string(),
-                    recommendation: "Always multiply before dividing: (a * b) / c not (a / c) * b".to_string(),
-                });
+                vulnerabilities.push(Vulnerability::new(
+                    VulnerabilitySeverity::High,
+                    VulnerabilityCategory::PrecisionLoss,
+                    "Precision Loss in Price Calculation".to_string(),
+                    "Division before multiplication loses precision in price/value calculations".to_string(),
+                    idx + 1,
+                    line.to_string(),
+                    "Always multiply before dividing: (a * b) / c not (a / c) * b".to_string(),
+                ));
+            }
+        }
+
+        vulnerabilities
+    }
+
+    // ============================================================================
+    // 2025 OWASP SMART CONTRACT TOP 10 ADVANCED ANALYSIS
+    // Enhanced detection for recent exploits
+    // ============================================================================
+
+    /// Analyze 2025 OWASP Top 10 patterns with deep control flow analysis
+    pub fn analyze_owasp_2025_patterns(&self, content: &str) -> Vec<Vulnerability> {
+        let mut vulnerabilities = Vec::new();
+
+        // Flash Loan Attack patterns (OWASP #4)
+        vulnerabilities.extend(self.detect_flash_loan_patterns(content));
+
+        // Logic Error patterns (OWASP #2)
+        vulnerabilities.extend(self.detect_logic_error_patterns(content));
+
+        // Meta-transaction/Forwarder patterns (KiloEx)
+        vulnerabilities.extend(self.detect_meta_transaction_patterns(content));
+
+        // Unchecked math patterns (Cetus)
+        vulnerabilities.extend(self.detect_unchecked_math_patterns(content));
+
+        // Governance attack patterns
+        vulnerabilities.extend(self.detect_governance_attack_patterns(content));
+
+        // Bridge vulnerability patterns
+        vulnerabilities.extend(self.detect_bridge_vulnerability_patterns(content));
+
+        vulnerabilities
+    }
+
+    // Flash Loan Attack Detection (OWASP #4 - $33.8M in 2024)
+    fn detect_flash_loan_patterns(&self, content: &str) -> Vec<Vulnerability> {
+        let mut vulnerabilities = Vec::new();
+
+        // Check for flash loan callback without proper validation
+        let callback_pattern = Regex::new(
+            r"function\s+(executeOperation|onFlashLoan|uniswapV\d+Call|pancakeCall)\s*\([^)]*\)"
+        ).unwrap();
+
+        for (idx, line) in content.lines().enumerate() {
+            if callback_pattern.is_match(line) {
+                let func_body: Vec<&str> = content.lines().skip(idx).take(30).collect();
+
+                // Check for initiator validation
+                let has_initiator_check = func_body.iter().any(|l|
+                    l.contains("initiator") && (l.contains("require") || l.contains("==") || l.contains("if"))
+                );
+
+                // Check for msg.sender validation (lending pool)
+                let has_sender_check = func_body.iter().any(|l|
+                    l.contains("msg.sender") && (l.contains("POOL") || l.contains("lendingPool") || l.contains("require"))
+                );
+
+                if !has_initiator_check || !has_sender_check {
+                    vulnerabilities.push(Vulnerability::high_confidence(
+                        VulnerabilitySeverity::Critical,
+                        VulnerabilityCategory::FlashLoanAttack,
+                        "Flash Loan Callback Missing Validation".to_string(),
+                        "Flash loan callback lacks proper initiator/sender validation - enables arbitrary calls".to_string(),
+                        idx + 1,
+                        line.to_string(),
+                        "Add: require(msg.sender == POOL); require(initiator == address(this));".to_string(),
+                    ));
+                }
+            }
+        }
+
+        // Detect price manipulation via balance queries
+        let balance_price_pattern = Regex::new(r"balanceOf\([^)]*\).*price|price.*balanceOf").unwrap();
+
+        for (idx, line) in content.lines().enumerate() {
+            if balance_price_pattern.is_match(line) && !content.contains("TWAP") && !content.contains("Chainlink") {
+                vulnerabilities.push(Vulnerability::high_confidence(
+                    VulnerabilitySeverity::Critical,
+                    VulnerabilityCategory::FlashLoanAttack,
+                    "Flash Loan Price Manipulation Vector".to_string(),
+                    "Using balanceOf for pricing is manipulable via flash loans".to_string(),
+                    idx + 1,
+                    line.to_string(),
+                    "Use TWAP oracles or Chainlink price feeds instead".to_string(),
+                ));
+            }
+        }
+
+        vulnerabilities
+    }
+
+    // Logic Error Detection (OWASP #2 - $63.8M in 2024)
+    fn detect_logic_error_patterns(&self, content: &str) -> Vec<Vulnerability> {
+        let mut vulnerabilities = Vec::new();
+
+        // First depositor attack in vaults
+        if content.contains("ERC4626") || content.contains("Vault") {
+            let has_virtual_shares = content.contains("INITIAL_SHARES") ||
+                                     content.contains("_decimalsOffset") ||
+                                     content.contains("10 **");
+
+            let mint_pattern = Regex::new(r"function\s+deposit\s*\(").unwrap();
+
+            for (idx, line) in content.lines().enumerate() {
+                if mint_pattern.is_match(line) {
+                    let func_body: Vec<&str> = content.lines().skip(idx).take(20).collect();
+                    let has_zero_check = func_body.iter().any(|l|
+                        l.contains("totalSupply") && (l.contains("== 0") || l.contains("> 0"))
+                    );
+
+                    if has_zero_check && !has_virtual_shares {
+                        vulnerabilities.push(Vulnerability::high_confidence(
+                            VulnerabilitySeverity::Critical,
+                            VulnerabilityCategory::LogicError,
+                            "First Depositor Attack Vector (Vault)".to_string(),
+                            "Vault has zero-supply special case without virtual shares protection".to_string(),
+                            idx + 1,
+                            line.to_string(),
+                            "Add virtual shares offset: shares = assets + INITIAL_OFFSET".to_string(),
+                        ));
+                    }
+                }
+            }
+        }
+
+        // Incorrect state update order (CEI violation)
+        let transfer_pattern = Regex::new(r"\.call\{value:|\.transfer\(|safeTransfer").unwrap();
+        let state_update_pattern = Regex::new(r"\w+\s*=\s*[^=]|\w+\[.*\]\s*=").unwrap();
+
+        let lines: Vec<&str> = content.lines().collect();
+        for (idx, line) in lines.iter().enumerate() {
+            if transfer_pattern.is_match(line) {
+                // Check if state updates happen AFTER this transfer
+                for future_idx in (idx + 1)..lines.len().min(idx + 10) {
+                    let future_line = lines[future_idx];
+                    if future_line.trim() == "}" {
+                        break;
+                    }
+                    if state_update_pattern.is_match(future_line) &&
+                       !future_line.contains("==") &&
+                       !future_line.contains("memory") &&
+                       (future_line.contains("balance") || future_line.contains("amount") ||
+                        future_line.contains("shares") || future_line.contains("debt")) {
+
+                        // Check if there's a reentrancy guard
+                        if !content.contains("nonReentrant") && !content.contains("ReentrancyGuard") {
+                            vulnerabilities.push(Vulnerability::high_confidence(
+                                VulnerabilitySeverity::Critical,
+                                VulnerabilityCategory::LogicError,
+                                "CEI Violation - State After External Call".to_string(),
+                                "State modification after external call without reentrancy guard".to_string(),
+                                idx + 1,
+                                line.to_string(),
+                                "Move state updates before external calls or add ReentrancyGuard".to_string(),
+                            ));
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        vulnerabilities
+    }
+
+    // Meta-Transaction / Trusted Forwarder Patterns (KiloEx $7.4M)
+    fn detect_meta_transaction_patterns(&self, content: &str) -> Vec<Vulnerability> {
+        let mut vulnerabilities = Vec::new();
+
+        // Check for MinimalForwarder usage
+        if content.contains("MinimalForwarder") || content.contains("ForwardRequest") {
+            // Check for proper signature validation
+            let execute_pattern = Regex::new(r"function\s+execute\s*\(").unwrap();
+
+            for (idx, line) in content.lines().enumerate() {
+                if execute_pattern.is_match(line) {
+                    let func_body: Vec<&str> = content.lines().skip(idx).take(25).collect();
+
+                    let has_signature_check = func_body.iter().any(|l|
+                        l.contains("ecrecover") || l.contains("ECDSA") || l.contains("verify")
+                    );
+
+                    let has_nonce_increment = func_body.iter().any(|l|
+                        l.contains("nonce") && (l.contains("++") || l.contains("+= 1"))
+                    );
+
+                    if !has_signature_check {
+                        vulnerabilities.push(Vulnerability::high_confidence(
+                            VulnerabilitySeverity::Critical,
+                            VulnerabilityCategory::MetaTransactionVulnerability,
+                            "CRITICAL: KiloEx-Pattern Forwarder Exploit".to_string(),
+                            "Forwarder execute() lacks signature verification - KiloEx $7.4M exploit".to_string(),
+                            idx + 1,
+                            line.to_string(),
+                            "Verify signature matches (from, to, value, gas, nonce, data) hash".to_string(),
+                        ));
+                    }
+
+                    if !has_nonce_increment {
+                        vulnerabilities.push(Vulnerability::new(
+                            VulnerabilitySeverity::High,
+                            VulnerabilityCategory::MetaTransactionVulnerability,
+                            "Meta-Transaction Replay Risk".to_string(),
+                            "Execute function doesn't increment nonce - enables replay attacks".to_string(),
+                            idx + 1,
+                            line.to_string(),
+                            "Increment nonce after successful execution: _nonces[from]++".to_string(),
+                        ));
+                    }
+                }
+            }
+        }
+
+        // Check for ERC2771Context issues
+        if content.contains("_msgSender()") || content.contains("ERC2771Context") {
+            // Check if trusted forwarder can be manipulated
+            let set_forwarder = Regex::new(r"function\s+set\w*[Ff]orwarder").unwrap();
+
+            for (idx, line) in content.lines().enumerate() {
+                if set_forwarder.is_match(line) {
+                    vulnerabilities.push(Vulnerability::new(
+                        VulnerabilitySeverity::High,
+                        VulnerabilityCategory::TrustedForwarderBypass,
+                        "Mutable Trusted Forwarder".to_string(),
+                        "Trusted forwarder can be changed - enables meta-tx hijacking".to_string(),
+                        idx + 1,
+                        line.to_string(),
+                        "Make trustedForwarder immutable, set only in constructor".to_string(),
+                    ));
+                }
+            }
+        }
+
+        vulnerabilities
+    }
+
+    // Unchecked Math Operations (Cetus $223M Pattern)
+    fn detect_unchecked_math_patterns(&self, content: &str) -> Vec<Vulnerability> {
+        let mut vulnerabilities = Vec::new();
+
+        // Check for custom safe math implementations
+        let custom_math_pattern = Regex::new(
+            r"function\s+\w*(safe|checked|overflow)\w*(Add|Sub|Mul|Div|Shl|Shr)\w*\s*\("
+        ).unwrap();
+
+        for (idx, line) in content.lines().enumerate() {
+            if custom_math_pattern.is_match(line) {
+                vulnerabilities.push(Vulnerability::new(
+                    VulnerabilitySeverity::High,
+                    VulnerabilityCategory::UncheckedMathOperation,
+                    "Custom Safe Math Implementation (Audit Required)".to_string(),
+                    "Custom overflow checks found - Cetus $223M used flawed custom checks".to_string(),
+                    idx + 1,
+                    line.to_string(),
+                    "Use battle-tested libraries (OpenZeppelin) or Solidity 0.8+ built-ins".to_string(),
+                ));
+            }
+        }
+
+        // Check for bit shift operations in critical calculations
+        let shift_in_calc_pattern = Regex::new(
+            r"(liquidity|price|amount|value|shares)\w*\s*=.*<<|>>\s*\d+"
+        ).unwrap();
+
+        for (idx, line) in content.lines().enumerate() {
+            if shift_in_calc_pattern.is_match(line) {
+                // Check if it's in unchecked block
+                let prev_lines: Vec<&str> = content.lines().take(idx).collect();
+                let in_unchecked = prev_lines.iter().rev().take(10).any(|l| l.contains("unchecked"));
+
+                if in_unchecked {
+                    vulnerabilities.push(Vulnerability::high_confidence(
+                        VulnerabilitySeverity::Critical,
+                        VulnerabilityCategory::UncheckedMathOperation,
+                        "CRITICAL: Unchecked Bit Shift (Cetus Pattern)".to_string(),
+                        "Bit shift in unchecked block - exact Cetus $223M vulnerability".to_string(),
+                        idx + 1,
+                        line.to_string(),
+                        "Move bit shifts outside unchecked or add explicit bounds validation".to_string(),
+                    ));
+                }
+            }
+        }
+
+        // Check for sqrt/exp in financial calculations
+        let complex_math = Regex::new(r"(sqrt|exp|pow)\s*\(.*\)").unwrap();
+
+        for (idx, line) in content.lines().enumerate() {
+            if complex_math.is_match(line) {
+                let prev_lines: Vec<&str> = content.lines().take(idx).collect();
+                let in_unchecked = prev_lines.iter().rev().take(10).any(|l| l.contains("unchecked"));
+
+                if in_unchecked {
+                    vulnerabilities.push(Vulnerability::new(
+                        VulnerabilitySeverity::High,
+                        VulnerabilityCategory::UncheckedMathOperation,
+                        "Complex Math in Unchecked Block".to_string(),
+                        "sqrt/exp/pow operations in unchecked block can silently overflow".to_string(),
+                        idx + 1,
+                        line.to_string(),
+                        "Validate input bounds before complex math, add explicit overflow checks".to_string(),
+                    ));
+                }
+            }
+        }
+
+        vulnerabilities
+    }
+
+    // Governance Attack Patterns (Beanstalk $182M)
+    fn detect_governance_attack_patterns(&self, content: &str) -> Vec<Vulnerability> {
+        let mut vulnerabilities = Vec::new();
+
+        // Check for governance voting functions
+        let vote_pattern = Regex::new(r"function\s+(castVote|vote|propose)\w*\s*\(").unwrap();
+
+        for (idx, line) in content.lines().enumerate() {
+            if vote_pattern.is_match(line) {
+                let func_body: Vec<&str> = content.lines().skip(idx).take(20).collect();
+
+                // Check for flash loan protection
+                let has_snapshot = func_body.iter().any(|l|
+                    l.contains("snapshot") || l.contains("checkpoint") ||
+                    l.contains("getPastVotes") || l.contains("block.number - 1")
+                );
+
+                let has_timelock = content.contains("TimelockController") ||
+                                   content.contains("timelock") ||
+                                   content.contains("delay");
+
+                if !has_snapshot && !has_timelock {
+                    vulnerabilities.push(Vulnerability::high_confidence(
+                        VulnerabilitySeverity::Critical,
+                        VulnerabilityCategory::GovernanceAttack,
+                        "Flash Loan Governance Attack (Beanstalk Pattern)".to_string(),
+                        "Voting without snapshot allows flash loan vote manipulation - Beanstalk $182M".to_string(),
+                        idx + 1,
+                        line.to_string(),
+                        "Use getPastVotes with snapshot block, add proposal timelock".to_string(),
+                    ));
+                }
+            }
+        }
+
+        // Check for emergency functions
+        let emergency_pattern = Regex::new(r"function\s+emergency\w*\s*\([^)]*\)\s+(external|public)").unwrap();
+
+        for (idx, line) in content.lines().enumerate() {
+            if emergency_pattern.is_match(line) {
+                let func_body: Vec<&str> = content.lines().skip(idx).take(10).collect();
+
+                let has_multisig = func_body.iter().any(|l|
+                    l.contains("multisig") || l.contains("onlyOwner") || l.contains("onlyRole")
+                );
+
+                let has_timelock = func_body.iter().any(|l|
+                    l.contains("timelock") || l.contains("delay") || l.contains("cooldown")
+                );
+
+                if !has_multisig || !has_timelock {
+                    vulnerabilities.push(Vulnerability::new(
+                        VulnerabilitySeverity::High,
+                        VulnerabilityCategory::GovernanceAttack,
+                        "Emergency Function Without Safeguards".to_string(),
+                        "Emergency function lacks multi-sig or timelock protection".to_string(),
+                        idx + 1,
+                        line.to_string(),
+                        "Require multi-sig AND timelock for emergency functions".to_string(),
+                    ));
+                }
+            }
+        }
+
+        vulnerabilities
+    }
+
+    // Bridge Vulnerability Patterns
+    fn detect_bridge_vulnerability_patterns(&self, content: &str) -> Vec<Vulnerability> {
+        let mut vulnerabilities = Vec::new();
+
+        // Check for cross-chain message handlers
+        let message_handler = Regex::new(
+            r"function\s+(lzReceive|_nonblockingLzReceive|receiveWormholeMessages?|_execute)\s*\("
+        ).unwrap();
+
+        for (idx, line) in content.lines().enumerate() {
+            if message_handler.is_match(line) {
+                let func_body: Vec<&str> = content.lines().skip(idx).take(25).collect();
+
+                // Check for source chain validation
+                let has_chain_check = func_body.iter().any(|l|
+                    l.contains("srcChainId") || l.contains("sourceChain") ||
+                    l.contains("trustedRemote") || l.contains("_srcChainId")
+                );
+
+                // Check for source address validation
+                let has_address_check = func_body.iter().any(|l|
+                    l.contains("srcAddress") || l.contains("_srcAddress") ||
+                    l.contains("trustedRemote[")
+                );
+
+                if !has_chain_check || !has_address_check {
+                    vulnerabilities.push(Vulnerability::high_confidence(
+                        VulnerabilitySeverity::Critical,
+                        VulnerabilityCategory::BridgeVulnerability,
+                        "Bridge Source Validation Missing".to_string(),
+                        "Cross-chain message handler lacks source chain/address verification".to_string(),
+                        idx + 1,
+                        line.to_string(),
+                        "Validate srcChainId AND trustedRemote[srcChainId] == srcAddress".to_string(),
+                    ));
+                }
+            }
+        }
+
+        // Check for bridge claim functions
+        let claim_pattern = Regex::new(r"function\s+\w*(claim|withdraw|redeem)\w*\s*\([^)]*proof").unwrap();
+
+        for (idx, line) in content.lines().enumerate() {
+            if claim_pattern.is_match(line) {
+                let func_body: Vec<&str> = content.lines().skip(idx).take(20).collect();
+
+                // Check for replay protection
+                let has_replay_check = func_body.iter().any(|l|
+                    l.contains("claimed[") || l.contains("processed[") ||
+                    l.contains("used[") || l.contains("nonce")
+                );
+
+                if !has_replay_check {
+                    vulnerabilities.push(Vulnerability::high_confidence(
+                        VulnerabilitySeverity::Critical,
+                        VulnerabilityCategory::BridgeVulnerability,
+                        "Bridge Claim Replay Attack".to_string(),
+                        "Bridge claim function lacks replay protection - same proof can be used twice".to_string(),
+                        idx + 1,
+                        line.to_string(),
+                        "Mark proofs as claimed: require(!claimed[hash]); claimed[hash] = true;".to_string(),
+                    ));
+                }
             }
         }
 

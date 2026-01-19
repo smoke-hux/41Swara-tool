@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::collections::HashMap;
 use colored::*;
 
-use crate::vulnerabilities::{Vulnerability, VulnerabilitySeverity};
+use crate::vulnerabilities::{Vulnerability, VulnerabilitySeverity, VulnerabilityConfidence};
 
 pub struct VulnerabilityReporter {
     format: String,
@@ -123,14 +123,14 @@ impl VulnerabilityReporter {
     }
     
     fn print_text_results(&self, file_path: &PathBuf, vulnerabilities: &[Vulnerability]) {
-        println!("\n{} {} (Line-by-line Analysis)", 
+        println!("\n{} {} (Line-by-line Analysis)",
             "🔍 SCAN RESULTS FOR".bold().bright_blue(),
             file_path.display().to_string().bright_white().bold()
         );
         println!("{}", "━".repeat(80).bright_blue());
-        
+
         let mut current_category = None;
-        
+
         for vuln in vulnerabilities {
             // Print category header if it's a new category
             if current_category.as_ref() != Some(&vuln.category) {
@@ -140,36 +140,89 @@ impl VulnerabilityReporter {
                 );
                 current_category = Some(vuln.category.clone());
             }
-            
-            // Print vulnerability details
-            println!("\n  {} {} [Line {}]", 
+
+            // Format location string with line range if applicable
+            let location = if let Some(end_line) = vuln.end_line_number {
+                if end_line > vuln.line_number {
+                    format!("Lines {}-{}", vuln.line_number, end_line)
+                } else {
+                    format!("Line {}", vuln.line_number)
+                }
+            } else {
+                format!("Line {}", vuln.line_number)
+            };
+
+            // Print vulnerability details with confidence indicator
+            let confidence_icon = match vuln.confidence {
+                VulnerabilityConfidence::High => "●",
+                VulnerabilityConfidence::Medium => "◐",
+                VulnerabilityConfidence::Low => "○",
+            };
+
+            println!("\n  {} {} {} [{}]",
                 self.get_severity_icon(&vuln.severity),
+                confidence_icon.bright_white(),
                 vuln.title.color(vuln.severity.color()).bold(),
-                vuln.line_number.to_string().bright_white().bold()
+                location.bright_white().bold()
             );
-            
-            println!("     {}: {}", 
-                "Description".bright_cyan().bold(), 
+
+            println!("     {}: {}",
+                "Description".bright_cyan().bold(),
                 vuln.description
             );
-            
-            println!("     {}: {}", 
-                "Code".bright_magenta().bold(),
-                vuln.code_snippet.bright_white()
+
+            // Print context if available
+            if let Some(ref context_before) = vuln.context_before {
+                println!("     {}:", "Context".bright_blue().bold());
+                for (i, line) in context_before.lines().enumerate() {
+                    let line_num = vuln.line_number.saturating_sub(context_before.lines().count() - i);
+                    println!("       {} │ {}",
+                        format!("{:>4}", line_num).dimmed(),
+                        line.dimmed()
+                    );
+                }
+            }
+
+            // Print the vulnerable code with line number
+            println!("     {}:", "Vulnerable Code".bright_magenta().bold());
+            println!("       {} │ {}",
+                format!("{:>4}", vuln.line_number).bright_red(),
+                vuln.code_snippet.bright_white().bold()
             );
-            
-            println!("     {}: {}", 
-                "Recommendation".bright_green().bold(), 
+
+            // Print context after if available
+            if let Some(ref context_after) = vuln.context_after {
+                for (i, line) in context_after.lines().enumerate() {
+                    let line_num = vuln.line_number + 1 + i;
+                    println!("       {} │ {}",
+                        format!("{:>4}", line_num).dimmed(),
+                        line.dimmed()
+                    );
+                }
+            }
+
+            println!("     {}: {}",
+                "Recommendation".bright_green().bold(),
                 vuln.recommendation
             );
-            
-            println!("     {}: {}", 
+
+            println!("     {}: {} | {}: {}",
                 "Severity".bright_red().bold(),
-                vuln.severity.as_str().color(vuln.severity.color()).bold()
+                vuln.severity.as_str().color(vuln.severity.color()).bold(),
+                "Confidence".bright_yellow().bold(),
+                self.get_confidence_str(&vuln.confidence)
             );
         }
-        
+
         println!("\n{}", "━".repeat(80).bright_blue());
+    }
+
+    fn get_confidence_str(&self, confidence: &VulnerabilityConfidence) -> ColoredString {
+        match confidence {
+            VulnerabilityConfidence::High => "High".bright_red().bold(),
+            VulnerabilityConfidence::Medium => "Medium".bright_yellow(),
+            VulnerabilityConfidence::Low => "Low".dimmed(),
+        }
     }
     
     fn print_json_results(&self, file_path: &PathBuf, vulnerabilities: &[Vulnerability]) {
