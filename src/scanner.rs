@@ -79,11 +79,6 @@ impl ContractScanner {
         has_interface && !has_contract
     }
 
-    // Check if this is an abstract contract
-    fn is_abstract_contract(&self, content: &str) -> bool {
-        content.contains("abstract contract")
-    }
-
     // Check if this is a library
     fn is_library(&self, content: &str) -> bool {
         let library_pattern = regex::Regex::new(r"^\s*library\s+\w+").unwrap();

@@ -307,7 +307,7 @@ mod tests {
         );
 
         let results = vec![(PathBuf::from("test.sol"), vec![vuln])];
-        let report = SarifReport::new(results, "0.2.0");
+        let report = SarifReport::new(results, "0.3.0");
 
         assert_eq!(report.version, "2.1.0");
         assert_eq!(report.runs.len(), 1);

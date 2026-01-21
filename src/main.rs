@@ -1,4 +1,4 @@
-//! 41Swara Smart Contract Security Scanner v0.2.0
+//! 41Swara Smart Contract Security Scanner v0.3.0
 //!
 //! High-performance vulnerability scanner for blockchain security researchers.
 //! Features parallel scanning, severity filtering, and multiple output formats.
@@ -23,6 +23,19 @@ mod project_scanner;
 mod advanced_analysis;
 mod abi_scanner;
 mod sarif;
+
+// Phase 1: AST-Based Analysis Engine
+mod ast;
+
+// Phase 2: DeFi-Specific Analyzers
+mod defi;
+
+
+// Phase 4: Performance & Caching
+mod cache;
+
+// Phase 5: Tool Integration
+mod integrations;
 
 use scanner::ContractScanner;
 use reporter::VulnerabilityReporter;
@@ -59,15 +72,15 @@ impl MinSeverity {
 
 #[derive(Parser)]
 #[command(name = "solidity-scanner")]
-#[command(version = "0.2.0")]
+#[command(version = "0.3.0")]
 #[command(author = "41Swara Security Team")]
 #[command(about = "High-performance smart contract vulnerability scanner for security researchers")]
 #[command(long_about = r#"
-41Swara Smart Contract Security Scanner v0.2.0
+41Swara Smart Contract Security Scanner v0.3.0
 
-A high-performance Rust-based security scanner designed for blockchain security
-researchers. Detects 60+ vulnerability patterns including real-world exploit
-patterns from $3.1B+ in DeFi losses.
+A fully offline, API-independent security scanner for blockchain researchers.
+Features AST-based analysis, DeFi-specific detectors, Slither/Foundry integration,
+and 100+ vulnerability patterns including real-world exploit patterns from $3.1B+ in DeFi losses.
 
 FEATURES:
   - Parallel scanning for 4-10x performance improvement
@@ -174,6 +187,39 @@ struct Args {
     /// Output file path (default: stdout)
     #[arg(short, long, value_name = "FILE")]
     output: Option<PathBuf>,
+
+    // ============================================================================
+    // NEW CLI OPTIONS (Phase 5: Tool Integration)
+    // ============================================================================
+
+    /// Combine results with Slither JSON output
+    #[arg(long, value_name = "PATH")]
+    slither_json: Option<PathBuf>,
+
+    /// Generate Foundry PoC tests for findings
+    #[arg(long)]
+    generate_poc: bool,
+
+
+    /// Run and correlate with Foundry test results
+    #[arg(long)]
+    foundry_correlate: bool,
+
+    /// Enable DeFi-specific analysis (AMM, lending, oracle, MEV)
+    #[arg(long)]
+    defi_analysis: bool,
+
+    /// Enable Phase 6 advanced detectors (ERC4626, Permit2, LayerZero, etc.)
+    #[arg(long)]
+    advanced_detectors: bool,
+
+    /// Enable incremental scanning with caching
+    #[arg(long)]
+    cache: bool,
+
+    /// Path to cache directory (default: .41swara_cache)
+    #[arg(long, value_name = "DIR")]
+    cache_dir: Option<PathBuf>,
 }
 
 fn main() {
@@ -205,7 +251,7 @@ fn main() {
 
     // Print scanner header (unless quiet mode)
     if !args.quiet && args.format != "json" && args.format != "sarif" {
-        println!("{}", "41Swara Smart Contract Scanner v0.2.0".bright_blue().bold());
+        println!("{}", "41Swara Smart Contract Scanner v0.3.0".bright_blue().bold());
         println!("{}", "High-performance security analysis for blockchain".bright_blue());
         println!("{}", "=".repeat(55).bright_blue());
     }
@@ -584,7 +630,7 @@ fn process_directory(args: &Args, dir: &PathBuf) -> i32 {
     // Generate output
     if args.format == "json" {
         let json_output = serde_json::json!({
-            "version": "0.2.0",
+            "version": "0.3.0",
             "files_scanned": sol_files.len(),
             "total_vulnerabilities": total_vulns,
             "min_severity_filter": format!("{:?}", args.min_severity),
@@ -602,7 +648,7 @@ fn process_directory(args: &Args, dir: &PathBuf) -> i32 {
             .iter()
             .map(|(path, vulns)| (path.clone(), vulns.clone()))
             .collect();
-        let sarif_report = SarifReport::new(sarif_results, "0.2.0");
+        let sarif_report = SarifReport::new(sarif_results, "0.3.0");
         println!("{}", serde_json::to_string_pretty(&sarif_report).unwrap());
     } else {
         // Text output
@@ -671,7 +717,7 @@ fn scan_file_structured_format(scanner: &ContractScanner, path: &PathBuf, args: 
 
             if args.format == "json" {
                 let json_output = serde_json::json!({
-                    "version": "0.2.0",
+                    "version": "0.3.0",
                     "files_scanned": 1,
                     "total_vulnerabilities": vulnerabilities.len(),
                     "min_severity_filter": format!("{:?}", args.min_severity),
@@ -683,7 +729,7 @@ fn scan_file_structured_format(scanner: &ContractScanner, path: &PathBuf, args: 
                 println!("{}", serde_json::to_string_pretty(&json_output).unwrap());
             } else if args.format == "sarif" {
                 let sarif_results = vec![(path.clone(), vulnerabilities)];
-                let sarif_report = SarifReport::new(sarif_results, "0.2.0");
+                let sarif_report = SarifReport::new(sarif_results, "0.3.0");
                 println!("{}", serde_json::to_string_pretty(&sarif_report).unwrap());
             }
         }
@@ -863,7 +909,7 @@ fn scan_abi_file(path: &PathBuf, args: &Args) {
                         println!("{}", serde_json::to_string_pretty(&vulnerabilities).unwrap());
                     } else if args.format == "sarif" {
                         let sarif_results = vec![(path.clone(), vulnerabilities)];
-                        let sarif_report = SarifReport::new(sarif_results, "0.2.0");
+                        let sarif_report = SarifReport::new(sarif_results, "0.3.0");
                         println!("{}", serde_json::to_string_pretty(&sarif_report).unwrap());
                     } else {
                         print_abi_vulnerabilities(&vulnerabilities, path);

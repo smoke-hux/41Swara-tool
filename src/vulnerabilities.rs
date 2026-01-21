@@ -65,21 +65,6 @@ impl Vulnerability {
         vuln
     }
 
-    /// Create a vulnerability with low confidence (may be false positive)
-    pub fn low_confidence(
-        severity: VulnerabilitySeverity,
-        category: VulnerabilityCategory,
-        title: String,
-        description: String,
-        line_number: usize,
-        code_snippet: String,
-        recommendation: String,
-    ) -> Self {
-        let mut vuln = Self::new(severity, category, title, description, line_number, code_snippet, recommendation);
-        vuln.confidence = VulnerabilityConfidence::Low;
-        vuln
-    }
-
     /// Add context lines around the vulnerability
     pub fn with_context(mut self, before: Option<String>, after: Option<String>) -> Self {
         self.context_before = before;
@@ -90,12 +75,6 @@ impl Vulnerability {
     /// Set end line for multi-line vulnerabilities
     pub fn with_end_line(mut self, end_line: usize) -> Self {
         self.end_line_number = Some(end_line);
-        self
-    }
-
-    /// Set confidence level
-    pub fn with_confidence(mut self, confidence: VulnerabilityConfidence) -> Self {
-        self.confidence = confidence;
         self
     }
 

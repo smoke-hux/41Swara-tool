@@ -1,6 +1,6 @@
 [package]
 name = "solidity_scanner"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 description = "High-performance smart contract vulnerability scanner for blockchain security researchers"
 authors = ["41Swara Security Team"]
@@ -38,6 +38,18 @@ git2 = "0.18"                 # Git diff mode for incremental scanning
 
 # File watching
 notify = "6.1"                # Watch mode for continuous scanning
+
+# AST-based analysis (Phase 1)
+tree-sitter = "0.20"          # Incremental parsing framework
+petgraph = "0.6"              # Graph data structures for CFG
+
+# Performance & caching (Phase 4)
+blake3 = "1.5"                # Fast hashing for file cache
+dashmap = "5.5"               # Concurrent hashmap for parallel scanning
+indicatif = "0.17"            # Progress bars for large scans
+
+# UUID generation for findings
+uuid = { version = "1.6", features = ["v4"] }
 
 [profile.release]
 lto = true                    # Link-time optimization

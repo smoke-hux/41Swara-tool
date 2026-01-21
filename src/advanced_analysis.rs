@@ -1625,6 +1625,770 @@ impl AdvancedAnalyzer {
 
         vulnerabilities
     }
+
+    // ============================================================================
+    // PHASE 6: NEW VULNERABILITY DETECTORS (2025)
+    // Priority detectors for emerging attack vectors
+    // ============================================================================
+
+    /// Analyze all Phase 6 vulnerability patterns
+    pub fn analyze_phase6_patterns(&self, content: &str) -> Vec<Vulnerability> {
+        let mut vulnerabilities = Vec::new();
+
+        vulnerabilities.extend(self.detect_erc4626_inflation_attack(content));
+        vulnerabilities.extend(self.detect_read_only_reentrancy(content));
+        vulnerabilities.extend(self.detect_permit2_risks(content));
+        vulnerabilities.extend(self.detect_layerzero_validation(content));
+        vulnerabilities.extend(self.detect_eip4337_vulnerabilities(content));
+        vulnerabilities.extend(self.detect_transient_storage_issues(content));
+        vulnerabilities.extend(self.detect_create2_collision(content));
+        vulnerabilities.extend(self.detect_merkle_tree_vulnerabilities(content));
+
+        vulnerabilities
+    }
+
+    // ERC4626 Inflation Attack (Critical)
+    // First depositor can manipulate share price to steal from later depositors
+    fn detect_erc4626_inflation_attack(&self, content: &str) -> Vec<Vulnerability> {
+        let mut vulnerabilities = Vec::new();
+
+        // Check if this is an ERC4626 vault
+        if !content.contains("ERC4626") && !content.contains("Vault") &&
+           !content.contains("convertToShares") && !content.contains("convertToAssets") {
+            return vulnerabilities;
+        }
+
+        // Check for virtual shares/assets offset (protection)
+        let has_virtual_offset = content.contains("_decimalsOffset") ||
+                                 content.contains("INITIAL_SHARES") ||
+                                 content.contains("VIRTUAL_OFFSET") ||
+                                 content.contains("10 ** _decimalsOffset()");
+
+        // Check for minimum deposit requirement
+        let has_min_deposit = content.contains("MIN_DEPOSIT") ||
+                             content.contains("minDeposit") ||
+                             (content.contains("require(assets") && content.contains(">="));
+
+        // Look for share calculation without protection
+        let share_calc_pattern = Regex::new(r"shares\s*=\s*assets\s*\*\s*totalSupply\s*/\s*totalAssets").unwrap();
+        let asset_calc_pattern = Regex::new(r"assets\s*=\s*shares\s*\*\s*totalAssets\s*/\s*totalSupply").unwrap();
+
+        for (idx, line) in content.lines().enumerate() {
+            if share_calc_pattern.is_match(line) || asset_calc_pattern.is_match(line) {
+                if !has_virtual_offset && !has_min_deposit {
+                    vulnerabilities.push(Vulnerability::high_confidence(
+                        VulnerabilitySeverity::Critical,
+                        VulnerabilityCategory::LogicError,
+                        "CRITICAL: ERC4626 Inflation Attack".to_string(),
+                        "Vault share calculation vulnerable to first depositor inflation attack. Attacker can donate assets after minimal deposit to inflate share price, causing rounding errors that steal from later depositors.".to_string(),
+                        idx + 1,
+                        line.to_string(),
+                        "Add virtual offset to shares/assets: _decimalsOffset() returning 3-6, or require minimum initial deposit of significant amount".to_string(),
+                    ));
+                }
+            }
+        }
+
+        // Also check convertToShares/convertToAssets functions
+        let convert_pattern = Regex::new(r"function\s+convertTo(Shares|Assets)\s*\(").unwrap();
+
+        for (idx, line) in content.lines().enumerate() {
+            if convert_pattern.is_match(line) {
+                let func_body: Vec<&str> = content.lines().skip(idx).take(15).collect();
+
+                // Check if there's division that could round to zero
+                let has_unsafe_div = func_body.iter().any(|l|
+                    l.contains("/ totalSupply") || l.contains("/ totalAssets") ||
+                    l.contains("/ supply") || l.contains("/ assets")
+                );
+
+                let has_zero_check = func_body.iter().any(|l|
+                    l.contains("supply == 0") || l.contains("totalSupply() == 0") ||
+                    l.contains("supply > 0")
+                );
+
+                if has_unsafe_div && has_zero_check && !has_virtual_offset {
+                    vulnerabilities.push(Vulnerability::high_confidence(
+                        VulnerabilitySeverity::Critical,
+                        VulnerabilityCategory::LogicError,
+                        "ERC4626 Zero Supply Edge Case".to_string(),
+                        "Special case for zero supply can be exploited via donation attack".to_string(),
+                        idx + 1,
+                        line.to_string(),
+                        "Use virtual shares offset instead of special-casing zero supply".to_string(),
+                    ));
+                }
+            }
+        }
+
+        vulnerabilities
+    }
+
+    // Read-Only Reentrancy (Critical)
+    // Exploits view functions during callback to get stale state
+    fn detect_read_only_reentrancy(&self, content: &str) -> Vec<Vulnerability> {
+        let mut vulnerabilities = Vec::new();
+
+        // Check for external calls that can trigger callbacks
+        let callback_triggers = [
+            "safeTransferFrom", "safeTransfer", "_safeMint",
+            ".call{", "IUniswapV3Pool", "ICurvePool",
+        ];
+
+        let has_callback_trigger = callback_triggers.iter().any(|t| content.contains(t));
+        if !has_callback_trigger {
+            return vulnerabilities;
+        }
+
+        // Check for view functions that read state
+        let view_pattern = Regex::new(r"function\s+(\w+)\s*\([^)]*\)\s+.*view").unwrap();
+        let mut view_functions: HashSet<String> = HashSet::new();
+
+        for captures in view_pattern.captures_iter(content) {
+            if let Some(name) = captures.get(1) {
+                view_functions.insert(name.as_str().to_string());
+            }
+        }
+
+        // Dangerous view functions that read pool state
+        let dangerous_views = [
+            "getPrice", "getRate", "get_virtual_price", "totalSupply",
+            "balanceOf", "getReserves", "slot0", "liquidity",
+            "convertToAssets", "convertToShares", "exchangeRate",
+        ];
+
+        // Check if contract has ReentrancyGuard
+        let has_reentrancy_guard = content.contains("ReentrancyGuard") ||
+                                   content.contains("nonReentrant");
+
+        // Look for state-reading patterns that could be exploited
+        let lines: Vec<&str> = content.lines().collect();
+
+        for (idx, line) in lines.iter().enumerate() {
+            // Check for external calls
+            if callback_triggers.iter().any(|t| line.contains(t)) {
+                // Look for view function calls near this line (before or after)
+                let context_start = idx.saturating_sub(10);
+                let context_end = (idx + 10).min(lines.len());
+
+                for check_idx in context_start..context_end {
+                    let check_line = lines[check_idx];
+
+                    // Check if dangerous view functions are called
+                    for view_fn in &dangerous_views {
+                        if check_line.contains(view_fn) && check_line.contains("(") {
+                            // Check if there's a lock mechanism
+                            if !has_reentrancy_guard && !content.contains("_locked") {
+                                vulnerabilities.push(Vulnerability::high_confidence(
+                                    VulnerabilitySeverity::Critical,
+                                    VulnerabilityCategory::Reentrancy,
+                                    "CRITICAL: Read-Only Reentrancy (Curve Pattern)".to_string(),
+                                    format!(
+                                        "{}() can return stale state during {} callback. Attacker can exploit price/rate discrepancy during reentrancy window.",
+                                        view_fn,
+                                        callback_triggers.iter().find(|t| line.contains(*t)).unwrap_or(&"callback")
+                                    ),
+                                    idx + 1,
+                                    line.to_string(),
+                                    "Add reentrancy lock that also protects view functions, or use 'staticcall' pattern to prevent callbacks".to_string(),
+                                ));
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Specific Curve read-only reentrancy pattern
+        if content.contains("get_virtual_price") || content.contains("ICurvePool") {
+            for (idx, line) in content.lines().enumerate() {
+                if line.contains("get_virtual_price") {
+                    vulnerabilities.push(Vulnerability::new(
+                        VulnerabilitySeverity::High,
+                        VulnerabilityCategory::Reentrancy,
+                        "Curve Read-Only Reentrancy Risk".to_string(),
+                        "get_virtual_price() is vulnerable to manipulation during remove_liquidity callback".to_string(),
+                        idx + 1,
+                        line.to_string(),
+                        "Use Curve's reentrancy lock or query price before/after liquidity operations".to_string(),
+                    ));
+                }
+            }
+        }
+
+        vulnerabilities
+    }
+
+    // Permit2 Integration Risks (High)
+    // Uniswap's Permit2 has unique security considerations
+    fn detect_permit2_risks(&self, content: &str) -> Vec<Vulnerability> {
+        let mut vulnerabilities = Vec::new();
+
+        // Check if Permit2 is used
+        if !content.contains("Permit2") && !content.contains("ISignatureTransfer") &&
+           !content.contains("IAllowanceTransfer") && !content.contains("permit2") {
+            return vulnerabilities;
+        }
+
+        // Check for signature-based transfers
+        let permit_transfer_pattern = Regex::new(
+            r"(permitTransferFrom|permitWitnessTransferFrom|permit\s*\()"
+        ).unwrap();
+
+        for (idx, line) in content.lines().enumerate() {
+            if permit_transfer_pattern.is_match(line) {
+                let func_body: Vec<&str> = content.lines().skip(idx).take(15).collect();
+
+                // Check for deadline validation
+                let has_deadline_check = func_body.iter().any(|l|
+                    l.contains("deadline") && (l.contains("require") || l.contains("if") || l.contains("<="))
+                );
+
+                // Check for nonce validation
+                let has_nonce_check = func_body.iter().any(|l|
+                    l.contains("nonce") && (l.contains("++") || l.contains("invalidate"))
+                );
+
+                if !has_deadline_check {
+                    vulnerabilities.push(Vulnerability::new(
+                        VulnerabilitySeverity::High,
+                        VulnerabilityCategory::SignatureReplay,
+                        "Permit2 Missing Deadline Check".to_string(),
+                        "Permit2 signature without deadline validation enables indefinite replay".to_string(),
+                        idx + 1,
+                        line.to_string(),
+                        "Verify permit.deadline >= block.timestamp before processing".to_string(),
+                    ));
+                }
+
+                if !has_nonce_check && line.contains("permitTransferFrom") {
+                    vulnerabilities.push(Vulnerability::new(
+                        VulnerabilitySeverity::High,
+                        VulnerabilityCategory::SignatureReplay,
+                        "Permit2 Nonce Not Invalidated".to_string(),
+                        "SignatureTransfer nonce may allow replay if not properly tracked".to_string(),
+                        idx + 1,
+                        line.to_string(),
+                        "Use unique nonces and verify they're consumed".to_string(),
+                    ));
+                }
+            }
+        }
+
+        // Check for AllowanceTransfer approval patterns
+        if content.contains("IAllowanceTransfer") || content.contains("allowance") {
+            let approve_pattern = Regex::new(r"approve\s*\([^)]*Permit2").unwrap();
+
+            for (idx, line) in content.lines().enumerate() {
+                if approve_pattern.is_match(line) || (line.contains("approve") && content.contains("Permit2")) {
+                    // Check for amount validation
+                    if line.contains("type(uint160).max") || line.contains("type(uint256).max") {
+                        vulnerabilities.push(Vulnerability::new(
+                            VulnerabilitySeverity::Medium,
+                            VulnerabilityCategory::AccessControl,
+                            "Unlimited Permit2 Approval".to_string(),
+                            "Max approval to Permit2 enables unlimited token transfers if signature is leaked".to_string(),
+                            idx + 1,
+                            line.to_string(),
+                            "Consider limited approvals with specific amounts and deadlines".to_string(),
+                        ));
+                    }
+                }
+            }
+        }
+
+        vulnerabilities
+    }
+
+    // LayerZero Message Validation (High)
+    // Cross-chain messaging security patterns
+    fn detect_layerzero_validation(&self, content: &str) -> Vec<Vulnerability> {
+        let mut vulnerabilities = Vec::new();
+
+        // Check if LayerZero is used
+        if !content.contains("LayerZero") && !content.contains("lzReceive") &&
+           !content.contains("LzApp") && !content.contains("ILayerZeroEndpoint") {
+            return vulnerabilities;
+        }
+
+        // Check _lzReceive implementation
+        let lz_receive_pattern = Regex::new(
+            r"function\s+(_lzReceive|lzReceive|_nonblockingLzReceive)\s*\("
+        ).unwrap();
+
+        for (idx, line) in content.lines().enumerate() {
+            if lz_receive_pattern.is_match(line) {
+                let func_body: Vec<&str> = content.lines().skip(idx).take(30).collect();
+
+                // Check for source chain ID validation
+                let has_chain_id_check = func_body.iter().any(|l|
+                    l.contains("_srcChainId") && (l.contains("require") || l.contains("if") || l.contains("trustedRemote"))
+                );
+
+                // Check for source address validation
+                let has_source_check = func_body.iter().any(|l|
+                    l.contains("trustedRemoteLookup") || l.contains("trustedRemote[") ||
+                    (l.contains("_srcAddress") && l.contains("require"))
+                );
+
+                // Check for payload length validation
+                let has_payload_check = func_body.iter().any(|l|
+                    l.contains("_payload.length") && (l.contains("require") || l.contains(">="))
+                );
+
+                if !has_chain_id_check {
+                    vulnerabilities.push(Vulnerability::high_confidence(
+                        VulnerabilitySeverity::Critical,
+                        VulnerabilityCategory::BridgeVulnerability,
+                        "LayerZero Missing Chain ID Validation".to_string(),
+                        "lzReceive doesn't validate source chain ID - accepts messages from any chain".to_string(),
+                        idx + 1,
+                        line.to_string(),
+                        "Add: require(trustedRemoteLookup[_srcChainId].length > 0)".to_string(),
+                    ));
+                }
+
+                if !has_source_check {
+                    vulnerabilities.push(Vulnerability::high_confidence(
+                        VulnerabilitySeverity::Critical,
+                        VulnerabilityCategory::BridgeVulnerability,
+                        "LayerZero Missing Source Address Validation".to_string(),
+                        "lzReceive doesn't validate source address - accepts messages from any contract".to_string(),
+                        idx + 1,
+                        line.to_string(),
+                        "Validate _srcAddress matches trustedRemoteLookup[_srcChainId]".to_string(),
+                    ));
+                }
+
+                if !has_payload_check {
+                    vulnerabilities.push(Vulnerability::new(
+                        VulnerabilitySeverity::Medium,
+                        VulnerabilityCategory::InputValidationFailure,
+                        "LayerZero Missing Payload Validation".to_string(),
+                        "Cross-chain payload not validated before decoding".to_string(),
+                        idx + 1,
+                        line.to_string(),
+                        "Validate payload length before abi.decode to prevent out-of-bounds".to_string(),
+                    ));
+                }
+            }
+        }
+
+        // Check for setTrustedRemote access control
+        let set_trusted_pattern = Regex::new(r"function\s+setTrustedRemote\w*\s*\(").unwrap();
+
+        for (idx, line) in content.lines().enumerate() {
+            if set_trusted_pattern.is_match(line) {
+                let func_body: Vec<&str> = content.lines().skip(idx).take(5).collect();
+
+                let has_access_control = func_body.iter().any(|l|
+                    l.contains("onlyOwner") || l.contains("onlyRole") || l.contains("onlyAdmin")
+                );
+
+                if !has_access_control {
+                    vulnerabilities.push(Vulnerability::high_confidence(
+                        VulnerabilitySeverity::Critical,
+                        VulnerabilityCategory::AccessControl,
+                        "Unprotected setTrustedRemote".to_string(),
+                        "Anyone can change trusted remote addresses, enabling cross-chain attack".to_string(),
+                        idx + 1,
+                        line.to_string(),
+                        "Add onlyOwner or appropriate access control modifier".to_string(),
+                    ));
+                }
+            }
+        }
+
+        vulnerabilities
+    }
+
+    // EIP-4337 Account Abstraction Vulnerabilities (High)
+    // Smart account security patterns
+    fn detect_eip4337_vulnerabilities(&self, content: &str) -> Vec<Vulnerability> {
+        let mut vulnerabilities = Vec::new();
+
+        // Check if this is an EIP-4337 related contract
+        if !content.contains("UserOperation") && !content.contains("IAccount") &&
+           !content.contains("IEntryPoint") && !content.contains("validateUserOp") &&
+           !content.contains("IPaymaster") {
+            return vulnerabilities;
+        }
+
+        // Check validateUserOp implementation
+        let validate_pattern = Regex::new(r"function\s+validateUserOp\s*\(").unwrap();
+
+        for (idx, line) in content.lines().enumerate() {
+            if validate_pattern.is_match(line) {
+                let func_body: Vec<&str> = content.lines().skip(idx).take(30).collect();
+
+                // Check for signature validation
+                let has_sig_check = func_body.iter().any(|l|
+                    l.contains("ecrecover") || l.contains("ECDSA") ||
+                    l.contains("isValidSignature") || l.contains("SignatureChecker")
+                );
+
+                // Check for nonce validation
+                let has_nonce_check = func_body.iter().any(|l|
+                    l.contains("userOp.nonce") || l.contains("nonce")
+                );
+
+                // Check for gas validation
+                let has_gas_check = func_body.iter().any(|l|
+                    l.contains("prefund") || l.contains("missingAccountFunds") ||
+                    l.contains("validationData")
+                );
+
+                if !has_sig_check {
+                    vulnerabilities.push(Vulnerability::high_confidence(
+                        VulnerabilitySeverity::Critical,
+                        VulnerabilityCategory::AccessControl,
+                        "EIP-4337: Missing Signature Validation".to_string(),
+                        "validateUserOp doesn't verify signature - anyone can execute operations".to_string(),
+                        idx + 1,
+                        line.to_string(),
+                        "Add ECDSA signature verification against owner".to_string(),
+                    ));
+                }
+
+                if !has_nonce_check {
+                    vulnerabilities.push(Vulnerability::new(
+                        VulnerabilitySeverity::High,
+                        VulnerabilityCategory::SignatureReplay,
+                        "EIP-4337: Nonce Not Validated".to_string(),
+                        "UserOperation nonce not checked - enables replay attacks".to_string(),
+                        idx + 1,
+                        line.to_string(),
+                        "Validate and increment nonce from UserOperation".to_string(),
+                    ));
+                }
+
+                if !has_gas_check {
+                    vulnerabilities.push(Vulnerability::new(
+                        VulnerabilitySeverity::Medium,
+                        VulnerabilityCategory::DoSAttacks,
+                        "EIP-4337: Missing Prefund Validation".to_string(),
+                        "Account doesn't properly handle gas prefunding".to_string(),
+                        idx + 1,
+                        line.to_string(),
+                        "Return proper validationData and handle missingAccountFunds".to_string(),
+                    ));
+                }
+            }
+        }
+
+        // Check paymaster validation
+        let paymaster_pattern = Regex::new(r"function\s+validatePaymasterUserOp\s*\(").unwrap();
+
+        for (idx, line) in content.lines().enumerate() {
+            if paymaster_pattern.is_match(line) {
+                let func_body: Vec<&str> = content.lines().skip(idx).take(25).collect();
+
+                // Check for proper return value
+                let has_context = func_body.iter().any(|l|
+                    l.contains("context") && l.contains("return")
+                );
+
+                // Check for sender validation
+                let has_sender_check = func_body.iter().any(|l|
+                    l.contains("userOp.sender") && (l.contains("require") || l.contains("if"))
+                );
+
+                if !has_sender_check {
+                    vulnerabilities.push(Vulnerability::new(
+                        VulnerabilitySeverity::High,
+                        VulnerabilityCategory::AccessControl,
+                        "EIP-4337: Paymaster Missing Sender Validation".to_string(),
+                        "Paymaster doesn't validate which accounts it sponsors".to_string(),
+                        idx + 1,
+                        line.to_string(),
+                        "Add allowlist or other validation for sponsored accounts".to_string(),
+                    ));
+                }
+            }
+        }
+
+        vulnerabilities
+    }
+
+    // Transient Storage (TSTORE/TLOAD) Issues (Medium)
+    // EIP-1153 transient storage security patterns
+    fn detect_transient_storage_issues(&self, content: &str) -> Vec<Vulnerability> {
+        let mut vulnerabilities = Vec::new();
+
+        // Check if transient storage is used
+        if !content.contains("tstore") && !content.contains("tload") &&
+           !content.contains("TSTORE") && !content.contains("TLOAD") &&
+           !content.contains("transient") {
+            return vulnerabilities;
+        }
+
+        // Check for transient storage in assembly blocks
+        let assembly_pattern = Regex::new(r"assembly\s*\{").unwrap();
+
+        for (idx, line) in content.lines().enumerate() {
+            if assembly_pattern.is_match(line) {
+                let asm_body: Vec<&str> = content.lines().skip(idx).take(20).collect();
+
+                let has_tstore = asm_body.iter().any(|l| l.contains("tstore"));
+                let has_tload = asm_body.iter().any(|l| l.contains("tload"));
+
+                if has_tstore && !has_tload {
+                    // TSTORE without TLOAD might indicate forgotten cleanup
+                    vulnerabilities.push(Vulnerability::new(
+                        VulnerabilitySeverity::Low,
+                        VulnerabilityCategory::StateVariable,
+                        "Transient Storage Write Without Read".to_string(),
+                        "TSTORE used but TLOAD not found - verify transient value is consumed".to_string(),
+                        idx + 1,
+                        line.to_string(),
+                        "Ensure transient storage is read within same transaction".to_string(),
+                    ));
+                }
+
+                // Check for slot collision risk
+                if has_tstore || has_tload {
+                    let uses_dynamic_slot = asm_body.iter().any(|l|
+                        (l.contains("tstore") || l.contains("tload")) &&
+                        !l.contains("0x") // Not a constant slot
+                    );
+
+                    if uses_dynamic_slot {
+                        vulnerabilities.push(Vulnerability::new(
+                            VulnerabilitySeverity::Medium,
+                            VulnerabilityCategory::StateVariable,
+                            "Dynamic Transient Storage Slot".to_string(),
+                            "Transient storage with dynamic slot may collide with other uses".to_string(),
+                            idx + 1,
+                            line.to_string(),
+                            "Use constant slots or namespaced keys to prevent collision".to_string(),
+                        ));
+                    }
+                }
+            }
+        }
+
+        // Check for reentrancy lock using transient storage
+        if content.contains("transient") && content.contains("lock") {
+            // This is actually a good pattern, but warn about proper reset
+            let lock_pattern = Regex::new(r"(LOCK|lock|_locked).*transient").unwrap();
+
+            for (idx, line) in content.lines().enumerate() {
+                if lock_pattern.is_match(line) || line.contains("tstore") {
+                    // Look for matching reset
+                    let func_body: Vec<&str> = content.lines().skip(idx).take(30).collect();
+
+                    let has_reset = func_body.iter().any(|l|
+                        l.contains("tstore") && (l.contains("0") || l.contains("false"))
+                    );
+
+                    if !has_reset {
+                        vulnerabilities.push(Vulnerability::new(
+                            VulnerabilitySeverity::Medium,
+                            VulnerabilityCategory::Reentrancy,
+                            "Transient Lock Not Reset".to_string(),
+                            "Transient reentrancy lock may not be reset on all paths".to_string(),
+                            idx + 1,
+                            line.to_string(),
+                            "Ensure lock is reset in finally/cleanup block".to_string(),
+                        ));
+                    }
+                }
+            }
+        }
+
+        vulnerabilities
+    }
+
+    // Create2 Address Collision (Medium)
+    // Metamorphic contract and address collision attacks
+    fn detect_create2_collision(&self, content: &str) -> Vec<Vulnerability> {
+        let mut vulnerabilities = Vec::new();
+
+        // Check if CREATE2 is used
+        if !content.contains("create2") && !content.contains("CREATE2") &&
+           !content.contains("Create2") {
+            return vulnerabilities;
+        }
+
+        let create2_pattern = Regex::new(r"(create2|CREATE2)\s*\(").unwrap();
+
+        for (idx, line) in content.lines().enumerate() {
+            if create2_pattern.is_match(line) || line.contains("Create2.deploy") {
+                // Check if salt is user-controlled
+                let func_context: Vec<&str> = content.lines().skip(idx.saturating_sub(15)).take(30).collect();
+
+                let salt_from_param = func_context.iter().any(|l|
+                    l.contains("bytes32 salt") || l.contains("_salt") ||
+                    (l.contains("salt") && l.contains("calldata"))
+                );
+
+                if salt_from_param {
+                    vulnerabilities.push(Vulnerability::new(
+                        VulnerabilitySeverity::Medium,
+                        VulnerabilityCategory::LogicError,
+                        "User-Controlled CREATE2 Salt".to_string(),
+                        "User-controlled salt enables address prediction and potential griefing".to_string(),
+                        idx + 1,
+                        line.to_string(),
+                        "Include msg.sender in salt computation to prevent address squatting".to_string(),
+                    ));
+                }
+
+                // Check for metamorphic pattern (selfdestruct + create2 reuse)
+                if content.contains("selfdestruct") || content.contains("SELFDESTRUCT") {
+                    vulnerabilities.push(Vulnerability::high_confidence(
+                        VulnerabilitySeverity::Critical,
+                        VulnerabilityCategory::LogicError,
+                        "CRITICAL: Metamorphic Contract Pattern".to_string(),
+                        "CREATE2 with selfdestruct enables metamorphic contracts - code can change at same address".to_string(),
+                        idx + 1,
+                        line.to_string(),
+                        "Verify contract code hash before interacting, avoid selfdestruct in CREATE2 contracts".to_string(),
+                    ));
+                }
+            }
+        }
+
+        // Check for address collision in proxy patterns
+        if content.contains("implementation") && content.contains("create2") {
+            for (idx, line) in content.lines().enumerate() {
+                if line.contains("implementation") && line.contains("=") {
+                    let func_body: Vec<&str> = content.lines().skip(idx).take(10).collect();
+
+                    let has_code_check = func_body.iter().any(|l|
+                        l.contains("extcodesize") || l.contains("code.length") ||
+                        l.contains("isContract")
+                    );
+
+                    if !has_code_check {
+                        vulnerabilities.push(Vulnerability::new(
+                            VulnerabilitySeverity::Medium,
+                            VulnerabilityCategory::LogicError,
+                            "Implementation Without Code Verification".to_string(),
+                            "Implementation address set without verifying code exists".to_string(),
+                            idx + 1,
+                            line.to_string(),
+                            "Verify implementation has code: require(impl.code.length > 0)".to_string(),
+                        ));
+                    }
+                }
+            }
+        }
+
+        vulnerabilities
+    }
+
+    // Merkle Tree Vulnerabilities (Medium)
+    // Merkle proof verification security patterns
+    fn detect_merkle_tree_vulnerabilities(&self, content: &str) -> Vec<Vulnerability> {
+        let mut vulnerabilities = Vec::new();
+
+        // Check if Merkle proofs are used
+        if !content.contains("merkle") && !content.contains("Merkle") &&
+           !content.contains("proof") && !content.contains("MerkleProof") {
+            return vulnerabilities;
+        }
+
+        // Check for Merkle proof verification
+        let verify_pattern = Regex::new(r"(verify|processProof)\s*\(").unwrap();
+
+        for (idx, line) in content.lines().enumerate() {
+            if verify_pattern.is_match(line) &&
+               (line.contains("merkle") || line.contains("Merkle") || line.contains("proof")) {
+
+                let func_body: Vec<&str> = content.lines().skip(idx.saturating_sub(10)).take(25).collect();
+
+                // Check for leaf construction with multiple values
+                let leaf_construction = func_body.iter().any(|l|
+                    l.contains("keccak256") && l.contains("abi.encode")
+                );
+
+                // Check if leaf includes sender/claimer
+                let includes_sender = func_body.iter().any(|l|
+                    l.contains("msg.sender") || l.contains("_claimer") ||
+                    l.contains("_account") || l.contains("_user")
+                );
+
+                if leaf_construction && !includes_sender {
+                    vulnerabilities.push(Vulnerability::high_confidence(
+                        VulnerabilitySeverity::Critical,
+                        VulnerabilityCategory::AccessControl,
+                        "CRITICAL: Merkle Proof Without Address Binding".to_string(),
+                        "Merkle leaf doesn't include msg.sender - proofs can be stolen/replayed".to_string(),
+                        idx + 1,
+                        line.to_string(),
+                        "Include msg.sender in leaf: keccak256(abi.encode(msg.sender, amount))".to_string(),
+                    ));
+                }
+
+                // Check for second preimage attack (leaf vs node)
+                let has_leaf_encoding = func_body.iter().any(|l|
+                    l.contains("abi.encodePacked") && l.contains("keccak256")
+                );
+
+                let has_double_hash = func_body.iter().any(|l|
+                    l.contains("keccak256(keccak256") ||
+                    (l.contains("keccak256") && l.contains("bytes32"))
+                );
+
+                if has_leaf_encoding && !has_double_hash {
+                    // Check if using abi.encodePacked with multiple dynamic values
+                    let packed_dynamic = func_body.iter().any(|l|
+                        l.contains("abi.encodePacked") &&
+                        (l.matches("string").count() + l.matches("bytes ").count() + l.matches("bytes,").count()) > 1
+                    );
+
+                    if packed_dynamic {
+                        vulnerabilities.push(Vulnerability::new(
+                            VulnerabilitySeverity::High,
+                            VulnerabilityCategory::AccessControl,
+                            "Merkle Tree Hash Collision Risk".to_string(),
+                            "abi.encodePacked with multiple dynamic types enables hash collision".to_string(),
+                            idx + 1,
+                            line.to_string(),
+                            "Use abi.encode instead of abi.encodePacked for leaf hashing".to_string(),
+                        ));
+                    }
+                }
+            }
+        }
+
+        // Check for claimed/used tracking
+        if content.contains("merkle") || content.contains("Merkle") {
+            let claim_pattern = Regex::new(r"function\s+\w*(claim|mint|redeem)\w*\s*\(").unwrap();
+
+            for (idx, line) in content.lines().enumerate() {
+                if claim_pattern.is_match(line) {
+                    let func_body: Vec<&str> = content.lines().skip(idx).take(20).collect();
+
+                    let has_claimed_check = func_body.iter().any(|l|
+                        l.contains("claimed[") || l.contains("hasClaimed[") ||
+                        l.contains("used[") || l.contains("redeemed[")
+                    );
+
+                    let has_claimed_update = func_body.iter().any(|l|
+                        (l.contains("claimed[") || l.contains("hasClaimed[")) &&
+                        l.contains("= true")
+                    );
+
+                    if !has_claimed_check || !has_claimed_update {
+                        vulnerabilities.push(Vulnerability::high_confidence(
+                            VulnerabilitySeverity::Critical,
+                            VulnerabilityCategory::AccessControl,
+                            "Merkle Claim Without Replay Protection".to_string(),
+                            "Merkle-based claim lacks tracking - same proof can be used multiple times".to_string(),
+                            idx + 1,
+                            line.to_string(),
+                            "Track claimed proofs: require(!claimed[leaf]); claimed[leaf] = true;".to_string(),
+                        ));
+                    }
+                }
+            }
+        }
+
+        vulnerabilities
+    }
 }
 
 // Cross-contract vulnerability detection (reserved for future project-wide analysis)
