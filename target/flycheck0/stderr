@@ -1,4 +1,0 @@
-warning: file `/home/blkkk/Projects/41swara/41Swara-tool/smart-contract-scanner/src/main.rs` found to be present in multiple build targets:
-  * `bin` target `41`
-  * `bin` target `41swara`
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.09s
