@@ -6,7 +6,9 @@
 //! - Analyze invariant test failures
 //! - Auto-create test templates per vulnerability category
 
-use std::collections::HashMap;
+#![allow(dead_code)]
+#![allow(unused_imports)]
+
 use std::fs;
 use std::path::Path;
 use std::process::Command;

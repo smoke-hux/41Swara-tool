@@ -6,8 +6,11 @@
 //! - Merge unique findings from each tool
 //! - Unified report generation
 
-use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+#![allow(dead_code)]
+#![allow(unused_imports)]
+
+use serde::Deserialize;
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;

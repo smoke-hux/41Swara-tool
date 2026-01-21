@@ -3,8 +3,10 @@
 //! Provides AST-like parsing for Solidity contracts using regex-based extraction.
 //! Supports contract, function, modifier, and statement-level analysis.
 
+#![allow(dead_code)]
+#![allow(unused_variables)]
+
 use regex::Regex;
-use std::collections::HashMap;
 
 /// Represents a parsed Solidity contract
 #[derive(Debug, Clone)]

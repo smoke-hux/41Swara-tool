@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::collections::{HashMap, HashSet};
 use regex::Regex;
 use crate::vulnerabilities::{Vulnerability, VulnerabilitySeverity, VulnerabilityCategory};
@@ -2085,7 +2087,7 @@ impl AdvancedAnalyzer {
                 let func_body: Vec<&str> = content.lines().skip(idx).take(25).collect();
 
                 // Check for proper return value
-                let has_context = func_body.iter().any(|l|
+                let _has_context = func_body.iter().any(|l|
                     l.contains("context") && l.contains("return")
                 );
 

@@ -90,20 +90,23 @@ FEATURES:
   - Cross-file project analysis
 
 EXAMPLES:
+  # Scan current directory (default)
+  41
+
   # Quick scan with severity filter
-  solidity-scanner -p contracts/ --min-severity high
+  41 -p contracts/ --min-severity high
 
   # Fast parallel scan with stats
-  solidity-scanner -p . -j 8 --stats
+  41 -j 8 --stats
 
   # JSON output for CI/CD
-  solidity-scanner -p . --format json --min-severity critical
+  41 --format json --min-severity critical
 
   # Professional audit report
-  solidity-scanner -p . --audit --project "MyDApp" --sponsor "Client Inc"
+  41 --audit --project "MyDApp" --sponsor "Client Inc"
 
   # Quiet mode (only show summary)
-  solidity-scanner -p . -q --fail-on critical
+  41 -q --fail-on critical
 
 VULNERABILITY CATEGORIES:
   Critical: Reentrancy, Access Control, Proxy Admin, Arbitrary Calls
@@ -112,9 +115,9 @@ VULNERABILITY CATEGORIES:
   Low/Info: Gas Optimization, Code Quality, Best Practices
 "#)]
 struct Args {
-    /// Path to smart contract file (.sol) or directory to scan
-    #[arg(short, long, value_name = "FILE_OR_DIR")]
-    path: Option<PathBuf>,
+    /// Path to smart contract file (.sol) or directory to scan (default: current directory)
+    #[arg(short, long, value_name = "FILE_OR_DIR", default_value = ".")]
+    path: PathBuf,
 
     /// Output format
     #[arg(short, long, default_value = "text", value_parser = ["text", "json", "sarif"])]
@@ -239,15 +242,8 @@ fn main() {
         return;
     }
 
-    // Check if path is provided
-    let path = match &args.path {
-        Some(p) => p.clone(),
-        None => {
-            eprintln!("{}", "Error: Path is required. Use -p or --path".red().bold());
-            eprintln!("{}", "Use --help for more information or --examples for usage examples".yellow());
-            std::process::exit(1);
-        }
-    };
+    // Get path (defaults to current directory ".")
+    let path = args.path.clone();
 
     // Print scanner header (unless quiet mode)
     if !args.quiet && args.format != "json" && args.format != "sarif" {
@@ -968,34 +964,35 @@ fn show_examples() {
     println!("{}", "=".repeat(60).bright_blue());
 
     println!("\n{}", "Basic Scanning:".bright_green().bold());
-    println!("  {} Scan single file", "solidity-scanner -p Contract.sol".bright_white());
-    println!("  {} Scan directory", "solidity-scanner -p contracts/".bright_white());
+    println!("  {} Scan current directory", "41".bright_white());
+    println!("  {} Scan single file", "41 -p Contract.sol".bright_white());
+    println!("  {} Scan directory", "41 -p contracts/".bright_white());
 
     println!("\n{}", "Severity Filtering:".bright_green().bold());
-    println!("  {} Only critical/high", "solidity-scanner -p . --min-severity high".bright_white());
-    println!("  {} Only critical", "solidity-scanner -p . --min-severity critical".bright_white());
+    println!("  {} Only critical/high", "41 --min-severity high".bright_white());
+    println!("  {} Only critical", "41 --min-severity critical".bright_white());
 
     println!("\n{}", "Performance:".bright_green().bold());
-    println!("  {} Use 8 threads", "solidity-scanner -p . -j 8".bright_white());
-    println!("  {} Show stats", "solidity-scanner -p . --stats".bright_white());
+    println!("  {} Use 8 threads", "41 -j 8".bright_white());
+    println!("  {} Show stats", "41 --stats".bright_white());
 
     println!("\n{}", "Git Diff Mode (Incremental):".bright_green().bold());
-    println!("  {} Scan only modified files", "solidity-scanner -p . --git-diff".bright_white());
-    println!("  {} Compare against main", "solidity-scanner -p . --git-diff --git-branch main".bright_white());
-    println!("  {} CI: modified files only", "solidity-scanner -p . --git-diff --fail-on high".bright_white());
+    println!("  {} Scan only modified files", "41 --git-diff".bright_white());
+    println!("  {} Compare against main", "41 --git-diff --git-branch main".bright_white());
+    println!("  {} CI: modified files only", "41 --git-diff --fail-on high".bright_white());
 
     println!("\n{}", "Watch Mode (Continuous):".bright_green().bold());
-    println!("  {} Monitor for changes", "solidity-scanner -p . --watch".bright_white());
-    println!("  {} Watch with filter", "solidity-scanner -p . --watch --min-severity high".bright_white());
+    println!("  {} Monitor for changes", "41 --watch".bright_white());
+    println!("  {} Watch with filter", "41 --watch --min-severity high".bright_white());
 
     println!("\n{}", "CI/CD Integration:".bright_green().bold());
-    println!("  {} Fail on critical", "solidity-scanner -p . --fail-on critical -q".bright_white());
-    println!("  {} JSON output", "solidity-scanner -p . --format json".bright_white());
-    println!("  {} SARIF for GitHub", "solidity-scanner -p . --format sarif".bright_white());
+    println!("  {} Fail on critical", "41 --fail-on critical -q".bright_white());
+    println!("  {} JSON output", "41 --format json".bright_white());
+    println!("  {} SARIF for GitHub", "41 --format sarif".bright_white());
 
     println!("\n{}", "Professional Audits:".bright_green().bold());
-    println!("  {} Full audit", "solidity-scanner -p . --audit --project MyDApp".bright_white());
-    println!("  {} Project analysis", "solidity-scanner -p . --project-analysis".bright_white());
+    println!("  {} Full audit", "41 --audit --project MyDApp".bright_white());
+    println!("  {} Project analysis", "41 --project-analysis".bright_white());
 
     println!("\n{}", "Detected Vulnerabilities:".bright_yellow().bold());
     println!("  {} Reentrancy, Access Control, Proxy Admin", "CRITICAL".red());

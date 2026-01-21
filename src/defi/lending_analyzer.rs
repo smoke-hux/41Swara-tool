@@ -3,6 +3,8 @@
 //! Detects vulnerabilities specific to lending protocols including
 //! Aave, Compound, and similar platforms.
 
+#![allow(dead_code)]
+
 use regex::Regex;
 use crate::vulnerabilities::{Vulnerability, VulnerabilitySeverity, VulnerabilityCategory};
 

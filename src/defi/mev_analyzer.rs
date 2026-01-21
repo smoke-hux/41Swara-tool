@@ -3,6 +3,9 @@
 //! Detects MEV-related vulnerabilities including sandwich attacks,
 //! frontrunning, backrunning, and commit-reveal pattern validation.
 
+#![allow(dead_code)]
+#![allow(unused_variables)]
+
 use regex::Regex;
 use crate::vulnerabilities::{Vulnerability, VulnerabilitySeverity, VulnerabilityCategory};
 

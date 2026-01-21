@@ -3,10 +3,14 @@
 //! Builds CFGs from parsed function bodies for advanced vulnerability detection.
 //! Enables path-sensitive analysis and dead code detection.
 
+#![allow(dead_code)]
+#![allow(unused_imports)]
+#![allow(unused_variables)]
+
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::Direction;
 use std::collections::{HashMap, HashSet};
-use super::parser::{FunctionDefinition, Statement, FunctionBody};
+use super::parser::{FunctionDefinition, Statement};
 
 /// Control Flow Graph for a function
 #[derive(Debug, Clone)]

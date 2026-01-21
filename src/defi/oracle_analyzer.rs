@@ -3,6 +3,8 @@
 //! Detects oracle-related vulnerabilities including Chainlink staleness,
 //! L2 sequencer checks, TWAP validation, and multi-oracle fallbacks.
 
+#![allow(dead_code)]
+
 use regex::Regex;
 use crate::vulnerabilities::{Vulnerability, VulnerabilitySeverity, VulnerabilityCategory};
 

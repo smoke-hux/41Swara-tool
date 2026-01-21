@@ -3,9 +3,13 @@
 //! Implements taint tracking for detecting user-controlled input reaching
 //! dangerous sinks like external calls, state writes, and require statements.
 
+#![allow(dead_code)]
+#![allow(unused_imports)]
+#![allow(unused_mut)]
+
 use std::collections::{HashMap, HashSet};
 use super::parser::{SolidityAST, FunctionDefinition, Statement, ContractDefinition, Visibility};
-use super::cfg::{ControlFlowGraph, CFGBuilder};
+use super::cfg::CFGBuilder;
 
 /// Taint sources - origins of potentially malicious data
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -182,7 +186,7 @@ impl DataFlowAnalyzer {
     ) {
         for stmt in statements {
             match stmt {
-                Statement::VariableDeclaration { name, value, line, .. } => {
+                Statement::VariableDeclaration { name, value,  .. } => {
                     if let Some(val_expr) = value {
                         let taint = self.compute_expression_taint(val_expr, taint_map);
                         if taint.is_tainted {

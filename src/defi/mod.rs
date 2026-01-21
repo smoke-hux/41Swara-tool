@@ -3,6 +3,8 @@
 //! Specialized analyzers for DeFi protocols including AMM/DEX, lending,
 //! oracles, and MEV vulnerabilities.
 
+#![allow(dead_code)]
+
 pub mod amm_analyzer;
 pub mod lending_analyzer;
 pub mod oracle_analyzer;
@@ -13,7 +15,7 @@ pub use lending_analyzer::LendingAnalyzer;
 pub use oracle_analyzer::OracleAnalyzer;
 pub use mev_analyzer::MEVAnalyzer;
 
-use crate::vulnerabilities::{Vulnerability, VulnerabilitySeverity, VulnerabilityCategory};
+use crate::vulnerabilities::Vulnerability;
 
 /// Unified DeFi analyzer that runs all specialized analyzers
 pub struct DeFiAnalyzer {

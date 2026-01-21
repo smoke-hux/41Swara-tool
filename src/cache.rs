@@ -5,6 +5,8 @@
 //! - Persisting cache to disk for CI/CD
 //! - Fast incremental analysis
 
+#![allow(dead_code)]
+
 use blake3::Hasher;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};

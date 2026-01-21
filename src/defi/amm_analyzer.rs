@@ -3,6 +3,8 @@
 //! Detects vulnerabilities specific to Automated Market Makers and
 //! Decentralized Exchanges including Uniswap, Curve, and Balancer patterns.
 
+#![allow(dead_code)]
+
 use regex::Regex;
 use crate::vulnerabilities::{Vulnerability, VulnerabilitySeverity, VulnerabilityCategory};
 
