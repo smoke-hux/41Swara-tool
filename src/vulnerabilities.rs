@@ -47,6 +47,9 @@ pub enum VulnerabilityConfidence {
 }
 
 impl VulnerabilityConfidence {
+    /// Convert a percentage (0-100) to a confidence level
+    /// Used by external tools and the with_confidence_percent builder
+    #[allow(dead_code)]
     pub fn from_percent(percent: u8) -> Self {
         if percent >= 80 {
             VulnerabilityConfidence::High
@@ -57,6 +60,7 @@ impl VulnerabilityConfidence {
         }
     }
 
+    /// Convert confidence level to a representative percentage
     pub fn to_percent(&self) -> u8 {
         match self {
             VulnerabilityConfidence::High => 90,
@@ -113,6 +117,8 @@ impl Vulnerability {
     }
 
     /// Create a vulnerability with a specific confidence percentage
+    /// Public API for external tools building custom vulnerabilities
+    #[allow(dead_code)]
     pub fn with_confidence_percent(mut self, percent: u8) -> Self {
         self.confidence_percent = percent.min(100);
         self.confidence = VulnerabilityConfidence::from_percent(self.confidence_percent);
@@ -120,17 +126,23 @@ impl Vulnerability {
     }
 
     /// Add a fix suggestion to the vulnerability
+    /// Public API for external tools adding remediation suggestions
+    #[allow(dead_code)]
     pub fn with_fix(mut self, fix: String) -> Self {
         self.fix_suggestion = Some(fix);
         self
     }
 
     /// Get the SWC ID string if available
+    /// Public API for reporters and formatters
+    #[allow(dead_code)]
     pub fn get_swc_id_str(&self) -> Option<&str> {
         self.swc_id.as_ref().map(|s| s.id.as_str())
     }
 
     /// Get the CWE ID string if available
+    /// Public API for compliance tooling
+    #[allow(dead_code)]
     pub fn get_cwe_id(&self) -> Option<&str> {
         self.swc_id.as_ref().and_then(|s| s.cwe_id.as_deref())
     }

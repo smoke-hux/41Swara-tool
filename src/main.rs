@@ -13,7 +13,6 @@ use walkdir::WalkDir;
 use git2::{Repository, DiffOptions, Delta};
 use notify::{Watcher, RecursiveMode, Event, Result as NotifyResult, EventKind};
 use std::sync::mpsc::channel;
-use glob::Pattern;
 
 mod scanner;
 mod vulnerabilities;
@@ -826,22 +825,6 @@ fn run_project_analysis(dir: &PathBuf, args: &Args) -> i32 {
     }
 }
 
-fn scan_file_with_filter(scanner: &ContractScanner, reporter: &mut VulnerabilityReporter, path: &PathBuf, args: &Args) {
-    if !args.quiet {
-        println!("\n{} {}", "Scanning:".green(), path.display());
-    }
-
-    match scanner.scan_file(path) {
-        Ok(mut vulnerabilities) => {
-            // Apply severity filter
-            vulnerabilities.retain(|v| args.min_severity.matches(&v.severity));
-            reporter.add_file_results(path, vulnerabilities);
-        }
-        Err(e) => {
-            eprintln!("{} {}: {}", "Error scanning".red(), path.display(), e);
-        }
-    }
-}
 
 fn scan_file_structured_format(scanner: &ContractScanner, path: &PathBuf, args: &Args) {
     if !args.quiet {
