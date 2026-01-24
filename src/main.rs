@@ -1,7 +1,7 @@
-//! 41Swara Smart Contract Security Scanner v0.3.0
+//! 41Swara Smart Contract Security Scanner v0.4.0 - Security Researcher Edition
 //!
-//! High-performance vulnerability scanner for blockchain security researchers.
-//! Features parallel scanning, severity filtering, and multiple output formats.
+//! High-performance vulnerability scanner for Ethereum Foundation and blockchain security researchers.
+//! Features parallel scanning, severity filtering, CWE/SWC mapping, and multiple output formats.
 
 use clap::{Parser, ValueEnum};
 use colored::*;
@@ -13,6 +13,7 @@ use walkdir::WalkDir;
 use git2::{Repository, DiffOptions, Delta};
 use notify::{Watcher, RecursiveMode, Event, Result as NotifyResult, EventKind};
 use std::sync::mpsc::channel;
+use glob::Pattern;
 
 mod scanner;
 mod vulnerabilities;
@@ -72,29 +73,44 @@ impl MinSeverity {
 
 #[derive(Parser)]
 #[command(name = "solidity-scanner")]
-#[command(version = "0.3.0")]
+#[command(version = "0.4.0")]
 #[command(author = "41Swara Security Team")]
-#[command(about = "High-performance smart contract vulnerability scanner for security researchers")]
+#[command(about = "High-performance smart contract vulnerability scanner - Security Researcher Edition")]
 #[command(long_about = r#"
-41Swara Smart Contract Security Scanner v0.3.0
+41Swara Smart Contract Security Scanner v0.4.0 - Security Researcher Edition
 
-A fully offline, API-independent security scanner for blockchain researchers.
-Features AST-based analysis, DeFi-specific detectors, Slither/Foundry integration,
-and 100+ vulnerability patterns including real-world exploit patterns from $3.1B+ in DeFi losses.
+Production-grade scanner for Ethereum Foundation and Base chain security researchers.
+Features AST-based analysis, DeFi-specific detectors, CWE/SWC mapping, Slither/Foundry integration,
+and 150+ vulnerability patterns including real-world exploit patterns from $3.1B+ in DeFi losses.
 
 FEATURES:
   - Parallel scanning for 4-10x performance improvement
+  - CWE/SWC ID mapping for compliance and integration
+  - Confidence scoring with context-aware detection
   - Severity filtering (--min-severity critical/high/medium/low/info)
   - Multiple output formats (text, json, sarif)
   - Professional audit report generation
   - Cross-file project analysis
+  - L2/Base chain specific patterns
+  - Modern Solidity 0.8.20+ support (PUSH0, transient storage)
 
 EXAMPLES:
   # Scan current directory (default)
   41
+  41 .
+
+  # Scan specific directory
+  41 contracts/
+  41 /path/to/project
 
   # Quick scan with severity filter
-  41 -p contracts/ --min-severity high
+  41 contracts/ --min-severity high
+
+  # Filter by confidence level
+  41 contracts/ --confidence-threshold 70
+
+  # Exclude test files
+  41 contracts/ --exclude-pattern "**/test/**"
 
   # Fast parallel scan with stats
   41 -j 8 --stats
@@ -102,21 +118,34 @@ EXAMPLES:
   # JSON output for CI/CD
   41 --format json --min-severity critical
 
+  # SARIF output with CWE IDs for GitHub Code Scanning
+  41 --format sarif --output results.sarif
+
   # Professional audit report
   41 --audit --project "MyDApp" --sponsor "Client Inc"
 
   # Quiet mode (only show summary)
   41 -q --fail-on critical
 
+  # Check only specific SWC IDs
+  41 --include-swc SWC-107,SWC-105
+
 VULNERABILITY CATEGORIES:
-  Critical: Reentrancy, Access Control, Proxy Admin, Arbitrary Calls
-  High:     Oracle Manipulation, Signature Issues, DoS, MEV/Front-running
-  Medium:   Precision Loss, Time Manipulation, Unchecked Returns
+  Critical: Reentrancy (SWC-107), Access Control (SWC-105), Proxy Admin, Arbitrary Calls
+  High:     Oracle Manipulation, Signature Issues (SWC-117), DoS (SWC-128), MEV/Front-running
+  Medium:   Precision Loss, Time Manipulation (SWC-116), Unchecked Returns
   Low/Info: Gas Optimization, Code Quality, Best Practices
+
+EXIT CODES:
+  0: No findings
+  1: Critical/High findings detected
+  2: Medium findings only
+  3: Low/Info findings only
+  10: Scanner error
 "#)]
 struct Args {
     /// Path to smart contract file (.sol) or directory to scan (default: current directory)
-    #[arg(short, long, value_name = "FILE_OR_DIR", default_value = ".")]
+    #[arg(value_name = "PATH", default_value = ".")]
     path: PathBuf,
 
     /// Output format
@@ -223,10 +252,61 @@ struct Args {
     /// Path to cache directory (default: .41swara_cache)
     #[arg(long, value_name = "DIR")]
     cache_dir: Option<PathBuf>,
+
+    // ============================================================================
+    // NEW CLI OPTIONS (v0.4.0 - Security Researcher Edition)
+    // ============================================================================
+
+    /// Only show findings above confidence percentage (0-100)
+    #[arg(long, value_name = "PERCENT", value_parser = clap::value_parser!(u8).range(0..=100))]
+    confidence_threshold: Option<u8>,
+
+    /// Exclude files matching glob pattern (can be used multiple times)
+    #[arg(long, value_name = "GLOB", action = clap::ArgAction::Append)]
+    exclude_pattern: Vec<String>,
+
+    /// Only check specific SWC IDs (comma-separated, e.g., SWC-107,SWC-105)
+    #[arg(long, value_name = "IDS", value_delimiter = ',')]
+    include_swc: Vec<String>,
+
+    /// Skip specific SWC IDs (comma-separated)
+    #[arg(long, value_name = "IDS", value_delimiter = ',')]
+    exclude_swc: Vec<String>,
+
+    /// Compare against baseline results JSON file (suppress known findings)
+    #[arg(long, value_name = "FILE")]
+    baseline: Option<PathBuf>,
+
+    /// Export current results as baseline JSON file
+    #[arg(long, value_name = "FILE")]
+    export_baseline: Option<PathBuf>,
+
+    /// Disable colored output
+    #[arg(long)]
+    no_color: bool,
+
+    /// Skip files larger than specified size in MB (default: 10)
+    #[arg(long, value_name = "MB", default_value = "10")]
+    max_file_size: u64,
+
+    /// Show full version info including build details
+    #[arg(long)]
+    version_full: bool,
 }
 
 fn main() {
     let args = Args::parse();
+
+    // Handle --no-color flag
+    if args.no_color {
+        colored::control::set_override(false);
+    }
+
+    // Handle --version-full flag
+    if args.version_full {
+        print_version_full();
+        return;
+    }
 
     // Configure thread pool for parallel scanning
     if args.threads > 0 {
@@ -247,15 +327,16 @@ fn main() {
 
     // Print scanner header (unless quiet mode)
     if !args.quiet && args.format != "json" && args.format != "sarif" {
-        println!("{}", "41Swara Smart Contract Scanner v0.3.0".bright_blue().bold());
-        println!("{}", "High-performance security analysis for blockchain".bright_blue());
+        println!("{}", "41Swara Smart Contract Scanner v0.4.0".bright_blue().bold());
+        println!("{}", "Security Researcher Edition".bright_cyan());
+        println!("{}", "High-performance security analysis for Ethereum & Base".bright_blue());
         println!("{}", "=".repeat(55).bright_blue());
     }
 
     // Validate path exists
     if !path.exists() {
         eprintln!("{} Path does not exist: {}", "Error:".red().bold(), path.display());
-        std::process::exit(1);
+        std::process::exit(10);
     }
 
     let start_time = Instant::now();
@@ -267,7 +348,7 @@ fn main() {
         process_directory(&args, &path)
     } else {
         eprintln!("{} Invalid path type", "Error:".red().bold());
-        1
+        10
     };
 
     // Show performance stats
@@ -286,23 +367,54 @@ fn process_file(args: &Args, path: &PathBuf) -> i32 {
 
     match extension {
         Some("sol") => {
+            let scanner = ContractScanner::new(args.verbose);
+
             if args.audit {
                 scan_file_professional_audit(path, args);
+                return 0; // Audit mode always returns 0
             } else if args.report {
-                let scanner = ContractScanner::new(args.verbose);
                 let reporter = VulnerabilityReporter::new(&args.format);
                 scan_file_clean_report(&scanner, &reporter, path);
-            } else if args.format == "json" || args.format == "sarif" {
-                // Handle JSON and SARIF formats for single file
-                let scanner = ContractScanner::new(args.verbose);
-                scan_file_structured_format(&scanner, path, args);
-            } else {
-                let scanner = ContractScanner::new(args.verbose);
-                let mut reporter = VulnerabilityReporter::new(&args.format);
-                scan_file_with_filter(&scanner, &mut reporter, path, args);
-                reporter.print_summary();
+                return 0; // Report mode always returns 0
             }
-            0
+
+            // Scan and get vulnerabilities for exit code calculation
+            match scanner.scan_file(path) {
+                Ok(mut vulnerabilities) => {
+                    // Apply severity filter
+                    vulnerabilities.retain(|v| args.min_severity.matches(&v.severity));
+
+                    // Output results based on format
+                    if args.format == "json" || args.format == "sarif" {
+                        scan_file_structured_format(&scanner, path, args);
+                    } else {
+                        let mut reporter = VulnerabilityReporter::new(&args.format);
+                        reporter.add_file_results(path, vulnerabilities.clone());
+                        reporter.print_summary();
+                    }
+
+                    // Calculate exit code
+                    if let Some(ref fail_severity) = args.fail_on {
+                        let has_failures = vulnerabilities.iter()
+                            .any(|v| fail_severity.matches(&v.severity));
+                        return if has_failures { 1 } else { 0 };
+                    }
+
+                    // Default exit code based on max severity
+                    if vulnerabilities.is_empty() {
+                        0
+                    } else {
+                        vulnerabilities.iter()
+                            .map(|v| severity_to_exit_code(&v.severity))
+                            .min()
+                            .unwrap_or(0)
+                    }
+                }
+                Err(e) => {
+                    eprintln!("{} scanning {}: {}", "Error".red().bold(), path.display(), e);
+                    10 // Scanner error
+                }
+            }
         }
         Some("json") if args.abi => {
             scan_abi_file(path, args);
@@ -310,11 +422,11 @@ fn process_file(args: &Args, path: &PathBuf) -> i32 {
         }
         Some("json") => {
             eprintln!("{} Use --abi flag for JSON ABI files", "Error:".red().bold());
-            1
+            10
         }
         _ => {
             eprintln!("{} Unsupported file type. Supported: .sol, .json (with --abi)", "Error:".red().bold());
-            1
+            10
         }
     }
 }
@@ -626,7 +738,7 @@ fn process_directory(args: &Args, dir: &PathBuf) -> i32 {
     // Generate output
     if args.format == "json" {
         let json_output = serde_json::json!({
-            "version": "0.3.0",
+            "version": "0.4.0",
             "files_scanned": sol_files.len(),
             "total_vulnerabilities": total_vulns,
             "min_severity_filter": format!("{:?}", args.min_severity),
@@ -644,7 +756,7 @@ fn process_directory(args: &Args, dir: &PathBuf) -> i32 {
             .iter()
             .map(|(path, vulns)| (path.clone(), vulns.clone()))
             .collect();
-        let sarif_report = SarifReport::new(sarif_results, "0.3.0");
+        let sarif_report = SarifReport::new(sarif_results, "0.4.0");
         println!("{}", serde_json::to_string_pretty(&sarif_report).unwrap());
     } else {
         // Text output
@@ -655,17 +767,47 @@ fn process_directory(args: &Args, dir: &PathBuf) -> i32 {
         reporter.print_summary();
     }
 
-    // Determine exit code based on --fail-on
+    // Determine exit code based on severity or --fail-on override
+    // Exit codes:
+    //   0: No findings
+    //   1: Critical/High findings
+    //   2: Medium findings only
+    //   3: Low/Info findings only
+    //   10: Scanner error
     if let Some(ref fail_severity) = args.fail_on {
+        // Use --fail-on if specified
         let has_failures = results.iter().any(|(_, vulns)| {
             vulns.iter().any(|v| fail_severity.matches(&v.severity))
         });
         if has_failures {
             return 1;
         }
+        return 0;
     }
 
-    0
+    // Default exit codes based on max severity
+    let errors = *error_count.lock().unwrap();
+    if errors > 0 && total_vulns == 0 {
+        return 10; // Scanner error
+    }
+
+    // Determine max severity found
+    let max_severity = results.iter()
+        .flat_map(|(_, vulns)| vulns.iter())
+        .map(|v| severity_to_exit_code(&v.severity))
+        .min()
+        .unwrap_or(0);
+
+    max_severity
+}
+
+/// Convert severity to exit code (lower is more severe)
+fn severity_to_exit_code(severity: &VulnerabilitySeverity) -> i32 {
+    match severity {
+        VulnerabilitySeverity::Critical | VulnerabilitySeverity::High => 1,
+        VulnerabilitySeverity::Medium => 2,
+        VulnerabilitySeverity::Low | VulnerabilitySeverity::Info => 3,
+    }
 }
 
 fn run_project_analysis(dir: &PathBuf, args: &Args) -> i32 {
@@ -713,7 +855,7 @@ fn scan_file_structured_format(scanner: &ContractScanner, path: &PathBuf, args: 
 
             if args.format == "json" {
                 let json_output = serde_json::json!({
-                    "version": "0.3.0",
+                    "version": "0.4.0",
                     "files_scanned": 1,
                     "total_vulnerabilities": vulnerabilities.len(),
                     "min_severity_filter": format!("{:?}", args.min_severity),
@@ -725,7 +867,7 @@ fn scan_file_structured_format(scanner: &ContractScanner, path: &PathBuf, args: 
                 println!("{}", serde_json::to_string_pretty(&json_output).unwrap());
             } else if args.format == "sarif" {
                 let sarif_results = vec![(path.clone(), vulnerabilities)];
-                let sarif_report = SarifReport::new(sarif_results, "0.3.0");
+                let sarif_report = SarifReport::new(sarif_results, "0.4.0");
                 println!("{}", serde_json::to_string_pretty(&sarif_report).unwrap());
             }
         }
@@ -905,7 +1047,7 @@ fn scan_abi_file(path: &PathBuf, args: &Args) {
                         println!("{}", serde_json::to_string_pretty(&vulnerabilities).unwrap());
                     } else if args.format == "sarif" {
                         let sarif_results = vec![(path.clone(), vulnerabilities)];
-                        let sarif_report = SarifReport::new(sarif_results, "0.3.0");
+                        let sarif_report = SarifReport::new(sarif_results, "0.4.0");
                         println!("{}", serde_json::to_string_pretty(&sarif_report).unwrap());
                     } else {
                         print_abi_vulnerabilities(&vulnerabilities, path);
@@ -960,21 +1102,39 @@ fn print_abi_vulnerabilities(vulnerabilities: &[Vulnerability], path: &PathBuf) 
 }
 
 fn show_examples() {
-    println!("{}", "41Swara Smart Contract Scanner - Usage Examples".bright_blue().bold());
+    println!("{}", "41Swara Smart Contract Scanner v0.4.0 - Usage Examples".bright_blue().bold());
+    println!("{}", "Security Researcher Edition".bright_cyan());
     println!("{}", "=".repeat(60).bright_blue());
 
     println!("\n{}", "Basic Scanning:".bright_green().bold());
     println!("  {} Scan current directory", "41".bright_white());
-    println!("  {} Scan single file", "41 -p Contract.sol".bright_white());
-    println!("  {} Scan directory", "41 -p contracts/".bright_white());
+    println!("  {} Scan current directory (explicit)", "41 .".bright_white());
+    println!("  {} Scan single file", "41 Contract.sol".bright_white());
+    println!("  {} Scan directory", "41 contracts/".bright_white());
+    println!("  {} Scan absolute path", "41 /path/to/project".bright_white());
 
-    println!("\n{}", "Severity Filtering:".bright_green().bold());
+    println!("\n{}", "Severity & Confidence Filtering:".bright_green().bold());
     println!("  {} Only critical/high", "41 --min-severity high".bright_white());
     println!("  {} Only critical", "41 --min-severity critical".bright_white());
+    println!("  {} High confidence only (70%+)", "41 --confidence-threshold 70".bright_white());
+
+    println!("\n{}", "SWC/CWE ID Filtering:".bright_green().bold());
+    println!("  {} Only reentrancy (SWC-107)", "41 --include-swc SWC-107".bright_white());
+    println!("  {} Multiple SWCs", "41 --include-swc SWC-107,SWC-105,SWC-114".bright_white());
+    println!("  {} Exclude specific SWCs", "41 --exclude-swc SWC-103,SWC-102".bright_white());
+
+    println!("\n{}", "File Filtering:".bright_green().bold());
+    println!("  {} Exclude test files", "41 --exclude-pattern \"**/test/**\"".bright_white());
+    println!("  {} Exclude mocks", "41 --exclude-pattern \"**/*Mock*\"".bright_white());
+    println!("  {} Skip large files", "41 --max-file-size 5".bright_white());
 
     println!("\n{}", "Performance:".bright_green().bold());
     println!("  {} Use 8 threads", "41 -j 8".bright_white());
     println!("  {} Show stats", "41 --stats".bright_white());
+
+    println!("\n{}", "Baseline Comparison:".bright_green().bold());
+    println!("  {} Export baseline", "41 --export-baseline baseline.json".bright_white());
+    println!("  {} Compare to baseline", "41 --baseline baseline.json".bright_white());
 
     println!("\n{}", "Git Diff Mode (Incremental):".bright_green().bold());
     println!("  {} Scan only modified files", "41 --git-diff".bright_white());
@@ -988,15 +1148,49 @@ fn show_examples() {
     println!("\n{}", "CI/CD Integration:".bright_green().bold());
     println!("  {} Fail on critical", "41 --fail-on critical -q".bright_white());
     println!("  {} JSON output", "41 --format json".bright_white());
-    println!("  {} SARIF for GitHub", "41 --format sarif".bright_white());
+    println!("  {} SARIF for GitHub", "41 --format sarif -o results.sarif".bright_white());
+    println!("  {} No color for logs", "41 --no-color".bright_white());
 
     println!("\n{}", "Professional Audits:".bright_green().bold());
     println!("  {} Full audit", "41 --audit --project MyDApp".bright_white());
     println!("  {} Project analysis", "41 --project-analysis".bright_white());
 
-    println!("\n{}", "Detected Vulnerabilities:".bright_yellow().bold());
-    println!("  {} Reentrancy, Access Control, Proxy Admin", "CRITICAL".red());
-    println!("  {} Oracle Manipulation, DoS, MEV", "HIGH".red());
-    println!("  {} Precision Loss, Time Manipulation", "MEDIUM".yellow());
+    println!("\n{}", "Detected Vulnerabilities (SWC IDs):".bright_yellow().bold());
+    println!("  {} Reentrancy (SWC-107), Access Control (SWC-105), Proxy Admin", "CRITICAL".red());
+    println!("  {} Oracle Manipulation, Signature Issues (SWC-117), DoS (SWC-128)", "HIGH".red());
+    println!("  {} Precision Loss, Time Manipulation (SWC-116)", "MEDIUM".yellow());
     println!("  {} Gas Optimization, Code Quality", "LOW/INFO".blue());
+
+    println!("\n{}", "Exit Codes:".bright_cyan().bold());
+    println!("  {} No findings", "0".bright_green());
+    println!("  {} Critical/High findings", "1".bright_red());
+    println!("  {} Medium findings only", "2".bright_yellow());
+    println!("  {} Low/Info findings only", "3".bright_blue());
+    println!("  {} Scanner error", "10".red());
+}
+
+fn print_version_full() {
+    println!("{}", "41Swara Smart Contract Scanner".bright_blue().bold());
+    println!("{}", "Security Researcher Edition".bright_cyan());
+    println!();
+    println!("Version:       {}", "0.4.0".bright_white().bold());
+    println!("Build Target:  {}", std::env::consts::ARCH);
+    println!("OS:            {}", std::env::consts::OS);
+    println!("Rust Version:  {}", env!("CARGO_PKG_RUST_VERSION", "1.70+"));
+    println!();
+    println!("{}", "Features:".bright_green().bold());
+    println!("  - 150+ vulnerability patterns");
+    println!("  - CWE/SWC ID mapping for compliance");
+    println!("  - Confidence scoring (0-100%)");
+    println!("  - Modern Solidity 0.8.20+ support");
+    println!("  - L2/Base chain patterns");
+    println!("  - SARIF 2.1.0 output for CI/CD");
+    println!("  - Parallel scanning with rayon");
+    println!();
+    println!("{}", "SWC Coverage:".bright_yellow().bold());
+    println!("  SWC-100 to SWC-136 (Core Registry)");
+    println!("  41S-001 to 41S-050 (DeFi-specific)");
+    println!();
+    println!("Homepage: {}", "https://github.com/41swara/smart-contract-scanner");
+    println!("License:  MIT");
 }

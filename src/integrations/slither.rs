@@ -478,18 +478,24 @@ impl SlitherIntegration {
             .map(|e| e.name.clone())
             .unwrap_or_default();
 
+        let category = self.slither_check_to_category(&slither.check);
+        let swc_id = category.get_swc_id();
+        let confidence = self.score_to_confidence(confidence_score);
         Vulnerability {
             title: format!("[Slither] {}", slither.check),
             description: slither.description.clone(),
             severity,
-            category: self.slither_check_to_category(&slither.check),
+            category,
             line_number,
             end_line_number: None,
             code_snippet,
             context_before: None,
             context_after: None,
             recommendation: format!("See Slither detector '{}' for remediation guidance", slither.check),
-            confidence: self.score_to_confidence(confidence_score),
+            confidence_percent: confidence.to_percent(),
+            confidence,
+            swc_id,
+            fix_suggestion: None,
         }
     }
 

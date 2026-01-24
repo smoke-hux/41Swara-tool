@@ -1,8 +1,8 @@
 [package]
 name = "solidity_scanner"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
-description = "High-performance smart contract vulnerability scanner for blockchain security researchers"
+description = "High-performance smart contract vulnerability scanner for Ethereum Foundation and blockchain security researchers"
 authors = ["41Swara Security Team"]
 license = "MIT"
 readme = "README.md"
@@ -32,6 +32,7 @@ chrono = { version = "0.4", features = ["serde"] }
 
 # Performance improvements
 rayon = "1.8"                 # Parallel file scanning (4-10x speedup)
+once_cell = "1.19"            # Lazy static regex compilation for better performance
 
 # Git integration
 git2 = "0.18"                 # Git diff mode for incremental scanning
@@ -50,6 +51,9 @@ indicatif = "0.17"            # Progress bars for large scans
 
 # UUID generation for findings
 uuid = { version = "1.6", features = ["v4"] }
+
+# Glob pattern matching for file exclusion
+glob = "0.3"
 
 [profile.release]
 lto = true                    # Link-time optimization

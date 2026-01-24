@@ -388,6 +388,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "glob"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
+
+[[package]]
 name = "hashbrown"
 version = "0.14.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1006,7 +1012,7 @@ checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
 
 [[package]]
 name = "solidity_scanner"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "blake3",
  "chrono",
@@ -1014,8 +1020,10 @@ dependencies = [
  "colored",
  "dashmap",
  "git2",
+ "glob",
  "indicatif",
  "notify",
+ "once_cell",
  "petgraph",
  "rayon",
  "regex",

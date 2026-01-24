@@ -2391,6 +2391,449 @@ impl AdvancedAnalyzer {
 
         vulnerabilities
     }
+
+    // ============================================================================
+    // L2/BASE CHAIN SPECIFIC PATTERNS (v0.4.0)
+    // Enhanced detection for L2 chains including Base, Optimism, Arbitrum
+    // ============================================================================
+
+    /// Analyze L2/Base chain specific vulnerability patterns
+    pub fn analyze_l2_patterns(&self, content: &str) -> Vec<Vulnerability> {
+        let mut vulnerabilities = Vec::new();
+
+        vulnerabilities.extend(self.detect_l2_sequencer_patterns(content));
+        vulnerabilities.extend(self.detect_l2_gas_oracle_patterns(content));
+        vulnerabilities.extend(self.detect_base_bridge_patterns(content));
+        vulnerabilities.extend(self.detect_push0_compatibility(content));
+        vulnerabilities.extend(self.detect_uniswap_v4_hook_patterns(content));
+        vulnerabilities.extend(self.detect_ccip_patterns(content));
+        vulnerabilities.extend(self.detect_eigenlayer_patterns(content));
+
+        vulnerabilities
+    }
+
+    // L2 Sequencer Downtime Detection
+    // Critical for Chainlink price feeds on L2s
+    fn detect_l2_sequencer_patterns(&self, content: &str) -> Vec<Vulnerability> {
+        let mut vulnerabilities = Vec::new();
+
+        // Check if using Chainlink on L2
+        let uses_chainlink = content.contains("AggregatorV3Interface") ||
+                            content.contains("latestRoundData") ||
+                            content.contains("priceFeed");
+
+        let is_l2_aware = content.contains("sequencer") ||
+                         content.contains("Sequencer") ||
+                         content.contains("L2_SEQUENCER");
+
+        if uses_chainlink && !is_l2_aware {
+            // Look for price feed usage without sequencer check
+            let price_pattern = Regex::new(r"latestRoundData\s*\(\s*\)").unwrap();
+
+            for (idx, line) in content.lines().enumerate() {
+                if price_pattern.is_match(line) {
+                    vulnerabilities.push(Vulnerability::high_confidence(
+                        VulnerabilitySeverity::Critical,
+                        VulnerabilityCategory::L2SequencerDowntime,
+                        "CRITICAL: L2 Sequencer Uptime Not Checked".to_string(),
+                        "Chainlink price feed used without L2 sequencer uptime check. During sequencer downtime, stale prices can be exploited for liquidations.".to_string(),
+                        idx + 1,
+                        line.to_string(),
+                        "Add sequencer uptime feed check: require(block.timestamp - startedAt > GRACE_PERIOD)".to_string(),
+                    ));
+                }
+            }
+        }
+
+        // Check for grace period after sequencer recovery
+        if is_l2_aware {
+            let has_grace_period = content.contains("GRACE_PERIOD") ||
+                                  content.contains("gracePeriod") ||
+                                  content.contains("3600"); // 1 hour is common
+
+            if !has_grace_period {
+                for (idx, line) in content.lines().enumerate() {
+                    if line.contains("sequencer") && (line.contains("isSequencerUp") || line.contains("answer")) {
+                        vulnerabilities.push(Vulnerability::new(
+                            VulnerabilitySeverity::High,
+                            VulnerabilityCategory::L2SequencerDowntime,
+                            "L2 Sequencer Check Missing Grace Period".to_string(),
+                            "Sequencer uptime checked but no grace period after recovery".to_string(),
+                            idx + 1,
+                            line.to_string(),
+                            "Add grace period: require(block.timestamp - startedAt > GRACE_PERIOD)".to_string(),
+                        ));
+                        break;
+                    }
+                }
+            }
+        }
+
+        vulnerabilities
+    }
+
+    // L2 Gas Oracle Manipulation Detection
+    fn detect_l2_gas_oracle_patterns(&self, content: &str) -> Vec<Vulnerability> {
+        let mut vulnerabilities = Vec::new();
+
+        // Check for L1 gas price dependencies
+        let uses_l1_gas = content.contains("l1GasPrice") ||
+                         content.contains("L1_GAS") ||
+                         content.contains("getL1Fee") ||
+                         content.contains("OVM_GasPriceOracle");
+
+        if uses_l1_gas {
+            let oracle_pattern = Regex::new(r"(l1GasPrice|getL1Fee|L1_GAS)\s*\(?\s*\)?").unwrap();
+
+            for (idx, line) in content.lines().enumerate() {
+                if oracle_pattern.is_match(line) {
+                    // Check for manipulation protection
+                    let func_body: Vec<&str> = content.lines().skip(idx.saturating_sub(5)).take(15).collect();
+
+                    let has_bounds_check = func_body.iter().any(|l|
+                        l.contains("maxL1Gas") || l.contains("MAX_L1") ||
+                        l.contains("< ") || l.contains("> ") ||
+                        l.contains("require(") && l.contains("gas")
+                    );
+
+                    if !has_bounds_check {
+                        vulnerabilities.push(Vulnerability::new(
+                            VulnerabilitySeverity::Medium,
+                            VulnerabilityCategory::L2GasOracle,
+                            "L2 Gas Oracle Without Bounds Check".to_string(),
+                            "L1 gas price used without bounds - can be manipulated during gas spikes".to_string(),
+                            idx + 1,
+                            line.to_string(),
+                            "Add bounds: require(l1GasPrice <= MAX_L1_GAS_PRICE)".to_string(),
+                        ));
+                    }
+                }
+            }
+        }
+
+        // Check for block.basefee usage on L2
+        if content.contains("block.basefee") {
+            for (idx, line) in content.lines().enumerate() {
+                if line.contains("block.basefee") {
+                    vulnerabilities.push(Vulnerability::new(
+                        VulnerabilitySeverity::Low,
+                        VulnerabilityCategory::L2GasOracle,
+                        "block.basefee on L2".to_string(),
+                        "block.basefee behaves differently on L2 - may not reflect true gas costs".to_string(),
+                        idx + 1,
+                        line.to_string(),
+                        "Consider using L2-specific gas oracle for accurate fee estimation".to_string(),
+                    ));
+                }
+            }
+        }
+
+        vulnerabilities
+    }
+
+    // Base Chain Bridge Security Patterns
+    fn detect_base_bridge_patterns(&self, content: &str) -> Vec<Vulnerability> {
+        let mut vulnerabilities = Vec::new();
+
+        // Check for Base/Optimism bridge patterns
+        let is_bridge_related = content.contains("CrossDomainMessenger") ||
+                               content.contains("L1StandardBridge") ||
+                               content.contains("L2StandardBridge") ||
+                               content.contains("OptimismPortal");
+
+        if !is_bridge_related {
+            return vulnerabilities;
+        }
+
+        // Check for xDomainMessageSender validation
+        let message_pattern = Regex::new(r"function\s+\w+\s*\([^)]*\)\s+(external|public)").unwrap();
+
+        for (idx, line) in content.lines().enumerate() {
+            if message_pattern.is_match(line) {
+                let func_body: Vec<&str> = content.lines().skip(idx).take(15).collect();
+
+                let uses_cross_domain = func_body.iter().any(|l|
+                    l.contains("xDomainMessageSender") || l.contains("CrossDomainMessenger")
+                );
+
+                if uses_cross_domain {
+                    let has_sender_check = func_body.iter().any(|l|
+                        l.contains("require(") && l.contains("xDomainMessageSender")
+                    );
+
+                    let has_messenger_check = func_body.iter().any(|l|
+                        l.contains("msg.sender") && l.contains("messenger")
+                    );
+
+                    if !has_sender_check || !has_messenger_check {
+                        vulnerabilities.push(Vulnerability::high_confidence(
+                            VulnerabilitySeverity::Critical,
+                            VulnerabilityCategory::BaseBridgeSecurity,
+                            "Base/Optimism Bridge Message Not Validated".to_string(),
+                            "Cross-domain message handler lacks proper sender validation".to_string(),
+                            idx + 1,
+                            line.to_string(),
+                            "Validate: require(msg.sender == messenger && messenger.xDomainMessageSender() == expectedSender)".to_string(),
+                        ));
+                    }
+                }
+            }
+        }
+
+        // Check for finalization period awareness
+        if content.contains("finalize") || content.contains("Finalize") {
+            let has_delay_check = content.contains("FINALIZATION_PERIOD") ||
+                                 content.contains("finalizationPeriod") ||
+                                 content.contains("7 days");
+
+            if !has_delay_check {
+                for (idx, line) in content.lines().enumerate() {
+                    if line.contains("finalize") && !line.contains("//") {
+                        vulnerabilities.push(Vulnerability::new(
+                            VulnerabilitySeverity::Medium,
+                            VulnerabilityCategory::BaseBridgeSecurity,
+                            "Bridge Finalization Period Not Enforced".to_string(),
+                            "Optimistic rollup requires 7-day finalization for withdrawals".to_string(),
+                            idx + 1,
+                            line.to_string(),
+                            "Enforce finalization period before processing withdrawals".to_string(),
+                        ));
+                        break;
+                    }
+                }
+            }
+        }
+
+        vulnerabilities
+    }
+
+    // PUSH0 Opcode Compatibility Detection
+    fn detect_push0_compatibility(&self, content: &str) -> Vec<Vulnerability> {
+        let mut vulnerabilities = Vec::new();
+
+        // Check pragma version for PUSH0 compatibility
+        let pragma_pattern = Regex::new(r"pragma\s+solidity\s+(\^?>=?)?(\d+\.\d+\.\d+)").unwrap();
+
+        for (idx, line) in content.lines().enumerate() {
+            if let Some(captures) = pragma_pattern.captures(line) {
+                if let Some(version) = captures.get(2) {
+                    let version_str = version.as_str();
+
+                    // PUSH0 was introduced in 0.8.20
+                    if version_str.starts_with("0.8.") {
+                        if let Ok(minor) = version_str.split('.').nth(2).unwrap_or("0").parse::<u32>() {
+                            if minor >= 20 {
+                                // Check if targeting chains that don't support PUSH0
+                                let targets_legacy_chain = content.contains("// chain:") ||
+                                    content.contains("arbitrum") ||
+                                    content.contains("Arbitrum");
+
+                                if targets_legacy_chain {
+                                    vulnerabilities.push(Vulnerability::new(
+                                        VulnerabilitySeverity::Medium,
+                                        VulnerabilityCategory::Push0Compatibility,
+                                        "PUSH0 Opcode Compatibility Risk".to_string(),
+                                        format!("Solidity {} uses PUSH0 which may not be supported on all L2s", version_str),
+                                        idx + 1,
+                                        line.to_string(),
+                                        "Use --evm-version paris to avoid PUSH0, or verify target chain support".to_string(),
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        vulnerabilities
+    }
+
+    // Uniswap V4 Hook Exploitation Patterns
+    fn detect_uniswap_v4_hook_patterns(&self, content: &str) -> Vec<Vulnerability> {
+        let mut vulnerabilities = Vec::new();
+
+        // Check if this is a Uniswap V4 hook
+        if !content.contains("IHooks") && !content.contains("BaseHook") &&
+           !content.contains("beforeSwap") && !content.contains("afterSwap") {
+            return vulnerabilities;
+        }
+
+        // Check hook implementations
+        let hook_pattern = Regex::new(
+            r"function\s+(before|after)(Swap|AddLiquidity|RemoveLiquidity|Donate)\s*\("
+        ).unwrap();
+
+        for (idx, line) in content.lines().enumerate() {
+            if hook_pattern.is_match(line) {
+                let func_body: Vec<&str> = content.lines().skip(idx).take(25).collect();
+
+                // Check for reentrancy protection
+                let has_lock = func_body.iter().any(|l|
+                    l.contains("nonReentrant") || l.contains("lock") || l.contains("_lock")
+                );
+
+                // Check for caller validation
+                let has_caller_check = func_body.iter().any(|l|
+                    l.contains("PoolManager") || l.contains("poolManager") ||
+                    l.contains("msg.sender") && l.contains("require")
+                );
+
+                if !has_caller_check {
+                    vulnerabilities.push(Vulnerability::high_confidence(
+                        VulnerabilitySeverity::Critical,
+                        VulnerabilityCategory::UniswapV4HookExploit,
+                        "Uniswap V4 Hook Missing Caller Validation".to_string(),
+                        "Hook function can be called by any contract, not just PoolManager".to_string(),
+                        idx + 1,
+                        line.to_string(),
+                        "Validate: require(msg.sender == address(poolManager))".to_string(),
+                    ));
+                }
+
+                if !has_lock && line.contains("beforeSwap") {
+                    vulnerabilities.push(Vulnerability::new(
+                        VulnerabilitySeverity::High,
+                        VulnerabilityCategory::UniswapV4HookExploit,
+                        "V4 Hook Reentrancy Risk".to_string(),
+                        "beforeSwap hook without reentrancy protection".to_string(),
+                        idx + 1,
+                        line.to_string(),
+                        "Add reentrancy protection to prevent callback attacks".to_string(),
+                    ));
+                }
+
+                // Check for state modifications in view hooks
+                if line.contains("view") && func_body.iter().any(|l| l.contains("=") && !l.contains("==")) {
+                    vulnerabilities.push(Vulnerability::new(
+                        VulnerabilitySeverity::Medium,
+                        VulnerabilityCategory::UniswapV4HookExploit,
+                        "V4 Hook State in View Function".to_string(),
+                        "View hook appears to modify state which will revert".to_string(),
+                        idx + 1,
+                        line.to_string(),
+                        "Remove view modifier or remove state modifications".to_string(),
+                    ));
+                }
+            }
+        }
+
+        vulnerabilities
+    }
+
+    // Chainlink CCIP Cross-Chain Patterns
+    fn detect_ccip_patterns(&self, content: &str) -> Vec<Vulnerability> {
+        let mut vulnerabilities = Vec::new();
+
+        // Check if CCIP is used
+        if !content.contains("ccipReceive") && !content.contains("CCIPReceiver") &&
+           !content.contains("IRouterClient") {
+            return vulnerabilities;
+        }
+
+        // Check ccipReceive implementation
+        let receive_pattern = Regex::new(r"function\s+_ccipReceive\s*\(").unwrap();
+
+        for (idx, line) in content.lines().enumerate() {
+            if receive_pattern.is_match(line) || line.contains("ccipReceive") {
+                let func_body: Vec<&str> = content.lines().skip(idx).take(25).collect();
+
+                // Check for source chain validation
+                let has_chain_check = func_body.iter().any(|l|
+                    l.contains("sourceChainSelector") && (l.contains("require") || l.contains("if"))
+                );
+
+                // Check for sender validation
+                let has_sender_check = func_body.iter().any(|l|
+                    l.contains("allowlistedSender") || l.contains("trustedSender") ||
+                    (l.contains("sender") && l.contains("require"))
+                );
+
+                if !has_chain_check {
+                    vulnerabilities.push(Vulnerability::high_confidence(
+                        VulnerabilitySeverity::Critical,
+                        VulnerabilityCategory::CrossChainMessageReplay,
+                        "CCIP Missing Source Chain Validation".to_string(),
+                        "CCIP receiver doesn't validate source chain selector".to_string(),
+                        idx + 1,
+                        line.to_string(),
+                        "Validate: require(allowlistedChains[sourceChainSelector])".to_string(),
+                    ));
+                }
+
+                if !has_sender_check {
+                    vulnerabilities.push(Vulnerability::high_confidence(
+                        VulnerabilitySeverity::Critical,
+                        VulnerabilityCategory::CrossChainMessageReplay,
+                        "CCIP Missing Sender Validation".to_string(),
+                        "CCIP receiver doesn't validate message sender".to_string(),
+                        idx + 1,
+                        line.to_string(),
+                        "Validate sender is allowlisted for the source chain".to_string(),
+                    ));
+                }
+            }
+        }
+
+        vulnerabilities
+    }
+
+    // EigenLayer Restaking Patterns
+    fn detect_eigenlayer_patterns(&self, content: &str) -> Vec<Vulnerability> {
+        let mut vulnerabilities = Vec::new();
+
+        // Check if EigenLayer related
+        if !content.contains("EigenLayer") && !content.contains("restake") &&
+           !content.contains("AVS") && !content.contains("StrategyManager") {
+            return vulnerabilities;
+        }
+
+        // Check for slashing conditions
+        let stake_pattern = Regex::new(r"function\s+(stake|deposit|restake)\w*\s*\(").unwrap();
+
+        for (idx, line) in content.lines().enumerate() {
+            if stake_pattern.is_match(line) {
+                let func_body: Vec<&str> = content.lines().skip(idx).take(20).collect();
+
+                // Check for withdrawal delay
+                let has_delay = func_body.iter().any(|l|
+                    l.contains("withdrawalDelay") || l.contains("WITHDRAWAL_DELAY") ||
+                    l.contains("minWithdrawalDelay")
+                );
+
+                // Check for slashing protection
+                let has_slashing_check = content.contains("slashingCondition") ||
+                                        content.contains("canSlash") ||
+                                        content.contains("isSlashed");
+
+                if !has_delay {
+                    vulnerabilities.push(Vulnerability::new(
+                        VulnerabilitySeverity::Medium,
+                        VulnerabilityCategory::AccessControl,
+                        "EigenLayer Missing Withdrawal Delay".to_string(),
+                        "Restaking without withdrawal delay enables rapid unstaking".to_string(),
+                        idx + 1,
+                        line.to_string(),
+                        "Implement withdrawal delay to prevent flash loan attacks".to_string(),
+                    ));
+                }
+
+                if !has_slashing_check {
+                    vulnerabilities.push(Vulnerability::new(
+                        VulnerabilitySeverity::Low,
+                        VulnerabilityCategory::AccessControl,
+                        "EigenLayer Slashing Not Implemented".to_string(),
+                        "Restaking contract doesn't implement slashing conditions".to_string(),
+                        idx + 1,
+                        line.to_string(),
+                        "Implement slashing for AVS operators".to_string(),
+                    ));
+                }
+            }
+        }
+
+        vulnerabilities
+    }
 }
 
 // Cross-contract vulnerability detection (reserved for future project-wide analysis)

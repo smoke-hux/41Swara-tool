@@ -58,6 +58,10 @@ pub struct SarifRuleProperties {
     pub precision: String,
     #[serde(rename = "security-severity")]
     pub security_severity: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cwe: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub swc: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -263,6 +267,26 @@ fn create_sarif_rule(
     let level = severity_to_sarif_level(severity);
     let security_severity = severity_to_score(severity);
 
+    // Get SWC/CWE IDs from the category
+    let swc_id = category.get_swc_id();
+    let (swc, cwe) = match swc_id {
+        Some(ref id) => (Some(id.id.clone()), id.cwe_id.clone()),
+        None => (None, None),
+    };
+
+    // Build tags with SWC/CWE
+    let mut tags = vec![
+        "security".to_string(),
+        "smart-contract".to_string(),
+        format!("{:?}", category).to_lowercase(),
+    ];
+    if let Some(ref swc_val) = swc {
+        tags.push(swc_val.clone());
+    }
+    if let Some(ref cwe_val) = cwe {
+        tags.push(cwe_val.clone());
+    }
+
     SarifRule {
         id: rule_id.clone(),
         name: title.to_string(),
@@ -279,13 +303,11 @@ fn create_sarif_rule(
             text: format!("{}\\n\\nRecommendation: {}", description, recommendation),
         },
         properties: SarifRuleProperties {
-            tags: vec![
-                "security".to_string(),
-                "smart-contract".to_string(),
-                format!("{:?}", category).to_lowercase(),
-            ],
+            tags,
             precision: "high".to_string(),
             security_severity,
+            cwe,
+            swc,
         },
     }
 }
@@ -307,7 +329,7 @@ mod tests {
         );
 
         let results = vec![(PathBuf::from("test.sol"), vec![vuln])];
-        let report = SarifReport::new(results, "0.3.0");
+        let report = SarifReport::new(results, "0.4.0");
 
         assert_eq!(report.version, "2.1.0");
         assert_eq!(report.runs.len(), 1);

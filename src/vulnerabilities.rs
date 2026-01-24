@@ -2,6 +2,25 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use crate::parser::CompilerVersion;
 
+/// SWC Registry ID mapping for smart contract weaknesses
+/// Based on https://swcregistry.io/
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SwcId {
+    pub id: String,        // e.g., "SWC-107"
+    pub title: String,     // e.g., "Reentrancy"
+    pub cwe_id: Option<String>,  // Corresponding CWE, e.g., "CWE-841"
+}
+
+impl SwcId {
+    pub fn new(id: &str, title: &str, cwe_id: Option<&str>) -> Self {
+        Self {
+            id: id.to_string(),
+            title: title.to_string(),
+            cwe_id: cwe_id.map(|s| s.to_string()),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Vulnerability {
     pub severity: VulnerabilitySeverity,
@@ -15,13 +34,36 @@ pub struct Vulnerability {
     pub context_after: Option<String>,   // Lines after the vulnerability for context
     pub recommendation: String,
     pub confidence: VulnerabilityConfidence,  // How confident we are this is a real issue
+    pub confidence_percent: u8,  // Confidence as percentage (0-100)
+    pub swc_id: Option<SwcId>,   // SWC Registry ID with CWE mapping
+    pub fix_suggestion: Option<String>,  // Suggested code fix
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum VulnerabilityConfidence {
-    High,    // Very likely a real vulnerability
-    Medium,  // Likely a vulnerability, needs review
-    Low,     // Possible vulnerability, may be false positive
+    High,    // Very likely a real vulnerability (80-100%)
+    Medium,  // Likely a vulnerability, needs review (50-79%)
+    Low,     // Possible vulnerability, may be false positive (0-49%)
+}
+
+impl VulnerabilityConfidence {
+    pub fn from_percent(percent: u8) -> Self {
+        if percent >= 80 {
+            VulnerabilityConfidence::High
+        } else if percent >= 50 {
+            VulnerabilityConfidence::Medium
+        } else {
+            VulnerabilityConfidence::Low
+        }
+    }
+
+    pub fn to_percent(&self) -> u8 {
+        match self {
+            VulnerabilityConfidence::High => 90,
+            VulnerabilityConfidence::Medium => 65,
+            VulnerabilityConfidence::Low => 30,
+        }
+    }
 }
 
 impl Vulnerability {
@@ -35,6 +77,7 @@ impl Vulnerability {
         code_snippet: String,
         recommendation: String,
     ) -> Self {
+        let swc_id = category.get_swc_id();
         Self {
             severity,
             category,
@@ -47,6 +90,9 @@ impl Vulnerability {
             context_after: None,
             recommendation,
             confidence: VulnerabilityConfidence::Medium,
+            confidence_percent: 65,
+            swc_id,
+            fix_suggestion: None,
         }
     }
 
@@ -62,7 +108,31 @@ impl Vulnerability {
     ) -> Self {
         let mut vuln = Self::new(severity, category, title, description, line_number, code_snippet, recommendation);
         vuln.confidence = VulnerabilityConfidence::High;
+        vuln.confidence_percent = 90;
         vuln
+    }
+
+    /// Create a vulnerability with a specific confidence percentage
+    pub fn with_confidence_percent(mut self, percent: u8) -> Self {
+        self.confidence_percent = percent.min(100);
+        self.confidence = VulnerabilityConfidence::from_percent(self.confidence_percent);
+        self
+    }
+
+    /// Add a fix suggestion to the vulnerability
+    pub fn with_fix(mut self, fix: String) -> Self {
+        self.fix_suggestion = Some(fix);
+        self
+    }
+
+    /// Get the SWC ID string if available
+    pub fn get_swc_id_str(&self) -> Option<&str> {
+        self.swc_id.as_ref().map(|s| s.id.as_str())
+    }
+
+    /// Get the CWE ID string if available
+    pub fn get_cwe_id(&self) -> Option<&str> {
+        self.swc_id.as_ref().and_then(|s| s.cwe_id.as_deref())
     }
 
     /// Add context lines around the vulnerability
@@ -208,6 +278,105 @@ pub enum VulnerabilityCategory {
     GovernanceAttack,          // Flash loan governance attacks (Beanstalk $182M)
     LiquidityManipulation,     // LP token/pool manipulation
     BridgeVulnerability,       // Cross-chain bridge exploits
+    // 2024-2025 Modern DeFi/L2 patterns
+    ERC4626Inflation,          // First depositor inflation attack
+    Permit2SignatureReuse,     // Permit2 signature reuse/deadline bypass
+    LayerZeroTrustedRemote,    // LayerZero trusted remote manipulation
+    Create2Collision,          // Create2/Create3 address collision
+    TransientStorageReentrancy,// EIP-1153 transient storage reentrancy
+    Push0Compatibility,        // PUSH0 opcode compatibility issues
+    BlobDataHandling,          // EIP-4844 blob data handling
+    UniswapV4HookExploit,      // Uniswap V4 hook exploitation
+    CrossChainMessageReplay,   // Cross-chain message replay
+    L2SequencerDowntime,       // L2 sequencer uptime issues
+    L2GasOracle,               // L2 gas price oracle manipulation
+    BaseBridgeSecurity,        // Base chain bridge patterns
+}
+
+impl VulnerabilityCategory {
+    /// Get the SWC Registry ID and CWE mapping for this vulnerability category
+    /// Based on https://swcregistry.io/ and MITRE CWE
+    pub fn get_swc_id(&self) -> Option<SwcId> {
+        match self {
+            // Core SWC Registry mappings
+            VulnerabilityCategory::Reentrancy => Some(SwcId::new("SWC-107", "Reentrancy", Some("CWE-841"))),
+            VulnerabilityCategory::AccessControl => Some(SwcId::new("SWC-105", "Unprotected Ether Withdrawal", Some("CWE-284"))),
+            VulnerabilityCategory::RoleBasedAccessControl => Some(SwcId::new("SWC-105", "Unprotected Ether Withdrawal", Some("CWE-284"))),
+            VulnerabilityCategory::ArithmeticIssues => Some(SwcId::new("SWC-101", "Integer Overflow and Underflow", Some("CWE-190"))),
+            VulnerabilityCategory::UnhandledExceptions => Some(SwcId::new("SWC-104", "Unchecked Call Return Value", Some("CWE-252"))),
+            VulnerabilityCategory::PragmaIssues => Some(SwcId::new("SWC-103", "Floating Pragma", Some("CWE-1104"))),
+            VulnerabilityCategory::RandomnessVulnerabilities => Some(SwcId::new("SWC-120", "Weak Sources of Randomness", Some("CWE-330"))),
+            VulnerabilityCategory::FrontRunning => Some(SwcId::new("SWC-114", "Transaction Order Dependence", Some("CWE-362"))),
+            VulnerabilityCategory::TimeManipulation => Some(SwcId::new("SWC-116", "Block Timestamp Dependence", Some("CWE-829"))),
+            VulnerabilityCategory::BlockTimestamp => Some(SwcId::new("SWC-116", "Block Timestamp Dependence", Some("CWE-829"))),
+            VulnerabilityCategory::DoSAttacks => Some(SwcId::new("SWC-128", "DoS With Block Gas Limit", Some("CWE-400"))),
+            VulnerabilityCategory::StorageDoSAttacks => Some(SwcId::new("SWC-128", "DoS With Block Gas Limit", Some("CWE-400"))),
+            VulnerabilityCategory::UnsafeExternalCalls => Some(SwcId::new("SWC-107", "Reentrancy", Some("CWE-841"))),
+            VulnerabilityCategory::DelegateCalls => Some(SwcId::new("SWC-112", "Delegatecall to Untrusted Callee", Some("CWE-829"))),
+            VulnerabilityCategory::TxOriginAuth => Some(SwcId::new("SWC-115", "Authorization through tx.origin", Some("CWE-477"))),
+            VulnerabilityCategory::SignatureVulnerabilities => Some(SwcId::new("SWC-117", "Signature Malleability", Some("CWE-347"))),
+            VulnerabilityCategory::SignatureReplay => Some(SwcId::new("SWC-121", "Missing Protection against Signature Replay", Some("CWE-294"))),
+            VulnerabilityCategory::DeprecatedFunctions => Some(SwcId::new("SWC-111", "Use of Deprecated Functions", Some("CWE-477"))),
+            VulnerabilityCategory::UncheckedReturnValues => Some(SwcId::new("SWC-104", "Unchecked Call Return Value", Some("CWE-252"))),
+            VulnerabilityCategory::UnusedReturnValues => Some(SwcId::new("SWC-104", "Unchecked Call Return Value", Some("CWE-252"))),
+            VulnerabilityCategory::LowLevelCalls => Some(SwcId::new("SWC-104", "Unchecked Call Return Value", Some("CWE-252"))),
+            VulnerabilityCategory::AssemblyUsage => Some(SwcId::new("SWC-106", "Unprotected SELFDESTRUCT Instruction", Some("CWE-749"))),
+            VulnerabilityCategory::ShadowingIssues => Some(SwcId::new("SWC-119", "Shadowing State Variables", Some("CWE-710"))),
+            VulnerabilityCategory::UninitializedVariables => Some(SwcId::new("SWC-109", "Uninitialized Storage Pointer", Some("CWE-824"))),
+            VulnerabilityCategory::CompilerBug => Some(SwcId::new("SWC-102", "Outdated Compiler Version", Some("CWE-1104"))),
+            VulnerabilityCategory::BadPRNG => Some(SwcId::new("SWC-120", "Weak Sources of Randomness", Some("CWE-330"))),
+            VulnerabilityCategory::IncorrectEquality => Some(SwcId::new("SWC-132", "Unexpected Ether Balance", Some("CWE-670"))),
+            VulnerabilityCategory::PrecisionLoss => Some(SwcId::new("SWC-101", "Integer Overflow and Underflow", Some("CWE-190"))),
+
+            // DeFi-specific (41Swara custom IDs)
+            VulnerabilityCategory::OracleManipulation => Some(SwcId::new("41S-001", "Oracle Manipulation", Some("CWE-807"))),
+            VulnerabilityCategory::FlashLoanAttack => Some(SwcId::new("41S-002", "Flash Loan Attack Vector", Some("CWE-807"))),
+            VulnerabilityCategory::ProxyAdminVulnerability => Some(SwcId::new("41S-003", "Proxy Admin Vulnerability", Some("CWE-284"))),
+            VulnerabilityCategory::CallbackReentrancy => Some(SwcId::new("41S-004", "Callback Reentrancy", Some("CWE-841"))),
+            VulnerabilityCategory::ArbitraryExternalCall => Some(SwcId::new("41S-005", "Arbitrary External Call", Some("CWE-749"))),
+            VulnerabilityCategory::CrossChainReplay => Some(SwcId::new("41S-006", "Cross-Chain Replay", Some("CWE-294"))),
+            VulnerabilityCategory::InputValidationFailure => Some(SwcId::new("41S-007", "Input Validation Failure", Some("CWE-20"))),
+            VulnerabilityCategory::DecimalPrecisionMismatch => Some(SwcId::new("41S-008", "Decimal Precision Mismatch", Some("CWE-190"))),
+            VulnerabilityCategory::UnprotectedProxyUpgrade => Some(SwcId::new("41S-009", "Unprotected Proxy Upgrade", Some("CWE-284"))),
+            VulnerabilityCategory::MEVExploitable => Some(SwcId::new("41S-010", "MEV Exploitable", Some("CWE-362"))),
+            VulnerabilityCategory::CallbackInjection => Some(SwcId::new("41S-011", "Callback Injection", Some("CWE-94"))),
+            VulnerabilityCategory::GovernanceAttack => Some(SwcId::new("41S-012", "Governance Attack", Some("CWE-284"))),
+            VulnerabilityCategory::LiquidityManipulation => Some(SwcId::new("41S-013", "Liquidity Manipulation", Some("CWE-807"))),
+            VulnerabilityCategory::BridgeVulnerability => Some(SwcId::new("41S-014", "Bridge Vulnerability", Some("CWE-345"))),
+            VulnerabilityCategory::LogicError => Some(SwcId::new("41S-015", "Logic Error", Some("CWE-840"))),
+            VulnerabilityCategory::MetaTransactionVulnerability => Some(SwcId::new("41S-016", "Meta-Transaction Vulnerability", Some("CWE-345"))),
+            VulnerabilityCategory::UncheckedMathOperation => Some(SwcId::new("41S-017", "Unchecked Math Operation", Some("CWE-190"))),
+            VulnerabilityCategory::TrustedForwarderBypass => Some(SwcId::new("41S-018", "Trusted Forwarder Bypass", Some("CWE-345"))),
+
+            // 2024-2025 Modern patterns
+            VulnerabilityCategory::ERC4626Inflation => Some(SwcId::new("41S-020", "ERC-4626 Inflation Attack", Some("CWE-682"))),
+            VulnerabilityCategory::Permit2SignatureReuse => Some(SwcId::new("41S-021", "Permit2 Signature Reuse", Some("CWE-294"))),
+            VulnerabilityCategory::LayerZeroTrustedRemote => Some(SwcId::new("41S-022", "LayerZero Trusted Remote", Some("CWE-284"))),
+            VulnerabilityCategory::Create2Collision => Some(SwcId::new("41S-023", "Create2 Address Collision", Some("CWE-327"))),
+            VulnerabilityCategory::TransientStorageReentrancy => Some(SwcId::new("41S-024", "Transient Storage Reentrancy", Some("CWE-841"))),
+            VulnerabilityCategory::Push0Compatibility => Some(SwcId::new("41S-025", "PUSH0 Compatibility", Some("CWE-1104"))),
+            VulnerabilityCategory::BlobDataHandling => Some(SwcId::new("41S-026", "Blob Data Handling", Some("CWE-20"))),
+            VulnerabilityCategory::UniswapV4HookExploit => Some(SwcId::new("41S-027", "Uniswap V4 Hook Exploit", Some("CWE-94"))),
+            VulnerabilityCategory::CrossChainMessageReplay => Some(SwcId::new("41S-028", "Cross-Chain Message Replay", Some("CWE-294"))),
+            VulnerabilityCategory::L2SequencerDowntime => Some(SwcId::new("41S-029", "L2 Sequencer Downtime", Some("CWE-703"))),
+            VulnerabilityCategory::L2GasOracle => Some(SwcId::new("41S-030", "L2 Gas Oracle Manipulation", Some("CWE-807"))),
+            VulnerabilityCategory::BaseBridgeSecurity => Some(SwcId::new("41S-031", "Base Bridge Security", Some("CWE-345"))),
+
+            // Info/Quality categories (no standard SWC)
+            VulnerabilityCategory::GasOptimization |
+            VulnerabilityCategory::UnusedCode |
+            VulnerabilityCategory::MagicNumbers |
+            VulnerabilityCategory::NamingConventions |
+            VulnerabilityCategory::StateVariable |
+            VulnerabilityCategory::MissingEvents |
+            VulnerabilityCategory::ImmutabilityIssues |
+            VulnerabilityCategory::ComplexityIssues |
+            VulnerabilityCategory::ExternalFunction => None,
+
+            // ABI categories (custom IDs)
+            _ => None,
+        }
+    }
 }
 
 pub struct VulnerabilityRule {
@@ -1881,6 +2050,19 @@ impl VulnerabilityCategory {
             VulnerabilityCategory::GovernanceAttack => "Governance Attack Vector",
             VulnerabilityCategory::LiquidityManipulation => "Liquidity Manipulation Risk",
             VulnerabilityCategory::BridgeVulnerability => "Bridge Vulnerability",
+            // 2024-2025 Modern DeFi/L2 patterns
+            VulnerabilityCategory::ERC4626Inflation => "ERC-4626 First Depositor Attack",
+            VulnerabilityCategory::Permit2SignatureReuse => "Permit2 Signature Reuse",
+            VulnerabilityCategory::LayerZeroTrustedRemote => "LayerZero Trusted Remote Manipulation",
+            VulnerabilityCategory::Create2Collision => "Create2/Create3 Address Collision",
+            VulnerabilityCategory::TransientStorageReentrancy => "Transient Storage Reentrancy",
+            VulnerabilityCategory::Push0Compatibility => "PUSH0 Opcode Compatibility",
+            VulnerabilityCategory::BlobDataHandling => "EIP-4844 Blob Data Handling",
+            VulnerabilityCategory::UniswapV4HookExploit => "Uniswap V4 Hook Exploitation",
+            VulnerabilityCategory::CrossChainMessageReplay => "Cross-Chain Message Replay",
+            VulnerabilityCategory::L2SequencerDowntime => "L2 Sequencer Downtime Risk",
+            VulnerabilityCategory::L2GasOracle => "L2 Gas Oracle Manipulation",
+            VulnerabilityCategory::BaseBridgeSecurity => "Base Chain Bridge Security",
         }
     }
 }
