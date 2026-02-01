@@ -99,8 +99,11 @@ A fully offline, API-independent Rust-based static analysis tool designed for bu
 git clone https://github.com/41swara/smart-contract-scanner
 cd smart-contract-scanner
 
-# Install globally
+# Install globally (binary only)
 cargo install --path .
+
+# Or use make for full installation with man pages
+sudo make install
 ```
 
 This installs two commands:
@@ -112,12 +115,36 @@ This installs two commands:
 export PATH="$HOME/.cargo/bin:$PATH"
 ```
 
+### User-Local Installation (No sudo)
+
+```bash
+# Install to ~/.local (no root required)
+make install-user
+
+# Add to your shell profile (~/.bashrc or ~/.zshrc):
+export PATH="$HOME/.local/bin:$PATH"
+export MANPATH="$HOME/.local/share/man:$MANPATH"
+```
+
 ### Build from Source
 ```bash
 git clone https://github.com/41swara/smart-contract-scanner
 cd smart-contract-scanner
 cargo build --release
 ./target/release/41 --help
+```
+
+### Manual Page
+
+After installation, view the manual:
+```bash
+man 41
+man 41swara
+```
+
+Or view directly from the source:
+```bash
+man ./man/41.1
 ```
 
 ---

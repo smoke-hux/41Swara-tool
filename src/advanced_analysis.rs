@@ -2834,6 +2834,359 @@ impl AdvancedAnalyzer {
 
         vulnerabilities
     }
+
+    // ============================================================================
+    // RESEARCH PAPER VULNERABILITIES
+    // From: "Security Analysis of DeFi" (arXiv:2205.09524v1)
+    // ============================================================================
+
+    /// Analyze vulnerabilities from the DeFi security research paper
+    pub fn analyze_defi_paper_vulnerabilities(&self, content: &str) -> Vec<Vulnerability> {
+        let mut vulnerabilities = Vec::new();
+
+        // ERC-777 Callback Reentrancy (dForce $24M)
+        vulnerabilities.extend(self.detect_erc777_reentrancy(content));
+
+        // Greedy Contract (Locked ETH)
+        vulnerabilities.extend(self.detect_greedy_contract(content));
+
+        // Double Claiming Attack (Popsicle Finance $25M)
+        vulnerabilities.extend(self.detect_double_claiming_pattern(content));
+
+        // Missing Emergency Stop
+        vulnerabilities.extend(self.detect_missing_emergency_stop(content));
+
+        // Signature Verification Bypass (Wormhole $326M)
+        vulnerabilities.extend(self.detect_signature_bypass_patterns(content));
+
+        vulnerabilities
+    }
+
+    /// Detect ERC-777 callback reentrancy (dForce $24M attack pattern)
+    /// ERC-777 tokens have hooks (tokensReceived/tokensToSend) that can enable reentrancy
+    fn detect_erc777_reentrancy(&self, content: &str) -> Vec<Vulnerability> {
+        let mut vulnerabilities = Vec::new();
+
+        // Check for ERC-777 usage
+        let has_erc777 = content.contains("IERC777") ||
+                         content.contains("ERC777") ||
+                         content.contains("tokensReceived") ||
+                         content.contains("tokensToSend") ||
+                         content.contains("ERC777TokensSender") ||
+                         content.contains("ERC777TokensRecipient");
+
+        if !has_erc777 {
+            return vulnerabilities;
+        }
+
+        // Check for reentrancy protection
+        let has_protection = content.contains("ReentrancyGuard") ||
+                            content.contains("nonReentrant") ||
+                            content.contains("_status");
+
+        if !has_protection {
+            // Find where ERC-777 is used
+            let erc777_pattern = Regex::new(
+                r"IERC777|ERC777|tokensReceived|tokensToSend"
+            ).unwrap();
+
+            for (idx, line) in content.lines().enumerate() {
+                if erc777_pattern.is_match(line) {
+                    vulnerabilities.push(Vulnerability::high_confidence(
+                        VulnerabilitySeverity::Critical,
+                        VulnerabilityCategory::ERC777CallbackReentrancy,
+                        "ERC-777 Token Without Reentrancy Guard (dForce Pattern)".to_string(),
+                        "ERC-777 token interaction without ReentrancyGuard - $24M dForce exploit pattern".to_string(),
+                        idx + 1,
+                        line.to_string(),
+                        "Add ReentrancyGuard to all functions that interact with ERC-777 tokens".to_string(),
+                    ));
+                    break; // Only report once
+                }
+            }
+        }
+
+        // Also check for state changes after ERC-777 transfers
+        let lines: Vec<&str> = content.lines().collect();
+        for (idx, line) in lines.iter().enumerate() {
+            if line.contains(".send(") || line.contains("IERC777(") {
+                // Look for state changes after the transfer
+                for future_idx in (idx + 1)..lines.len().min(idx + 10) {
+                    let future_line = lines[future_idx];
+                    if (future_line.contains("=") && !future_line.contains("==")) &&
+                       (future_line.contains("balance") || future_line.contains("total") ||
+                        future_line.contains("amount") || future_line.contains("debt")) {
+                        if !has_protection {
+                            vulnerabilities.push(Vulnerability::high_confidence(
+                                VulnerabilitySeverity::Critical,
+                                VulnerabilityCategory::ERC777CallbackReentrancy,
+                                "State Change After ERC-777 Transfer".to_string(),
+                                "State modification after ERC-777 token transfer enables callback reentrancy".to_string(),
+                                idx + 1,
+                                line.to_string(),
+                                "Move all state changes before ERC-777 transfers or use ReentrancyGuard".to_string(),
+                            ));
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        vulnerabilities
+    }
+
+    /// Detect greedy contracts that can receive but not withdraw ETH
+    /// Table I from paper: "Greedy Contracts - Receive but not withdraw Ethers"
+    fn detect_greedy_contract(&self, content: &str) -> Vec<Vulnerability> {
+        let mut vulnerabilities = Vec::new();
+
+        // Check for receive/fallback payable
+        let can_receive = content.contains("receive()") && content.contains("payable") ||
+                         content.contains("fallback()") && content.contains("payable") ||
+                         Regex::new(r"function\s+\w+\([^)]*\)\s+(external|public)\s+payable")
+                             .unwrap().is_match(content);
+
+        if !can_receive {
+            return vulnerabilities;
+        }
+
+        // Check for withdrawal mechanism
+        let has_withdraw = content.contains("withdraw") ||
+                          content.contains("transfer(") ||
+                          content.contains(".send(") ||
+                          content.contains(".call{value:") ||
+                          content.contains("payable(") ||
+                          content.contains("selfdestruct");
+
+        if !has_withdraw {
+            // Find the payable function
+            let payable_pattern = Regex::new(
+                r"(receive|fallback)\s*\(\s*\)\s*(external\s+)?payable|function\s+\w+\([^)]*\)\s+(external|public)\s+payable"
+            ).unwrap();
+
+            for (idx, line) in content.lines().enumerate() {
+                if payable_pattern.is_match(line) {
+                    vulnerabilities.push(Vulnerability::high_confidence(
+                        VulnerabilitySeverity::High,
+                        VulnerabilityCategory::GreedyContract,
+                        "Greedy Contract - ETH Can Be Locked Forever".to_string(),
+                        "Contract can receive ETH but has no withdrawal mechanism - funds may be locked forever".to_string(),
+                        idx + 1,
+                        line.to_string(),
+                        "Add a withdraw function to allow ETH extraction".to_string(),
+                    ));
+                    break;
+                }
+            }
+        }
+
+        vulnerabilities
+    }
+
+    /// Detect double-claiming attack patterns (Popsicle Finance $25M)
+    /// LP tokens can be transferred between addresses to claim rewards multiple times
+    fn detect_double_claiming_pattern(&self, content: &str) -> Vec<Vulnerability> {
+        let mut vulnerabilities = Vec::new();
+
+        // Check if this is a rewards/staking contract
+        let is_rewards_contract = content.contains("reward") || content.contains("Reward") ||
+                                  content.contains("stake") || content.contains("Stake") ||
+                                  content.contains("farm") || content.contains("Farm");
+
+        if !is_rewards_contract {
+            return vulnerabilities;
+        }
+
+        // Look for claiming functions
+        let claim_pattern = Regex::new(
+            r"function\s+(claim|harvest|getReward|collectFee|collectReward)\w*\s*\([^)]*\)"
+        ).unwrap();
+
+        for (idx, line) in content.lines().enumerate() {
+            if claim_pattern.is_match(line) {
+                // Look at function body
+                let func_body: Vec<&str> = content.lines().skip(idx).take(30).collect();
+
+                // Check for reward debt pattern (proper protection)
+                let has_debt_tracking = func_body.iter().any(|l|
+                    l.contains("rewardDebt") || l.contains("claimedAmount") ||
+                    l.contains("userRewardPaid") || l.contains("_rewardPaid")
+                );
+
+                // Check for balance-based reward calculation (vulnerable)
+                let uses_balance_for_reward = func_body.iter().any(|l|
+                    (l.contains("balanceOf") || l.contains("_balances[")) &&
+                    (l.contains("reward") || l.contains("*"))
+                );
+
+                // Check for transfer hooks that reset claims
+                let has_transfer_hook = content.contains("_beforeTokenTransfer") ||
+                                       content.contains("_afterTokenTransfer") ||
+                                       content.contains("_transfer");
+
+                if uses_balance_for_reward && !has_debt_tracking {
+                    vulnerabilities.push(Vulnerability::high_confidence(
+                        VulnerabilitySeverity::High,
+                        VulnerabilityCategory::DoubleClaiming,
+                        "Double-Claiming Vulnerability (Popsicle Finance Pattern)".to_string(),
+                        "Reward calculation based on balance without debt tracking - $25M Popsicle Finance exploit".to_string(),
+                        idx + 1,
+                        line.to_string(),
+                        "Use rewardDebt pattern: track total rewards and subtract already claimed amount".to_string(),
+                    ));
+                }
+
+                if uses_balance_for_reward && !has_transfer_hook {
+                    vulnerabilities.push(Vulnerability::new(
+                        VulnerabilitySeverity::Medium,
+                        VulnerabilityCategory::DoubleClaiming,
+                        "Missing Transfer Hook for Reward Reset".to_string(),
+                        "LP tokens can be transferred without resetting reward claims".to_string(),
+                        idx + 1,
+                        line.to_string(),
+                        "Implement _beforeTokenTransfer to claim/reset rewards before LP transfers".to_string(),
+                    ));
+                }
+            }
+        }
+
+        vulnerabilities
+    }
+
+    /// Detect missing emergency stop / circuit breaker (Table I: "Missing Interrupter")
+    /// DeFi contracts need pause mechanisms for incident response
+    fn detect_missing_emergency_stop(&self, content: &str) -> Vec<Vulnerability> {
+        let mut vulnerabilities = Vec::new();
+
+        // Check if this is a DeFi contract with critical operations
+        let defi_operations = vec!["swap", "deposit", "withdraw", "stake", "unstake", "borrow", "repay", "liquidate"];
+        let is_defi = defi_operations.iter().any(|op| content.to_lowercase().contains(op));
+
+        if !is_defi {
+            return vulnerabilities;
+        }
+
+        // Check for pausable pattern
+        let has_pausable = content.contains("Pausable") ||
+                          content.contains("whenNotPaused") ||
+                          content.contains("paused()") ||
+                          content.contains("_pause") ||
+                          content.contains("isPaused");
+
+        if !has_pausable {
+            // Find critical DeFi functions without pause
+            let critical_pattern = Regex::new(
+                r"function\s+(swap|deposit|withdraw|stake|unstake|borrow|repay|liquidate)\w*\s*\([^)]*\)\s+(external|public)"
+            ).unwrap();
+
+            for (idx, line) in content.lines().enumerate() {
+                if critical_pattern.is_match(line) {
+                    vulnerabilities.push(Vulnerability::new(
+                        VulnerabilitySeverity::Medium,
+                        VulnerabilityCategory::MissingEmergencyStop,
+                        "DeFi Contract Missing Emergency Stop".to_string(),
+                        "Critical DeFi function without pause mechanism - no circuit breaker for incident response".to_string(),
+                        idx + 1,
+                        line.to_string(),
+                        "Implement Pausable pattern: add whenNotPaused modifier to critical functions".to_string(),
+                    ));
+                    break; // Report once per contract
+                }
+            }
+        }
+
+        vulnerabilities
+    }
+
+    /// Detect signature verification bypass patterns (Wormhole $326M)
+    /// Incomplete signature verification allows message forgery
+    fn detect_signature_bypass_patterns(&self, content: &str) -> Vec<Vulnerability> {
+        let mut vulnerabilities = Vec::new();
+
+        // Check for signature verification code
+        let has_sig_verification = content.contains("ecrecover") ||
+                                   content.contains("ECDSA.recover") ||
+                                   content.contains("SignatureChecker") ||
+                                   content.contains("verifySignature") ||
+                                   content.contains("verify_signature");
+
+        if !has_sig_verification {
+            return vulnerabilities;
+        }
+
+        // Look for custom verification functions (higher risk)
+        let custom_verify_pattern = Regex::new(
+            r"function\s+verify\w*[Ss]ignature\w*\s*\([^)]*\)"
+        ).unwrap();
+
+        for (idx, line) in content.lines().enumerate() {
+            if custom_verify_pattern.is_match(line) {
+                let func_body: Vec<&str> = content.lines().skip(idx).take(30).collect();
+
+                // Check for proper account validation
+                let has_account_validation = func_body.iter().any(|l|
+                    (l.contains("require") || l.contains("if")) &&
+                    (l.contains("account") || l.contains("signer") || l.contains("address(0)"))
+                );
+
+                // Check for message hash validation
+                let has_message_validation = func_body.iter().any(|l|
+                    l.contains("keccak256") || l.contains("hash") || l.contains("digest")
+                );
+
+                if !has_account_validation {
+                    vulnerabilities.push(Vulnerability::high_confidence(
+                        VulnerabilitySeverity::Critical,
+                        VulnerabilityCategory::SignatureVerificationBypass,
+                        "Signature Verification Without Account Validation (Wormhole Pattern)".to_string(),
+                        "Custom signature verification without proper account validation - $326M Wormhole exploit pattern".to_string(),
+                        idx + 1,
+                        line.to_string(),
+                        "Validate recovered address: require(signer != address(0) && signer == expected)".to_string(),
+                    ));
+                }
+
+                if !has_message_validation {
+                    vulnerabilities.push(Vulnerability::new(
+                        VulnerabilitySeverity::High,
+                        VulnerabilityCategory::SignatureVerificationBypass,
+                        "Signature Verification Missing Message Hash".to_string(),
+                        "Signature verification without message hash validation can be exploited".to_string(),
+                        idx + 1,
+                        line.to_string(),
+                        "Use structured message hashing (EIP-712) with domain separator".to_string(),
+                    ));
+                }
+            }
+        }
+
+        // Check ecrecover usage specifically
+        for (idx, line) in content.lines().enumerate() {
+            if line.contains("ecrecover(") {
+                let next_lines: Vec<&str> = content.lines().skip(idx).take(5).collect();
+
+                // Check if result is validated
+                let has_zero_check = next_lines.iter().any(|l|
+                    l.contains("address(0)") || l.contains("!= 0") || l.contains("> 0")
+                );
+
+                if !has_zero_check {
+                    vulnerabilities.push(Vulnerability::high_confidence(
+                        VulnerabilitySeverity::Critical,
+                        VulnerabilityCategory::SignatureVerificationBypass,
+                        "ecrecover Result Not Validated".to_string(),
+                        "ecrecover returns address(0) for invalid signatures - must be checked".to_string(),
+                        idx + 1,
+                        line.to_string(),
+                        "Add: require(recovered != address(0), 'Invalid signature')".to_string(),
+                    ));
+                }
+            }
+        }
+
+        vulnerabilities
+    }
 }
 
 // Cross-contract vulnerability detection (reserved for future project-wide analysis)

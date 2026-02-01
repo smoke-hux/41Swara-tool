@@ -285,6 +285,12 @@ impl ContractScanner {
             vulnerabilities.extend(self.advanced_analyzer.analyze_owasp_2025_patterns(content));
         }
 
+        // Run DeFi security research paper analysis (arXiv:2205.09524v1)
+        // Covers dForce ($24M), Grim Finance ($30M), Popsicle Finance ($25M), Wormhole ($326M) patterns
+        if !is_test {
+            vulnerabilities.extend(self.advanced_analyzer.analyze_defi_paper_vulnerabilities(content));
+        }
+
         // Detect compiler version for version-specific checks
         let compiler_version = self.parser.get_compiler_version(content);
         

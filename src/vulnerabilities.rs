@@ -303,6 +303,16 @@ pub enum VulnerabilityCategory {
     L2SequencerDowntime,       // L2 sequencer uptime issues
     L2GasOracle,               // L2 gas price oracle manipulation
     BaseBridgeSecurity,        // Base chain bridge patterns
+    // Research Paper: "Security Analysis of DeFi" (arXiv:2205.09524v1) patterns
+    StrictBalanceEquality,     // 41S-040: Using == for balance checks (bypassable via selfdestruct)
+    MisleadingDataLocation,    // 41S-041: Incorrect storage/memory type usage
+    MissingReturnValue,        // 41S-042: Return declared but not returned
+    GreedyContract,            // 41S-043: Receive ETH but no withdraw mechanism
+    MissingEmergencyStop,      // 41S-044: No circuit breaker/pause for DeFi
+    ERC777CallbackReentrancy,  // 41S-045: ERC-777 tokensReceived attack (dForce $24M)
+    DepositForReentrancy,      // 41S-046: depositFor() callback attack (Grim Finance $30M)
+    DoubleClaiming,            // 41S-047: LP token transfer & claim (Popsicle Finance $25M)
+    SignatureVerificationBypass, // 41S-048: Incomplete sig verification (Wormhole $326M)
 }
 
 impl VulnerabilityCategory {
@@ -373,6 +383,17 @@ impl VulnerabilityCategory {
             VulnerabilityCategory::L2SequencerDowntime => Some(SwcId::new("41S-029", "L2 Sequencer Downtime", Some("CWE-703"))),
             VulnerabilityCategory::L2GasOracle => Some(SwcId::new("41S-030", "L2 Gas Oracle Manipulation", Some("CWE-807"))),
             VulnerabilityCategory::BaseBridgeSecurity => Some(SwcId::new("41S-031", "Base Bridge Security", Some("CWE-345"))),
+
+            // Research Paper: "Security Analysis of DeFi" (arXiv:2205.09524v1) patterns
+            VulnerabilityCategory::StrictBalanceEquality => Some(SwcId::new("SWC-132", "Unexpected Ether Balance", Some("CWE-670"))),
+            VulnerabilityCategory::MisleadingDataLocation => Some(SwcId::new("SWC-109", "Uninitialized Storage Pointer", Some("CWE-824"))),
+            VulnerabilityCategory::MissingReturnValue => Some(SwcId::new("41S-042", "Missing Return Value", Some("CWE-394"))),
+            VulnerabilityCategory::GreedyContract => Some(SwcId::new("41S-043", "Greedy Contract", Some("CWE-404"))),
+            VulnerabilityCategory::MissingEmergencyStop => Some(SwcId::new("41S-044", "Missing Emergency Stop", Some("CWE-703"))),
+            VulnerabilityCategory::ERC777CallbackReentrancy => Some(SwcId::new("41S-045", "ERC-777 Callback Reentrancy", Some("CWE-841"))),
+            VulnerabilityCategory::DepositForReentrancy => Some(SwcId::new("41S-046", "DepositFor Reentrancy", Some("CWE-841"))),
+            VulnerabilityCategory::DoubleClaiming => Some(SwcId::new("41S-047", "Double Claiming Attack", Some("CWE-672"))),
+            VulnerabilityCategory::SignatureVerificationBypass => Some(SwcId::new("41S-048", "Signature Verification Bypass", Some("CWE-347"))),
 
             // Info/Quality categories (no standard SWC)
             VulnerabilityCategory::GasOptimization |
@@ -1949,6 +1970,171 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
         false,
     ).unwrap());
 
+    // ===========================================
+    // RESEARCH PAPER VULNERABILITIES
+    // From: "Security Analysis of DeFi" (arXiv:2205.09524v1)
+    // ===========================================
+
+    // Strict Balance Equality (SWC-132) - Table I from paper
+    // Can be bypassed via selfdestruct forcing ETH into contract
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::StrictBalanceEquality,
+        VulnerabilitySeverity::Medium,
+        r"(require|if)\s*\([^)]*\.balance\s*==\s*\d+|\.balance\s*==\s*\w+",
+        "Strict Balance Equality Check (SWC-132)".to_string(),
+        "Using strict equality (==) for balance checks can be bypassed via selfdestruct".to_string(),
+        "Use >= or <= instead of == for balance comparisons to prevent bypass".to_string(),
+        false,
+    ).unwrap());
+
+    // Misleading Data Location - Table I from paper
+    // Incorrect storage/memory type can lead to data corruption
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::MisleadingDataLocation,
+        VulnerabilitySeverity::High,
+        r"function\s+\w+\([^)]*\w+\[\]\s+storage\s+\w+[^)]*\)\s+(external|public)",
+        "Storage Parameter in External Function".to_string(),
+        "External/public functions cannot use storage parameters - data location mismatch".to_string(),
+        "Use memory or calldata for external function array parameters".to_string(),
+        false,
+    ).unwrap());
+
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::MisleadingDataLocation,
+        VulnerabilitySeverity::Medium,
+        r"\w+\[\]\s+memory\s+\w+\s*=\s*\w+\s*;",
+        "Potential Storage to Memory Copy".to_string(),
+        "Copying storage array to memory creates independent copy - modifications won't persist".to_string(),
+        "Use storage reference if you need to modify the original array".to_string(),
+        false,
+    ).unwrap());
+
+    // Missing Return Value - Table I from paper
+    // Function declares return but doesn't return on all paths
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::MissingReturnValue,
+        VulnerabilitySeverity::Medium,
+        r"function\s+\w+\([^)]*\)[^{]*returns\s*\([^)]+\)[^{]*\{[^}]*if\s*\([^)]*\)\s*\{[^}]*\}[^}]*\}",
+        "Conditional Without Return in All Paths".to_string(),
+        "Function with returns declaration has conditional logic that may not return on all paths".to_string(),
+        "Ensure all code paths return a value or use explicit revert".to_string(),
+        true,
+    ).unwrap());
+
+    // Greedy Contract - Table I from paper
+    // Can receive but cannot withdraw - ETH locked forever
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::GreedyContract,
+        VulnerabilitySeverity::High,
+        r"(receive|fallback)\s*\(\s*\)\s*(external\s+)?payable",
+        "Payable Receive/Fallback Function".to_string(),
+        "Contract can receive ETH - verify withdrawal mechanism exists".to_string(),
+        "Ensure contract has withdraw function or ETH can be extracted".to_string(),
+        false,
+    ).unwrap());
+
+    // Missing Emergency Stop - Table I from paper ("Missing Interrupter")
+    // DeFi contracts need circuit breakers for incident response
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::MissingEmergencyStop,
+        VulnerabilitySeverity::Medium,
+        r"function\s+(swap|deposit|withdraw|stake|unstake)\w*\s*\([^)]*\)\s+(external|public)",
+        "DeFi Function Without Pause Check".to_string(),
+        "Critical DeFi function lacks emergency pause mechanism for incident response".to_string(),
+        "Implement Pausable pattern with whenNotPaused modifier for critical operations".to_string(),
+        false,
+    ).unwrap());
+
+    // ERC-777 Callback Reentrancy (dForce $24M attack) - Section IV.3 of paper
+    // tokensReceived/tokensToSend hooks enable reentrancy
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::ERC777CallbackReentrancy,
+        VulnerabilitySeverity::Critical,
+        r"IERC777|ERC777|tokensReceived|tokensToSend|ERC777TokensSender|ERC777TokensRecipient",
+        "ERC-777 Token Integration (dForce Attack Pattern)".to_string(),
+        "ERC-777 tokens have callback hooks that can enable reentrancy attacks ($24M dForce exploit)".to_string(),
+        "Use ReentrancyGuard on all ERC-777 interactions, follow checks-effects-interactions".to_string(),
+        false,
+    ).unwrap());
+
+    // DepositFor Reentrancy (Grim Finance $30M attack) - Section IV.3 of paper
+    // depositFor pattern with callbacks before state update
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::DepositForReentrancy,
+        VulnerabilitySeverity::Critical,
+        r"function\s+depositFor\s*\([^)]*address\s+\w+[^)]*\)\s+(external|public)",
+        "DepositFor Pattern (Grim Finance Attack)".to_string(),
+        "depositFor functions can be exploited via callback reentrancy ($30M Grim Finance exploit)".to_string(),
+        "Add ReentrancyGuard, validate input address, update state before external calls".to_string(),
+        false,
+    ).unwrap());
+
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::DepositForReentrancy,
+        VulnerabilitySeverity::High,
+        r"function\s+deposit\s*\([^)]*address\s+(to|recipient|receiver|beneficiary)\w*[^)]*\)",
+        "Deposit Function with Recipient Address".to_string(),
+        "Deposit function with external recipient can be exploited via callback if recipient is contract".to_string(),
+        "Add nonReentrant modifier and validate recipient address".to_string(),
+        false,
+    ).unwrap());
+
+    // Double Claiming Attack (Popsicle Finance $25M) - Section IV.5 of paper
+    // LP token transfer allows claiming rewards multiple times
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::DoubleClaiming,
+        VulnerabilitySeverity::High,
+        r"function\s+\w*(claim|harvest|getReward|collectFees)\w*\s*\([^)]*\)",
+        "Reward Claiming Function (Popsicle Finance Pattern)".to_string(),
+        "Reward claiming without transfer lockout can enable double-claiming attacks ($25M Popsicle Finance)".to_string(),
+        "Track claimed amounts per address, use claimable mapping that resets on transfer".to_string(),
+        false,
+    ).unwrap());
+
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::DoubleClaiming,
+        VulnerabilitySeverity::High,
+        r"balanceOf\s*\(\s*msg\.sender\s*\)\s*\*\s*\w*(reward|fee)|reward\w*\s*\*\s*balanceOf",
+        "Reward Calculation Based on Balance".to_string(),
+        "Calculating rewards based on current balance without tracking is vulnerable to transfer-and-claim".to_string(),
+        "Use rewardDebt pattern: track claimed amounts and subtract from total rewards".to_string(),
+        false,
+    ).unwrap());
+
+    // Signature Verification Bypass (Wormhole $326M) - Section IV.5 of paper
+    // Incomplete signature verification allows message forgery
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::SignatureVerificationBypass,
+        VulnerabilitySeverity::Critical,
+        r"function\s+verify\w*[Ss]ignature\w*\s*\([^)]*\)\s+(external|public|internal)",
+        "Custom Signature Verification Function (Wormhole Pattern)".to_string(),
+        "Custom signature verification may be bypassable ($326M Wormhole exploit)".to_string(),
+        "Use well-audited libraries (OpenZeppelin ECDSA), verify signer address, check replay protection".to_string(),
+        false,
+    ).unwrap());
+
+    // Note: ecrecover/ECDSA.recover validation is handled by advanced_analysis.rs
+    // with context-aware checking for require() statements
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::SignatureVerificationBypass,
+        VulnerabilitySeverity::Medium,
+        r"ecrecover\s*\([^)]*\)\s*;",
+        "ecrecover Usage Detected".to_string(),
+        "ecrecover returns address(0) for invalid signatures - must be validated".to_string(),
+        "Always check: require(recovered != address(0) && recovered == expected)".to_string(),
+        false,
+    ).unwrap());
+
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::SignatureVerificationBypass,
+        VulnerabilitySeverity::Medium,
+        r"ECDSA\.recover\s*\([^)]*\)\s*;",
+        "ECDSA.recover Usage Detected".to_string(),
+        "ECDSA.recover result must be compared to expected signer".to_string(),
+        "Verify: require(ECDSA.recover(hash, signature) == expectedSigner)".to_string(),
+        false,
+    ).unwrap());
+
     rules
 }
 
@@ -2075,6 +2261,16 @@ impl VulnerabilityCategory {
             VulnerabilityCategory::L2SequencerDowntime => "L2 Sequencer Downtime Risk",
             VulnerabilityCategory::L2GasOracle => "L2 Gas Oracle Manipulation",
             VulnerabilityCategory::BaseBridgeSecurity => "Base Chain Bridge Security",
+            // Research Paper: "Security Analysis of DeFi" (arXiv:2205.09524v1) patterns
+            VulnerabilityCategory::StrictBalanceEquality => "Strict Balance Equality",
+            VulnerabilityCategory::MisleadingDataLocation => "Misleading Data Location",
+            VulnerabilityCategory::MissingReturnValue => "Missing Return Value",
+            VulnerabilityCategory::GreedyContract => "Greedy Contract",
+            VulnerabilityCategory::MissingEmergencyStop => "Missing Emergency Stop",
+            VulnerabilityCategory::ERC777CallbackReentrancy => "ERC-777 Callback Reentrancy",
+            VulnerabilityCategory::DepositForReentrancy => "DepositFor Reentrancy",
+            VulnerabilityCategory::DoubleClaiming => "Double Claiming Attack",
+            VulnerabilityCategory::SignatureVerificationBypass => "Signature Verification Bypass",
         }
     }
 }

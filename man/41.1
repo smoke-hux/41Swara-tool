@@ -1,0 +1,413 @@
+.\" Man page for 41Swara Smart Contract Scanner
+.\" Contact: https://github.com/41swara/smart-contract-scanner
+.\"
+.TH 41 1 "January 2026" "41Swara v0.4.0" "Security Researcher Edition"
+.SH NAME
+41, 41swara \- High-performance smart contract vulnerability scanner
+.SH SYNOPSIS
+.B 41
+[\fIPATH\fR]
+[\fIOPTIONS\fR]
+.br
+.B 41swara
+[\fIPATH\fR]
+[\fIOPTIONS\fR]
+.SH DESCRIPTION
+.B 41Swara Smart Contract Scanner
+is a production-grade, fully offline vulnerability scanner designed for
+Ethereum Foundation and blockchain security researchers. It performs static
+analysis on Solidity smart contracts to detect security vulnerabilities,
+with support for 150+ vulnerability patterns including real-world exploit
+patterns from $3.1B+ in DeFi losses.
+.PP
+Features include:
+.IP \[bu] 2
+AST-based analysis with tree-sitter
+.IP \[bu]
+CWE/SWC ID mapping for compliance
+.IP \[bu]
+Confidence scoring (0-100%)
+.IP \[bu]
+L2 chain specific patterns (sequencer uptime, bridge security)
+.IP \[bu]
+Modern Solidity 0.8.20+ support (PUSH0, transient storage)
+.IP \[bu]
+DeFi-specific detectors (AMM, Lending, Oracle, MEV)
+.IP \[bu]
+Parallel scanning with 4-10x speedup
+.IP \[bu]
+Multiple output formats (text, JSON, SARIF)
+.IP \[bu]
+Slither and Foundry integration
+.SH OPTIONS
+.SS "Basic Options"
+.TP
+.BR \-f ", " \-\-format " " \fIFORMAT\fR
+Output format: \fBtext\fR (default), \fBjson\fR, or \fBsarif\fR
+.TP
+.BR \-\-min\-severity " " \fILEVEL\fR
+Filter results by minimum severity: \fBcritical\fR, \fBhigh\fR, \fBmedium\fR, \fBlow\fR, \fBinfo\fR
+.TP
+.BR \-v ", " \-\-verbose
+Enable detailed analysis output
+.TP
+.BR \-j ", " \-\-threads " " \fIN\fR
+Number of parallel threads (0 = auto-detect CPU cores)
+.TP
+.BR \-q ", " \-\-quiet
+Only show summary, suppress individual findings
+.TP
+.BR \-\-stats
+Show performance statistics after scanning
+.TP
+.BR \-\-fail\-on " " \fISEVERITY\fR
+Exit with code 1 if findings at or above severity threshold
+.TP
+.BR \-o ", " \-\-output " " \fIFILE\fR
+Save output to file instead of stdout
+.TP
+.BR \-\-no\-color
+Disable colored output (useful for CI/CD logs)
+.SS "Confidence & SWC Filtering"
+.TP
+.BR \-\-confidence\-threshold " " \fIPERCENT\fR
+Only show findings with confidence >= PERCENT (0-100)
+.TP
+.BR \-\-include\-swc " " \fIIDS\fR
+Only check specific SWC IDs (comma-separated, e.g., SWC-107,SWC-105)
+.TP
+.BR \-\-exclude\-swc " " \fIIDS\fR
+Skip specific SWC IDs (comma-separated)
+.SS "File Filtering"
+.TP
+.BR \-\-exclude\-pattern " " \fIGLOB\fR
+Exclude files matching glob pattern (can be used multiple times)
+.TP
+.BR \-\-max\-file\-size " " \fIMB\fR
+Skip files larger than specified size in MB (default: 10)
+.SS "Baseline Comparison"
+.TP
+.BR \-\-baseline " " \fIFILE\fR
+Compare against baseline JSON file (suppress known findings)
+.TP
+.BR \-\-export\-baseline " " \fIFILE\fR
+Export current results as baseline JSON file
+.SS "DeFi Analysis"
+.TP
+.BR \-\-defi\-analysis
+Enable DeFi-specific analyzers (AMM, Lending, Oracle, MEV)
+.TP
+.BR \-\-advanced\-detectors
+Enable advanced detectors (ERC4626, Permit2, LayerZero, L2, Uniswap V4, CCIP)
+.SS "Tool Integration"
+.TP
+.BR \-\-slither\-json " " \fIPATH\fR
+Combine with Slither JSON output for correlated analysis
+.TP
+.BR \-\-generate\-poc
+Generate Foundry PoC tests for critical findings
+.TP
+.BR \-\-foundry\-correlate
+Correlate findings with Foundry test results
+.SS "Caching"
+.TP
+.BR \-\-cache
+Enable incremental scanning cache (skip unchanged files)
+.TP
+.BR \-\-cache\-dir " " \fIDIR\fR
+Cache directory (default: .41swara_cache)
+.SS "ABI Analysis"
+.TP
+.BR \-\-abi
+Enable ABI security analysis mode for JSON ABI files
+.SS "Git Integration"
+.TP
+.BR \-\-git\-diff
+Scan only modified .sol files (compared to git HEAD)
+.TP
+.BR \-\-git\-branch " " \fIBRANCH\fR
+Branch to compare against (default: HEAD)
+.SS "Continuous Monitoring"
+.TP
+.BR \-\-watch
+Watch mode - automatically rescan on file changes
+.SS "Professional Features"
+.TP
+.BR \-\-audit
+Generate professional audit report
+.TP
+.BR \-\-project " " \fINAME\fR
+Project name for audit report (requires --audit)
+.TP
+.BR \-\-sponsor " " \fINAME\fR
+Sponsor/client name for audit report (requires --audit)
+.TP
+.BR \-\-project\-analysis
+Enable cross-file vulnerability analysis
+.TP
+.BR \-\-report
+Generate clean markdown report
+.SS "Version & Help"
+.TP
+.BR \-\-version
+Print version number
+.TP
+.BR \-\-version\-full
+Show full version with build details and feature list
+.TP
+.BR \-\-examples
+Show usage examples
+.TP
+.BR \-h ", " \-\-help
+Print help information
+.SH EXIT STATUS
+.TP
+.B 0
+No findings detected
+.TP
+.B 1
+Critical or High severity findings detected
+.TP
+.B 2
+Medium severity findings only
+.TP
+.B 3
+Low or Info severity findings only
+.TP
+.B 10
+Scanner error (invalid path, parse error, etc.)
+.SH VULNERABILITY CATEGORIES
+.SS "Critical Severity"
+.TS
+tab(|);
+l l l.
+Category|SWC/ID|CWE
+_
+Reentrancy|SWC-107|CWE-841
+Access Control|SWC-105|CWE-284
+Proxy Admin|41S-003|CWE-284
+Arbitrary Calls|41S-005|CWE-749
+ERC4626 Inflation|41S-020|CWE-682
+L2 Sequencer|41S-029|CWE-703
+Bridge Security|41S-014|CWE-345
+.TE
+.SS "High Severity"
+.TS
+tab(|);
+l l l.
+Category|SWC/ID|CWE
+_
+Oracle Manipulation|41S-001|CWE-807
+Signature Replay|SWC-121|CWE-294
+DoS Attacks|SWC-128|CWE-400
+MEV/Front-Running|SWC-114|CWE-362
+Permit2 Risks|41S-021|CWE-294
+LayerZero|41S-022|CWE-284
+Uniswap V4 Hooks|41S-027|CWE-94
+.TE
+.SS "Medium Severity"
+.TS
+tab(|);
+l l l.
+Category|SWC/ID|CWE
+_
+Precision Loss|SWC-101|CWE-190
+Time Manipulation|SWC-116|CWE-829
+Unchecked Returns|SWC-104|CWE-252
+Transient Storage|41S-024|CWE-841
+Create2 Collision|41S-023|CWE-327
+L2 Gas Oracle|41S-030|CWE-807
+.TE
+.SH EXAMPLES
+.SS "Basic Scanning"
+.nf
+# Scan current directory
+.B 41
+
+# Scan specific directory
+.B 41 contracts/
+
+# Scan single file
+.B 41 MyContract.sol
+
+# Verbose output with stats
+.B 41 contracts/ -v --stats
+.fi
+.SS "Severity & Confidence Filtering"
+.nf
+# Only critical and high findings
+.B 41 contracts/ --min-severity high
+
+# High confidence findings only (70%+)
+.B 41 contracts/ --confidence-threshold 70
+
+# Combined filtering
+.B 41 contracts/ --min-severity high --confidence-threshold 80
+.fi
+.SS "SWC/CWE ID Filtering"
+.nf
+# Only check reentrancy (SWC-107)
+.B 41 contracts/ --include-swc SWC-107
+
+# Check multiple specific SWCs
+.B 41 contracts/ --include-swc SWC-107,SWC-105,SWC-114
+
+# Exclude floating pragma warnings
+.B 41 contracts/ --exclude-swc SWC-103
+.fi
+.SS "File Exclusion"
+.nf
+# Exclude test files
+.B 41 contracts/ --exclude-pattern "**/test/**"
+
+# Exclude mock contracts
+.B 41 contracts/ --exclude-pattern "**/*Mock*"
+
+# Skip large files (>5MB)
+.B 41 contracts/ --max-file-size 5
+.fi
+.SS "DeFi Analysis"
+.nf
+# Enable DeFi analyzers
+.B 41 . --defi-analysis
+
+# Enable advanced detectors (L2, ERC4626, etc.)
+.B 41 . --advanced-detectors
+
+# Full analysis
+.B 41 . --defi-analysis --advanced-detectors -v
+.fi
+.SS "CI/CD Integration"
+.nf
+# JSON output for parsing
+.B 41 contracts/ --format json -o results.json
+
+# SARIF for GitHub Code Scanning
+.B 41 contracts/ --format sarif -o results.sarif
+
+# Fail pipeline on high severity
+.B 41 contracts/ --fail-on high -q
+
+# No colors for CI logs
+.B 41 contracts/ --no-color
+.fi
+.SS "Baseline Comparison"
+.nf
+# Export current results as baseline
+.B 41 contracts/ --export-baseline baseline.json
+
+# Compare against baseline (only new findings)
+.B 41 contracts/ --baseline baseline.json
+.fi
+.SS "Git Integration"
+.nf
+# Scan only modified files
+.B 41 --git-diff
+
+# Compare against main branch
+.B 41 --git-diff --git-branch main
+.fi
+.SS "Professional Audit"
+.nf
+# Generate audit report
+.B 41 contracts/ --audit --project "MyDApp" --sponsor "Client Inc"
+
+# Cross-file analysis
+.B 41 contracts/ --project-analysis
+.fi
+.SS "Tool Integration"
+.nf
+# Correlate with Slither
+.B slither . --json slither.json
+.B 41 . --slither-json slither.json
+
+# Generate Foundry PoC tests
+.B 41 . --generate-poc
+.fi
+.SH FILES
+.TP
+.I .41swara_cache/
+Default cache directory for incremental scanning
+.TP
+.I baseline.json
+Baseline file for suppressing known findings
+.SH ENVIRONMENT
+.TP
+.B RUST_LOG
+Set to \fBdebug\fR or \fBtrace\fR for additional logging
+.TP
+.B NO_COLOR
+Set to disable colored output (alternative to --no-color)
+.SH STANDARDS
+The scanner maps vulnerabilities to the following standards:
+.IP \[bu] 2
+.B SWC Registry
+(Smart Contract Weakness Classification) - SWC-100 to SWC-136
+.IP \[bu]
+.B MITRE CWE
+(Common Weakness Enumeration) - Mapped for each vulnerability
+.IP \[bu]
+.B 41S Custom IDs
+- DeFi-specific patterns (41S-001 to 41S-050)
+.SH PERFORMANCE
+.TS
+tab(|);
+l l l l.
+Project Size|Files|Single Thread|8 Threads
+_
+Small|5|0.5s|0.2s
+Medium|25|2.8s|0.6s
+Large|100|12.5s|1.8s
+Very Large|500|68s|7.2s
+Enterprise|1000+|150s|15s
+.TE
+.PP
+With caching enabled, rescan of unchanged files takes ~0.1s.
+.SH SEE ALSO
+.BR slither (1),
+.BR mythril (1),
+.BR forge (1),
+.BR solc (1)
+.PP
+.UR https://swcregistry.io/
+SWC Registry
+.UE
+.PP
+.UR https://cwe.mitre.org/
+MITRE CWE
+.UE
+.PP
+.UR https://github.com/41swara/smart-contract-scanner
+Project Homepage
+.UE
+.SH BUGS
+Report bugs at:
+.UR https://github.com/41swara/smart-contract-scanner/issues
+.UE
+.SH AUTHORS
+41Swara Security Team
+.PP
+.UR https://github.com/41swara
+.UE
+.SH COPYRIGHT
+MIT License - Copyright (c) 2024-2026 41Swara Security Team
+.SH NOTES
+.SS "Offline Operation"
+This scanner is 100% offline and requires no API keys or network access.
+All analysis is performed locally for complete privacy.
+.SS "False Positive Reduction"
+The scanner automatically reduces false positives by detecting:
+.IP \[bu] 2
+SafeMath usage (skip overflow warnings)
+.IP \[bu]
+ReentrancyGuard (skip reentrancy alerts)
+.IP \[bu]
+OpenZeppelin patterns
+.IP \[bu]
+Solidity 0.8+ (built-in overflow protection)
+.IP \[bu]
+View/Pure functions
+.IP \[bu]
+Test/Mock contracts
+.IP \[bu]
+Commented code
