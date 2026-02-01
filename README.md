@@ -2,7 +2,7 @@
 
 **Security Researcher Edition - Production-grade vulnerability scanner for Ethereum Foundation and blockchain security researchers**
 
-A fully offline, API-independent Rust-based static analysis tool designed for bug bounty hunting (Immunefi, HackerOne), audit contests (Sherlock, CodeHawks, Code4rena), and professional security audits. Features **AST-based analysis**, **DeFi-specific detectors**, **CWE/SWC ID mapping**, **L2 chain patterns**, **Slither/Foundry integration**, and **150+ vulnerability patterns** including real-world exploit patterns from $3.1B+ in DeFi losses.
+A fully offline, API-independent Rust-based static analysis tool designed for bug bounty hunting, audit contests , and professional security audits. Features **AST-based analysis**, **DeFi-specific detectors**, **CWE/SWC ID mapping**, **L2 chain patterns**, **Slither/Foundry integration**, and **150+ vulnerability patterns** including real-world exploit patterns from $3.1B+ in DeFi losses.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Rust](https://img.shields.io/badge/rust-1.70%2B-orange.svg)](https://www.rust-lang.org/)
