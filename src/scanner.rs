@@ -3,12 +3,43 @@ use std::io;
 use crate::parser::SolidityParser;
 use crate::vulnerabilities::{Vulnerability, VulnerabilityRule, create_vulnerability_rules, create_version_specific_rules};
 use crate::advanced_analysis::AdvancedAnalyzer;
+use crate::logic_analyzer::LogicAnalyzer;
+use crate::reachability_analyzer::ReachabilityAnalyzer;
+use crate::dependency_analyzer::DependencyAnalyzer;
+use crate::threat_model::ThreatModelGenerator;
+
+/// Scanner configuration for analysis features
+/// All advanced features are enabled by default for maximum accuracy
+#[derive(Clone)]
+pub struct ScannerConfig {
+    pub enable_logic_analysis: bool,
+    pub enable_reachability_analysis: bool,
+    pub enable_dependency_analysis: bool,
+    pub enable_threat_model: bool,
+}
+
+impl Default for ScannerConfig {
+    fn default() -> Self {
+        Self {
+            // All advanced features enabled by default
+            enable_logic_analysis: true,
+            enable_reachability_analysis: true,
+            enable_dependency_analysis: true,
+            enable_threat_model: true,
+        }
+    }
+}
 
 pub struct ContractScanner {
     parser: SolidityParser,
     rules: Vec<VulnerabilityRule>,
     verbose: bool,
     advanced_analyzer: AdvancedAnalyzer,
+    logic_analyzer: LogicAnalyzer,
+    reachability_analyzer: ReachabilityAnalyzer,
+    dependency_analyzer: DependencyAnalyzer,
+    threat_model_generator: ThreatModelGenerator,
+    config: ScannerConfig,
 }
 
 // Context detection helpers to reduce false positives
@@ -205,7 +236,36 @@ impl ContractScanner {
             rules: create_vulnerability_rules(),
             verbose,
             advanced_analyzer: AdvancedAnalyzer::new(verbose),
+            logic_analyzer: LogicAnalyzer::new(verbose),
+            reachability_analyzer: ReachabilityAnalyzer::new(verbose),
+            dependency_analyzer: DependencyAnalyzer::new(verbose),
+            threat_model_generator: ThreatModelGenerator::new(verbose),
+            config: ScannerConfig::default(),
         }
+    }
+
+    /// Create a scanner with custom configuration
+    pub fn with_config(verbose: bool, config: ScannerConfig) -> Self {
+        Self {
+            parser: SolidityParser::new(),
+            rules: create_vulnerability_rules(),
+            verbose,
+            advanced_analyzer: AdvancedAnalyzer::new(verbose),
+            logic_analyzer: LogicAnalyzer::new(verbose),
+            reachability_analyzer: ReachabilityAnalyzer::new(verbose),
+            dependency_analyzer: DependencyAnalyzer::new(verbose),
+            threat_model_generator: ThreatModelGenerator::new(verbose),
+            config,
+        }
+    }
+
+    /// Enable all advanced analysis features
+    pub fn with_advanced_mode(mut self) -> Self {
+        self.config.enable_logic_analysis = true;
+        self.config.enable_reachability_analysis = true;
+        self.config.enable_dependency_analysis = true;
+        self.config.enable_threat_model = true;
+        self
     }
     
     pub fn scan_file<P: AsRef<Path>>(&self, file_path: P) -> io::Result<Vec<Vulnerability>> {
@@ -338,12 +398,53 @@ impl ContractScanner {
             }
         }
         
+        // ============================================================================
+        // Phase 6: Advanced Analysis Engine
+        // ============================================================================
+
+        // Run logic vulnerability analysis (business logic bugs)
+        if self.config.enable_logic_analysis && !is_test {
+            if self.verbose {
+                println!("  🧠 Running logic vulnerability analysis...");
+            }
+            vulnerabilities.extend(self.logic_analyzer.analyze(content));
+        }
+
+        // Run dependency/import analysis
+        if self.config.enable_dependency_analysis {
+            if self.verbose {
+                println!("  📦 Running dependency analysis...");
+            }
+            vulnerabilities.extend(self.dependency_analyzer.analyze(content));
+        }
+
+        // Generate threat model vulnerabilities
+        if self.config.enable_threat_model && !is_test {
+            if self.verbose {
+                println!("  🎯 Generating threat model...");
+            }
+            let threat_model = self.threat_model_generator.generate(content);
+            vulnerabilities.extend(self.threat_model_generator.to_vulnerabilities(&threat_model));
+        }
+
+        // Apply reachability analysis to filter unreachable vulnerabilities
+        if self.config.enable_reachability_analysis {
+            if self.verbose {
+                println!("  🔗 Running reachability analysis...");
+            }
+            vulnerabilities = self.reachability_analyzer.filter_unreachable_vulnerabilities(vulnerabilities, content);
+            self.reachability_analyzer.adjust_confidence(&mut vulnerabilities, content);
+
+            // Also check for external call chain vulnerabilities
+            vulnerabilities.extend(self.reachability_analyzer.analyze_external_call_chains(content));
+        }
+
         // Sort vulnerabilities by line number
         vulnerabilities.sort_by(|a, b| a.line_number.cmp(&b.line_number));
-        
+
         vulnerabilities
     }
-    
+
     fn scan_line_patterns(&self, lines: &[(usize, String)], rule: &VulnerabilityRule) -> Vec<Vulnerability> {
         let mut vulnerabilities = Vec::new();
 
