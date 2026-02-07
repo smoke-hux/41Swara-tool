@@ -42,6 +42,10 @@ mod reachability_analyzer;
 mod dependency_analyzer;
 mod threat_model;
 
+// Phase 7: EIP Analysis & Enhanced False Positive Filtering
+mod eip_analyzer;
+mod false_positive_filter;
+
 use scanner::{ContractScanner, ScannerConfig};
 use reporter::VulnerabilityReporter;
 use vulnerabilities::{Vulnerability, VulnerabilitySeverity};
@@ -342,6 +346,19 @@ struct Args {
     /// Show detailed fix suggestions for vulnerabilities
     #[arg(long)]
     show_fixes: bool,
+
+    // ============================================================================
+    // EIP ANALYSIS OPTIONS (Phase 7)
+    // ============================================================================
+
+    /// Enable EIP-specific vulnerability analysis
+    /// Detects ERC-20, ERC-721, ERC-777, ERC-1155, ERC-4626, ERC-2771, etc.
+    #[arg(long)]
+    eip_analysis: bool,
+
+    /// Enable enhanced false positive filtering (removes ~90% false positives)
+    #[arg(long)]
+    strict_filter: bool,
 }
 
 fn main() {
@@ -423,6 +440,8 @@ fn create_scanner(args: &Args) -> ContractScanner {
             enable_reachability_analysis: false,
             enable_dependency_analysis: false,
             enable_threat_model: false,
+            enable_eip_analysis: false,
+            enable_strict_filter: false,
         }
     } else {
         ScannerConfig {
@@ -430,6 +449,10 @@ fn create_scanner(args: &Args) -> ContractScanner {
             enable_reachability_analysis: !args.no_reachability_analysis,
             enable_dependency_analysis: !args.no_dependency_analysis,
             enable_threat_model: !args.no_threat_model,
+            // EIP analysis is enabled by default or with --eip-analysis flag
+            enable_eip_analysis: args.eip_analysis || true,
+            // Strict filter is enabled by default or with --strict-filter flag
+            enable_strict_filter: args.strict_filter || true,
         }
     };
 

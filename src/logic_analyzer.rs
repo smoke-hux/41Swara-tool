@@ -319,7 +319,7 @@ impl LogicAnalyzer {
     /// Analyze state transitions for violations
     fn analyze_state_transitions(
         &self,
-        content: &str,
+        _content: &str,
         functions: &[FunctionInfo],
         state_machine: &ContractStateMachine,
     ) -> Vec<Vulnerability> {
@@ -522,7 +522,7 @@ impl LogicAnalyzer {
     /// Detect inconsistent state updates
     fn detect_inconsistent_state_updates(
         &self,
-        content: &str,
+        _content: &str,
         functions: &[FunctionInfo],
         state_vars: &[StateVariable],
     ) -> Vec<Vulnerability> {

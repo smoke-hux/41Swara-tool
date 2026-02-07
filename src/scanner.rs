@@ -7,6 +7,8 @@ use crate::logic_analyzer::LogicAnalyzer;
 use crate::reachability_analyzer::ReachabilityAnalyzer;
 use crate::dependency_analyzer::DependencyAnalyzer;
 use crate::threat_model::ThreatModelGenerator;
+use crate::eip_analyzer::EIPAnalyzer;
+use crate::false_positive_filter::{FalsePositiveFilter, FilterConfig};
 
 /// Scanner configuration for analysis features
 /// All advanced features are enabled by default for maximum accuracy
@@ -16,6 +18,10 @@ pub struct ScannerConfig {
     pub enable_reachability_analysis: bool,
     pub enable_dependency_analysis: bool,
     pub enable_threat_model: bool,
+    /// Enable EIP-specific vulnerability detection
+    pub enable_eip_analysis: bool,
+    /// Enable enhanced false positive filtering
+    pub enable_strict_filter: bool,
 }
 
 impl Default for ScannerConfig {
@@ -26,6 +32,8 @@ impl Default for ScannerConfig {
             enable_reachability_analysis: true,
             enable_dependency_analysis: true,
             enable_threat_model: true,
+            enable_eip_analysis: true,  // EIP analysis enabled by default
+            enable_strict_filter: true, // Strict filtering enabled by default
         }
     }
 }
@@ -39,6 +47,8 @@ pub struct ContractScanner {
     reachability_analyzer: ReachabilityAnalyzer,
     dependency_analyzer: DependencyAnalyzer,
     threat_model_generator: ThreatModelGenerator,
+    eip_analyzer: EIPAnalyzer,
+    false_positive_filter: FalsePositiveFilter,
     config: ScannerConfig,
 }
 
@@ -240,12 +250,18 @@ impl ContractScanner {
             reachability_analyzer: ReachabilityAnalyzer::new(verbose),
             dependency_analyzer: DependencyAnalyzer::new(verbose),
             threat_model_generator: ThreatModelGenerator::new(verbose),
+            eip_analyzer: EIPAnalyzer::new(verbose),
+            false_positive_filter: FalsePositiveFilter::new(FilterConfig::default()),
             config: ScannerConfig::default(),
         }
     }
 
     /// Create a scanner with custom configuration
     pub fn with_config(verbose: bool, config: ScannerConfig) -> Self {
+        let filter_config = FilterConfig {
+            strict_mode: config.enable_strict_filter,
+            ..FilterConfig::default()
+        };
         Self {
             parser: SolidityParser::new(),
             rules: create_vulnerability_rules(),
@@ -255,16 +271,21 @@ impl ContractScanner {
             reachability_analyzer: ReachabilityAnalyzer::new(verbose),
             dependency_analyzer: DependencyAnalyzer::new(verbose),
             threat_model_generator: ThreatModelGenerator::new(verbose),
+            eip_analyzer: EIPAnalyzer::new(verbose),
+            false_positive_filter: FalsePositiveFilter::new(filter_config),
             config,
         }
     }
 
     /// Enable all advanced analysis features
+    #[allow(dead_code)]
     pub fn with_advanced_mode(mut self) -> Self {
         self.config.enable_logic_analysis = true;
         self.config.enable_reachability_analysis = true;
         self.config.enable_dependency_analysis = true;
         self.config.enable_threat_model = true;
+        self.config.enable_eip_analysis = true;
+        self.config.enable_strict_filter = true;
         self
     }
     
@@ -437,6 +458,30 @@ impl ContractScanner {
 
             // Also check for external call chain vulnerabilities
             vulnerabilities.extend(self.reachability_analyzer.analyze_external_call_chains(content));
+        }
+
+        // ============================================================================
+        // Phase 7: EIP Analysis & Enhanced False Positive Filtering
+        // ============================================================================
+
+        // Run EIP-specific vulnerability analysis
+        if self.config.enable_eip_analysis && !is_test {
+            if self.verbose {
+                println!("  📋 Running EIP vulnerability analysis...");
+            }
+            vulnerabilities.extend(self.eip_analyzer.analyze(content));
+        }
+
+        // Apply enhanced false positive filtering
+        if self.config.enable_strict_filter {
+            if self.verbose {
+                let original_count = vulnerabilities.len();
+                vulnerabilities = self.false_positive_filter.filter(vulnerabilities, content);
+                let filtered_count = vulnerabilities.len();
+                println!("  🧹 {}", self.false_positive_filter.get_filter_stats(original_count, filtered_count));
+            } else {
+                vulnerabilities = self.false_positive_filter.filter(vulnerabilities, content);
+            }
         }
 
         // Sort vulnerabilities by line number
