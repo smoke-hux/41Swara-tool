@@ -385,7 +385,8 @@ impl FalsePositiveFilter {
             VulnerabilityCategory::Reentrancy
             | VulnerabilityCategory::CallbackReentrancy
             | VulnerabilityCategory::ERC777CallbackReentrancy
-            | VulnerabilityCategory::DepositForReentrancy => {
+            | VulnerabilityCategory::DepositForReentrancy
+            | VulnerabilityCategory::TransientStorageReentrancy => {
                 self.filter_reentrancy(vuln, content, ctx)
             }
             VulnerabilityCategory::AccessControl
@@ -406,7 +407,8 @@ impl FalsePositiveFilter {
             VulnerabilityCategory::MagicNumbers => {
                 self.filter_magic_numbers(vuln, content)
             }
-            VulnerabilityCategory::UnprotectedProxyUpgrade => {
+            VulnerabilityCategory::UnprotectedProxyUpgrade
+            | VulnerabilityCategory::ProxyAdminVulnerability => {
                 self.filter_proxy_upgrade(vuln, content, ctx)
             }
             VulnerabilityCategory::SignatureVulnerabilities
@@ -419,6 +421,71 @@ impl FalsePositiveFilter {
             }
             VulnerabilityCategory::DelegateCalls => {
                 self.filter_delegatecall(vuln, content, ctx)
+            }
+            VulnerabilityCategory::MissingEmergencyStop => {
+                // Don't report if Pausable is used
+                if content.contains("Pausable") || content.contains("whenNotPaused") {
+                    return false;
+                }
+                // Don't report in test contracts
+                if ctx.is_test_contract {
+                    return false;
+                }
+                true
+            }
+            VulnerabilityCategory::MetaTransactionVulnerability
+            | VulnerabilityCategory::TrustedForwarderBypass => {
+                // Don't report if using OZ ERC2771Context properly
+                if ctx.uses_openzeppelin && content.contains("ERC2771Context") {
+                    return false;
+                }
+                true
+            }
+            VulnerabilityCategory::DoubleClaiming => {
+                // Don't report if rewardDebt or claimed mapping exists
+                if content.contains("rewardDebt") || content.contains("claimed[")
+                    || content.contains("hasClaimed") || content.contains("_claimed") {
+                    return false;
+                }
+                true
+            }
+            VulnerabilityCategory::UncheckedMathOperation => {
+                // Don't report in Solidity 0.8+ for regular math (overflow protected)
+                // Only keep for unchecked blocks and bit shifts
+                if ctx.is_solidity_0_8_plus && !vuln.code_snippet.contains("unchecked")
+                    && !vuln.code_snippet.contains("<<") && !vuln.code_snippet.contains(">>") {
+                    return false;
+                }
+                true
+            }
+            VulnerabilityCategory::InputValidationFailure => {
+                // Don't report for view/pure functions
+                if vuln.code_snippet.contains(" view ") || vuln.code_snippet.contains(" pure ") {
+                    return false;
+                }
+                // Don't report for internal/private functions
+                if vuln.code_snippet.contains(" internal ") || vuln.code_snippet.contains(" private ") {
+                    return false;
+                }
+                true
+            }
+            VulnerabilityCategory::LowLevelCalls => {
+                // Don't report if return value is captured
+                if vuln.code_snippet.contains("(bool") || vuln.code_snippet.contains("success") {
+                    return false;
+                }
+                true
+            }
+            VulnerabilityCategory::GovernanceAttack => {
+                // Don't report if using OZ Governor
+                if content.contains("Governor") && ctx.uses_openzeppelin {
+                    return false;
+                }
+                // Don't report if timelock is present
+                if content.contains("TimelockController") || content.contains("timelock") {
+                    return false;
+                }
+                true
             }
             _ => true
         }

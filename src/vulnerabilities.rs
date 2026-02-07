@@ -464,21 +464,14 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
         false,
     ).unwrap());
 
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::Reentrancy,
-        VulnerabilitySeverity::High,
-        r"\.send\(|\.transfer\(|\.call\.value\(",
-        "External Call Found".to_string(),
-        "External call that could lead to reentrancy".to_string(),
-        "Ensure state changes happen before external calls".to_string(),
-        false,
-    ).unwrap());
+    // REMOVED: Too broad - .transfer() and .send() have 2300 gas limit (safe from reentrancy)
+    // .call.value() is legacy syntax covered by the .call{value:} pattern above
 
-    // Unchecked external calls
+    // Unchecked external calls - only match when return value is not captured
     rules.push(VulnerabilityRule::new(
         VulnerabilityCategory::UnsafeExternalCalls,
         VulnerabilitySeverity::Medium,
-        r"\.call\([^)]*\)",
+        r"^\s*\w+\.call\([^)]*\)\s*;",
         "Unchecked External Call".to_string(),
         "External call return value not checked".to_string(),
         "Always check the return value of external calls".to_string(),
@@ -510,11 +503,11 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
         false,
     ).unwrap());
 
-    // Weak randomness
+    // Weak randomness - only flag when block properties are used for randomness (modulo, hashing)
     rules.push(VulnerabilityRule::new(
         VulnerabilityCategory::RandomnessVulnerabilities,
         VulnerabilitySeverity::High,
-        r"block\.timestamp|block\.difficulty|block\.number|block\.blockhash|keccak256\(.*msg\.sender.*block\.",
+        r"(block\.(timestamp|difficulty|number|prevrandao|blockhash))\s*%|keccak256\(.*block\.(timestamp|difficulty|number|prevrandao)",
         "Weak Randomness Source".to_string(),
         "Using predictable block properties for randomness generation".to_string(),
         "Use a secure randomness source like Chainlink VRF or commit-reveal schemes".to_string(),
@@ -535,16 +528,9 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
     // REMOVED: Too broad - now handled by version-specific rules with proper context
     // This was flagging every arithmetic operation including safe ones
 
-    // Magic numbers
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::MagicNumbers,
-        VulnerabilitySeverity::Low,
-        r"\*\s*\d{2,}|/\s*\d{2,}",
-        "Magic Numbers".to_string(),
-        "Hard-coded numbers should be replaced with named constants".to_string(),
-        "Replace magic numbers with named constants for better readability and maintainability".to_string(),
-        false,
-    ).unwrap());
+    // REMOVED: Magic numbers pattern was too broad - flagged every multiplication/division
+    // by 2+ digit numbers including common patterns like * 100, / 1000, * 60, etc.
+    // Magic number detection is better handled at the audit level, not automated scanning.
 
     // Unused functions
     rules.push(VulnerabilityRule::new(
@@ -668,16 +654,8 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
 
     // Role-based access control detection patterns
     
-    // OpenZeppelin AccessControl patterns
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::RoleBasedAccessControl,
-        VulnerabilitySeverity::Info,
-        r"import.*AccessControl|contract\s+\w+.*AccessControl",
-        "OpenZeppelin AccessControl Detected".to_string(),
-        "Contract uses OpenZeppelin AccessControl - verify proper role configuration".to_string(),
-        "Ensure roles are properly defined, granted, and revoked with appropriate permissions".to_string(),
-        false,
-    ).unwrap());
+    // REMOVED: "OpenZeppelin AccessControl Detected" is informational noise.
+    // Using OZ AccessControl is good practice, not a finding to report.
 
     // Functions without role-based modifiers
     rules.push(VulnerabilityRule::new(
@@ -701,27 +679,11 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
         false,
     ).unwrap());
 
-    // Hardcoded role checks instead of modifiers
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::RoleBasedAccessControl,
-        VulnerabilitySeverity::Medium,
-        r"require\s*\(\s*hasRole\s*\(",
-        "Inline Role Check Instead of Modifier".to_string(),
-        "Using inline role checks instead of modifiers reduces code reusability".to_string(),
-        "Consider creating custom modifiers for commonly used role checks".to_string(),
-        false,
-    ).unwrap());
+    // REMOVED: Inline require(hasRole(...)) is perfectly valid access control.
+    // Flagging it as a vulnerability is misleading - it's a style preference.
 
-    // Role definition patterns
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::RoleBasedAccessControl,
-        VulnerabilitySeverity::Info,
-        r"bytes32\s+public\s+constant\s+\w*_ROLE\s*=",
-        "Role Definition Found".to_string(),
-        "Role constant defined - verify it's properly used in access control".to_string(),
-        "Ensure role is properly assigned and used in function modifiers".to_string(),
-        false,
-    ).unwrap());
+    // REMOVED: "Role Definition Found" is purely informational - flagging every
+    // bytes32 constant ROLE definition adds noise without security value.
 
     // Default admin role assignments
     rules.push(VulnerabilityRule::new(
@@ -756,16 +718,8 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
         true,
     ).unwrap());
 
-    // Missing role renunciation  
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::RoleBasedAccessControl,
-        VulnerabilitySeverity::Medium,
-        r"grantRole\s*\([^)]*\)",
-        "Role Granting Function Found".to_string(),
-        "Role granting detected - ensure renunciation mechanisms are also implemented".to_string(),
-        "Implement proper role renunciation functions for security".to_string(),
-        false,
-    ).unwrap());
+    // REMOVED: Flagging every grantRole() call is too noisy. OpenZeppelin AccessControl
+    // already includes renounceRole(). Custom role systems are caught by other rules.
 
     // Role-based reentrancy issues
     rules.push(VulnerabilityRule::new(
@@ -789,16 +743,8 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
         false,
     ).unwrap());
 
-    // Role enumeration issues
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::RoleBasedAccessControl,
-        VulnerabilitySeverity::Low,
-        r"getRoleMemberCount|getRoleMember",
-        "Role Enumeration Functions Detected".to_string(),
-        "Role enumeration functions present - consider privacy implications".to_string(),
-        "Evaluate if role enumeration is necessary or if it exposes sensitive information".to_string(),
-        false,
-    ).unwrap());
+    // REMOVED: Role enumeration (getRoleMemberCount/getRoleMember) is standard
+    // OpenZeppelin AccessControlEnumerable. Not a vulnerability.
 
     // Missing role validation in constructors
     rules.push(VulnerabilityRule::new(
@@ -822,16 +768,8 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
         true,
     ).unwrap());
 
-    // Time-locked role operations
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::RoleBasedAccessControl,
-        VulnerabilitySeverity::Info,
-        r"timelock|TimelockController",
-        "Timelock Integration Detected".to_string(),
-        "Contract integrates with timelock - verify critical operations are time-locked".to_string(),
-        "Ensure all critical role changes go through appropriate timelock delays".to_string(),
-        false,
-    ).unwrap());
+    // REMOVED: "Timelock Integration Detected" is informational noise.
+    // Having a timelock is a GOOD security practice, not a finding.
 
     // Role inheritance issues
     rules.push(VulnerabilityRule::new(
@@ -936,27 +874,14 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
         false,
     ).unwrap());
 
-    // Financial calculations without precision consideration
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::PrecisionLoss,
-        VulnerabilitySeverity::Medium,
-        r"uint256\s+\w+\s*=\s*\w+\s*/\s*\w+\s*;",
-        "Integer Division Without Precision Handling".to_string(),
-        "Integer division operations may cause precision loss in financial calculations".to_string(),
-        "Consider using fixed-point math libraries or proper remainder handling".to_string(),
-        false,
-    ).unwrap());
+    // REMOVED: Flagged ALL uint256 division operations (uint256 x = a / b).
+    // Division is fundamental to Solidity - this generated massive false positives.
+    // Precision-sensitive division is caught by the more specific rules above
+    // (balance division, reward distribution, pricing calculations).
 
-    // Reward/distribution calculations
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::PrecisionLoss,
-        VulnerabilitySeverity::Medium,
-        r"(reward|distribution|share)\w*\s*=.*\/",
-        "Reward Distribution Precision Loss".to_string(),
-        "Reward distribution calculations may suffer from precision loss".to_string(),
-        "Use proper rounding mechanisms and handle remainders appropriately".to_string(),
-        false,
-    ).unwrap());
+    // REMOVED: Pattern (reward|distribution|share)\w*\s*=.*\/ flagged ANY line containing
+    // "reward", "distribution", or "share" with ANY division anywhere on the line.
+    // This was far too broad - the specific patterns above catch real precision issues.
 
     // Missing remainder calculations
     rules.push(VulnerabilityRule::new(
@@ -1004,42 +929,28 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
         false,
     ).unwrap());
 
-    // Missing events for critical state changes
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::MissingEvents,
-        VulnerabilitySeverity::Low,
-        r"function\s+(transfer|approve|mint|burn|pause|unpause|setOwner|changeOwner)\w*\([^)]*\)",
-        "Missing Event Emission".to_string(),
-        "Critical state change function - verify event emission".to_string(),
-        "Emit events for all critical state changes for off-chain monitoring".to_string(),
-        false,
-    ).unwrap());
+    // REMOVED: "Missing Event Emission" flagged ALL transfer/approve/mint/burn function
+    // declarations without checking if events are actually emitted in the function body.
+    // This requires multi-line analysis and is better handled by the advanced analyzer.
 
     // REMOVED: Too broad - flags every variable declaration
     // Solidity auto-initializes variables to default values, this is usually intentional
     // Now handled by context-aware detection in scanner.rs
 
-    // Unused return values
+    // Unused return values - only match ERC20 transferFrom (2+ args), not payable.transfer()
     rules.push(VulnerabilityRule::new(
         VulnerabilityCategory::UnusedReturnValues,
         VulnerabilitySeverity::Medium,
-        r"\w+\.transfer\s*\(|\w+\.transferFrom\s*\(",
-        "Unused Return Value from Transfer".to_string(),
-        "ERC20 transfer/transferFrom return values should be checked".to_string(),
-        "Check return value: require(token.transfer(recipient, amount), 'Transfer failed');".to_string(),
+        r"\w+\.transferFrom\s*\(",
+        "Unused Return Value from transferFrom".to_string(),
+        "ERC20 transferFrom return value should be checked".to_string(),
+        "Use SafeERC20.safeTransferFrom() or check: require(token.transferFrom(...));".to_string(),
         false,
     ).unwrap());
 
-    // Could be immutable
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::ImmutabilityIssues,
-        VulnerabilitySeverity::Info,
-        r"address\s+(public\s+)?\w+\s*;",
-        "Variable Could Be Immutable".to_string(),
-        "State variable that's only set in constructor could be immutable to save gas".to_string(),
-        "Consider marking as 'immutable' if only set in constructor".to_string(),
-        false,
-    ).unwrap());
+    // REMOVED: "Could be immutable" flagged every address state variable declaration
+    // without checking if the variable is actually only set in the constructor.
+    // This requires data-flow analysis that regex cannot provide.
 
     // Shadowing state variables
     rules.push(VulnerabilityRule::new(
@@ -1096,16 +1007,9 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
         true,
     ).unwrap());
 
-    // External function optimization
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::ExternalFunction,
-        VulnerabilitySeverity::Info,
-        r"function\s+\w+\([^)]*\)\s+public\s+view\s+returns",
-        "Public Function Could Be External".to_string(),
-        "Public function not called internally could be marked external for gas savings".to_string(),
-        "Change 'public' to 'external' if function is not called internally".to_string(),
-        false,
-    ).unwrap());
+    // REMOVED: "Public could be external" flagged every public view function.
+    // This is a minor gas optimization, not a vulnerability, and requires
+    // call-graph analysis to determine if the function is called internally.
 
     // Signature malleability
     rules.push(VulnerabilityRule::new(
@@ -1140,16 +1044,8 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
         false,
     ).unwrap());
 
-    // Void constructor
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::NamingConventions,
-        VulnerabilitySeverity::Critical,
-        r"function\s+[A-Z]\w*\s*\([^)]*\)\s*\{",
-        "Void Constructor Pattern".to_string(),
-        "Function with contract name but wrong case - not a constructor!".to_string(),
-        "Use 'constructor()' keyword for constructors".to_string(),
-        false,
-    ).unwrap());
+    // REMOVED: "Void Constructor Pattern" flagged ANY function starting with uppercase.
+    // This is only relevant for Solidity <0.4.22 and is handled by version-specific rules.
 
     // Missing zero address validation
     rules.push(VulnerabilityRule::new(
@@ -1269,16 +1165,9 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
         false,
     ).unwrap());
 
-    // Exposed setImplementation in proxy contracts
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::ProxyAdminVulnerability,
-        VulnerabilitySeverity::Critical,
-        r"setImplementation|upgradeToAndCall|upgradeTo",
-        "Proxy Implementation Modification Detected".to_string(),
-        "Functions that modify proxy implementation must have proper access control".to_string(),
-        "Verify access control, add timelock, and implement upgrade governance".to_string(),
-        false,
-    ).unwrap());
+    // REMOVED: Too broad - matched ANY mention of upgradeTo/setImplementation including
+    // OpenZeppelin imports, comments, and properly protected implementations.
+    // Proxy upgrade detection is better handled by the specific function-signature rules above.
 
     // 2. CALLBACK REENTRANCY (ERC721/ERC1155 - Omni NFT $1.43M, Multiple 2024 incidents)
     // onERC721Received callback exploitation
@@ -1375,16 +1264,9 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
         false,
     ).unwrap());
 
-    // Token decimal handling without normalization
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::DecimalPrecisionMismatch,
-        VulnerabilitySeverity::High,
-        r"decimals\(\)|\.decimals",
-        "Token Decimal Handling Detected".to_string(),
-        "Token decimal operations require careful precision handling to avoid exploits".to_string(),
-        "Always normalize token amounts to standard precision (e.g., 1e18)".to_string(),
-        false,
-    ).unwrap());
+    // REMOVED: Flagging all .decimals() usage is counterproductive - using decimals()
+    // is the correct way to handle token precision. The decimal mismatch rule above
+    // already catches the real vulnerability (mixing different precisions).
 
     // 6. SIGNATURE REPLAY ATTACKS (Multiple cross-chain incidents 2024-2025)
     // Signature verification patterns - detailed checks in advanced analyzer
@@ -1490,16 +1372,9 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
         false,
     ).unwrap());
 
-    // Rebasing token balance assumptions
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::InputValidationFailure,
-        VulnerabilitySeverity::Medium,
-        r"balance\w*\s*\+=\s*\w+\s*;|balance\w*\s*=\s*balance\w*\s*\+",
-        "Rebasing Token Balance Tracking".to_string(),
-        "Direct balance tracking fails with rebasing tokens (stETH, AMPL, etc.)".to_string(),
-        "Use shares-based accounting or check compatibility with rebasing tokens".to_string(),
-        false,
-    ).unwrap());
+    // REMOVED: "Rebasing Token Balance Tracking" flagged ALL balance increments (balance += x).
+    // This is standard accounting code. Rebasing token issues require semantic analysis
+    // of token types, not pattern matching on balance updates.
 
     // Self-destruct in proxy implementation
     rules.push(VulnerabilityRule::new(
@@ -1512,16 +1387,9 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
         false,
     ).unwrap());
 
-    // Missing ERC-165 interface check before calls
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::UnsafeExternalCalls,
-        VulnerabilitySeverity::Medium,
-        r"IERC721\(|IERC1155\(|IERC20\(",
-        "Missing Interface Support Check".to_string(),
-        "Casting to interface without ERC-165 check may call non-compliant contracts".to_string(),
-        "Use IERC165(addr).supportsInterface(interfaceId) before interface calls".to_string(),
-        false,
-    ).unwrap());
+    // REMOVED: Flagging ALL IERC20/721/1155 casts is too noisy. Interface casting is
+    // standard Solidity practice. ERC-165 checks are only needed for unknown addresses,
+    // not for trusted contract references.
 
     // Unchecked block.number usage for randomness
     rules.push(VulnerabilityRule::new(
@@ -1545,16 +1413,9 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
         false,
     ).unwrap());
 
-    // Unsafe ABI.encode for hashing
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::SignatureVulnerabilities,
-        VulnerabilitySeverity::High,
-        r"keccak256\s*\(\s*abi\.encode\s*\(",
-        "Hash Collision Risk with abi.encode".to_string(),
-        "abi.encode can produce collisions with dynamic types - use encodePacked carefully".to_string(),
-        "Use abi.encodePacked with fixed-length types or add length prefixes".to_string(),
-        false,
-    ).unwrap());
+    // REMOVED: INCORRECT RULE - keccak256(abi.encode(...)) is actually the SAFE pattern.
+    // abi.encode pads arguments to 32 bytes preventing collisions.
+    // abi.encodePacked is the one with collision risk (already detected above).
 
     // Unprotected callback functions
     rules.push(VulnerabilityRule::new(
@@ -1567,16 +1428,7 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
         false,
     ).unwrap());
 
-    // Hardcoded gas limits
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::GasOptimization,
-        VulnerabilitySeverity::Medium,
-        r"\.call\{.*gas:\s*\d+|\.call\{[^}]*\}\{gas:\s*\d+",
-        "Hardcoded Gas Limit".to_string(),
-        "Hardcoded gas limits may become insufficient with EVM upgrades or repricing".to_string(),
-        "Use gasleft() with safety margin or remove gas limit for trusted calls".to_string(),
-        false,
-    ).unwrap());
+    // REMOVED: Duplicate of "Hardcoded Gas Value" rule at line ~1101
 
     // Incorrect use of address(0) checks
     rules.push(VulnerabilityRule::new(
@@ -1693,16 +1545,9 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
         true,
     ).unwrap());
 
-    // Token approval logic error
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::LogicError,
-        VulnerabilitySeverity::Medium,
-        r"approve\s*\([^)]*,\s*\w+\s*\)|allowance.*\+=",
-        "Token Approval Logic Pattern".to_string(),
-        "Approval pattern detected - verify against front-running and double-spend issues".to_string(),
-        "Use increaseAllowance/decreaseAllowance or require current allowance is 0".to_string(),
-        false,
-    ).unwrap());
+    // REMOVED: Flagging every approve() call as a logic error is too broad.
+    // approve() is standard ERC20 - the front-running issue is well-known and
+    // OpenZeppelin's implementation handles it. This generated massive noise.
 
     // ===========================================
     // META-TRANSACTION / TRUSTED FORWARDER (KiloEx $7.4M)
@@ -1730,27 +1575,12 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
         false,
     ).unwrap());
 
-    // _msgSender() without proper forwarder validation
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::MetaTransactionVulnerability,
-        VulnerabilitySeverity::High,
-        r"_msgSender\(\)|_msgData\(\)",
-        "Meta-Transaction Context Functions".to_string(),
-        "_msgSender()/_msgData() used - verify trusted forwarder is properly validated".to_string(),
-        "Ensure isTrustedForwarder() checks are secure and forwarder can't be manipulated".to_string(),
-        false,
-    ).unwrap());
+    // REMOVED: _msgSender()/_msgData() are standard OpenZeppelin Context functions used
+    // by virtually every OZ-based contract. Flagging every occurrence floods results.
+    // Meta-tx risks are better caught by the MinimalForwarder and ERC2771Context rules.
 
-    // ERC2771Context misuse
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::MetaTransactionVulnerability,
-        VulnerabilitySeverity::High,
-        r"ERC2771Context|isTrustedForwarder",
-        "ERC-2771 Meta-Transaction Context".to_string(),
-        "ERC-2771 context detected - verify trusted forwarder cannot be exploited".to_string(),
-        "Validate forwarder address is immutable and correctly set in constructor".to_string(),
-        false,
-    ).unwrap());
+    // REMOVED: ERC2771Context and isTrustedForwarder are standard OZ implementations.
+    // Flagging their presence is noise - the MinimalForwarder rule catches real issues.
 
     // ===========================================
     // UNCHECKED MATH OPERATIONS (Cetus $223M style)
@@ -1767,13 +1597,14 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
         false,
     ).unwrap());
 
-    // Bit shift operations without overflow check
+    // Bit shift operations with variable shift amount (potential overflow)
+    // Only flag variable-amount shifts; constant shifts like << 1 are safe and common
     rules.push(VulnerabilityRule::new(
         VulnerabilityCategory::UncheckedMathOperation,
         VulnerabilitySeverity::High,
-        r"<<\s*\d+|>>\s*\d+|<<\s*\w+|>>\s*\w+",
-        "Bit Shift Operation (Cetus Pattern)".to_string(),
-        "Bit shifts don't revert on overflow in Solidity - Cetus $223M used flawed shift check".to_string(),
+        r"<<\s*[a-zA-Z_]\w*|>>\s*[a-zA-Z_]\w*",
+        "Variable Bit Shift Operation (Cetus Pattern)".to_string(),
+        "Bit shifts with variable amounts don't revert on overflow in Solidity".to_string(),
         "Validate shift amount < 256, check for overflow BEFORE shift operation".to_string(),
         false,
     ).unwrap());
@@ -2021,17 +1852,9 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
         true,
     ).unwrap());
 
-    // Greedy Contract - Table I from paper
-    // Can receive but cannot withdraw - ETH locked forever
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::GreedyContract,
-        VulnerabilitySeverity::High,
-        r"(receive|fallback)\s*\(\s*\)\s*(external\s+)?payable",
-        "Payable Receive/Fallback Function".to_string(),
-        "Contract can receive ETH - verify withdrawal mechanism exists".to_string(),
-        "Ensure contract has withdraw function or ETH can be extracted".to_string(),
-        false,
-    ).unwrap());
+    // REMOVED: "Payable Receive/Fallback" flagged every receive()/fallback() as a greedy
+    // contract risk. Checking if a withdraw mechanism exists requires cross-function analysis
+    // that single-line regex cannot do. This generated noise for all payable contracts.
 
     // Missing Emergency Stop - Table I from paper ("Missing Interrupter")
     // DeFi contracts need circuit breakers for incident response
@@ -2080,11 +1903,11 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
     ).unwrap());
 
     // Double Claiming Attack (Popsicle Finance $25M) - Section IV.5 of paper
-    // LP token transfer allows claiming rewards multiple times
+    // Only flag external/public claim functions (not internal helpers)
     rules.push(VulnerabilityRule::new(
         VulnerabilityCategory::DoubleClaiming,
         VulnerabilitySeverity::High,
-        r"function\s+\w*(claim|harvest|getReward|collectFees)\w*\s*\([^)]*\)",
+        r"function\s+\w*(claim|harvest|getReward|collectFees)\w*\s*\([^)]*\)\s+(external|public)",
         "Reward Claiming Function (Popsicle Finance Pattern)".to_string(),
         "Reward claiming without transfer lockout can enable double-claiming attacks ($25M Popsicle Finance)".to_string(),
         "Track claimed amounts per address, use claimable mapping that resets on transfer".to_string(),
@@ -2436,25 +2259,14 @@ pub fn create_version_specific_rules(version: &CompilerVersion) -> Vec<Vulnerabi
         }
     }
     
-    // Enhanced Delegate call detection patterns
+    // Single delegatecall detection (merged from 2 overlapping patterns)
     rules.push(VulnerabilityRule::new(
         VulnerabilityCategory::DelegateCalls,
         VulnerabilitySeverity::Critical,
         r"\.delegatecall\s*\(",
-        "Unsafe Delegatecall Usage".to_string(),
-        "Delegatecall preserves msg.sender and msg.value, can modify contract storage".to_string(),
-        "Ensure target address is trusted, validate input data, and consider using call() instead".to_string(),
-        false,
-    ).unwrap());
-
-    // Raw delegatecall detection
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::DelegateCalls,
-        VulnerabilitySeverity::Critical,
-        r"\bdelegatecall\s*\(",
-        "Raw Delegatecall Usage".to_string(),
-        "Raw delegatecall can execute arbitrary code in current contract's context".to_string(),
-        "Validate target address, implement access controls, and audit target contract code".to_string(),
+        "Delegatecall Usage Detected".to_string(),
+        "Delegatecall preserves msg.sender/value and can modify storage - verify target is trusted".to_string(),
+        "Ensure target address is trusted, validate input data, and implement access controls".to_string(),
         false,
     ).unwrap());
 
@@ -2480,16 +2292,8 @@ pub fn create_version_specific_rules(version: &CompilerVersion) -> Vec<Vulnerabi
         true,
     ).unwrap());
 
-    // Delegatecall without return value check
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::DelegateCalls,
-        VulnerabilitySeverity::High,
-        r"delegatecall\s*\([^)]*\)\s*;",
-        "Unchecked Delegatecall Return Value".to_string(),
-        "Delegatecall return value not checked - silent failures possible".to_string(),
-        "Always check delegatecall return value and handle failures appropriately".to_string(),
-        false,
-    ).unwrap());
+    // REMOVED: Duplicate of "Unchecked Low-Level Call" rule in main rules which
+    // already catches .delegatecall() with the pattern .(call|delegatecall|staticcall)\s*\(...\)\s*;
 
     // Delegatecall with dynamic data
     rules.push(VulnerabilityRule::new(
@@ -2513,16 +2317,7 @@ pub fn create_version_specific_rules(version: &CompilerVersion) -> Vec<Vulnerabi
         true,
     ).unwrap());
     
-    // Inline assembly (version-dependent risks)
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::UnsafeExternalCalls,
-        VulnerabilitySeverity::High,
-        r"assembly\s*\{",
-        "Inline Assembly Usage".to_string(),
-        "Inline assembly bypasses Solidity safety checks".to_string(),
-        "Avoid assembly unless absolutely necessary, audit carefully".to_string(),
-        false,
-    ).unwrap());
+    // REMOVED: Duplicate of assembly rule in create_vulnerability_rules() (line ~1070)
     
     // Gas limit issues specific to versions
     match version {
@@ -2767,16 +2562,8 @@ fn add_cross_version_attacks(rules: &mut Vec<VulnerabilityRule>, version: &Compi
         false,
     ).unwrap());
 
-    // Metamorphic contract attacks
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::AccessControl,
-        VulnerabilitySeverity::Critical,
-        r"CREATE2|create2",
-        "Metamorphic Contract Attack Risk".to_string(),
-        "CREATE2 can be exploited to deploy different contracts at the same address".to_string(),
-        "Validate contract code hash and implement proper upgrade mechanisms".to_string(),
-        false,
-    ).unwrap());
+    // REMOVED: Duplicate and too broad - catches ANY mention of CREATE2 including
+    // comments and imports. The specific create2 rule in main rules handles real issues.
 
     // Front-running attacks
     rules.push(VulnerabilityRule::new(
@@ -2849,36 +2636,12 @@ fn add_cross_version_attacks(rules: &mut Vec<VulnerabilityRule>, version: &Compi
         _ => {}
     }
 
-    // Version-specific gas griefing attacks
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::DoSAttacks,
-        VulnerabilitySeverity::High,
-        r"for\s*\([^)]*;\s*\w+\s*<\s*\w+\.length",
-        "Gas Griefing Attack Vector".to_string(),
-        "Unbounded loops enable gas griefing attacks to DoS the contract".to_string(),
-        "Implement gas limits, pagination, or pull-over-push pattern".to_string(),
-        false,
-    ).unwrap());
+    // REMOVED: Duplicate of loop-based DoS rules in create_vulnerability_rules()
+    // and the gas optimization cache-array-length rule
 
-    // Signature replay attacks
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::AccessControl,
-        VulnerabilitySeverity::Critical,
-        r"ecrecover\s*\(",
-        "Signature Replay Attack Risk".to_string(),
-        "ecrecover without proper nonce/timestamp validation enables replay attacks".to_string(),
-        "Implement nonces, timestamps, and domain separators for signature validation".to_string(),
-        false,
-    ).unwrap());
+    // REMOVED: Duplicate of ecrecover rules in create_vulnerability_rules()
+    // (SignatureVulnerabilities and SignatureVerificationBypass categories)
 
-    // Tx.origin phishing attacks
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::AccessControl,
-        VulnerabilitySeverity::Critical,
-        r"tx\.origin",
-        "tx.origin Phishing Attack Vector".to_string(),
-        "tx.origin authentication enables phishing attacks through malicious contracts".to_string(),
-        "Never use tx.origin for authentication - use msg.sender instead".to_string(),
-        false,
-    ).unwrap());
+    // REMOVED: Duplicate and too broad - catches ANY tx.origin reference including
+    // safe reads. The specific require(tx.origin ==) rules handle real auth issues.
 }

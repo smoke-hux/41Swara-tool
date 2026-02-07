@@ -730,6 +730,97 @@ impl ContractScanner {
                 true
             }
 
+            VulnerabilityCategory::UnsafeExternalCalls => {
+                // Don't report if return value is captured
+                if line.contains("(bool") || line.contains("= ") || line.contains("require(") {
+                    return false;
+                }
+                // Don't report in view/pure functions
+                if self.is_view_or_pure_function(line) {
+                    return false;
+                }
+                true
+            }
+
+            VulnerabilityCategory::CallbackReentrancy | VulnerabilityCategory::ERC777CallbackReentrancy
+            | VulnerabilityCategory::DepositForReentrancy => {
+                // Don't report if ReentrancyGuard is used
+                if self.has_reentrancy_guard(full_content) {
+                    return false;
+                }
+                // Don't report in view/pure functions
+                if self.is_view_or_pure_function(line) {
+                    return false;
+                }
+                true
+            }
+
+            VulnerabilityCategory::ProxyAdminVulnerability | VulnerabilityCategory::UnprotectedProxyUpgrade => {
+                // Don't report if using OpenZeppelin UUPS/Transparent proxy properly
+                if full_content.contains("_authorizeUpgrade") && full_content.contains("onlyOwner") {
+                    return false;
+                }
+                if full_content.contains("UUPSUpgradeable") || full_content.contains("TransparentUpgradeableProxy") {
+                    return false;
+                }
+                // Don't report if function has access control
+                if line.contains("function") {
+                    let modifiers = self.extract_modifiers(full_content);
+                    if self.has_access_control_modifier(line, &modifiers) {
+                        return false;
+                    }
+                }
+                true
+            }
+
+            VulnerabilityCategory::MissingEmergencyStop => {
+                // Don't report if contract uses Pausable
+                if full_content.contains("Pausable") || full_content.contains("whenNotPaused") {
+                    return false;
+                }
+                // Don't report if function has whenNotPaused modifier
+                if line.contains("whenNotPaused") {
+                    return false;
+                }
+                true
+            }
+
+            VulnerabilityCategory::SignatureReplay | VulnerabilityCategory::SignatureVulnerabilities => {
+                // Don't report if using OpenZeppelin ECDSA
+                if full_content.contains("ECDSA.recover") || full_content.contains("SignatureChecker") {
+                    return false;
+                }
+                true
+            }
+
+            VulnerabilityCategory::LowLevelCalls => {
+                // Don't report if the call result is captured/checked
+                if line.contains("(bool") || line.contains("success") || line.contains("require(") {
+                    return false;
+                }
+                true
+            }
+
+            VulnerabilityCategory::InputValidationFailure => {
+                // Don't report if function is internal/private
+                if self.is_internal_or_private(line) {
+                    return false;
+                }
+                // Don't report if function is view/pure
+                if self.is_view_or_pure_function(line) {
+                    return false;
+                }
+                true
+            }
+
+            VulnerabilityCategory::MetaTransactionVulnerability | VulnerabilityCategory::TrustedForwarderBypass => {
+                // Don't report if using OpenZeppelin's Context/ERC2771Context properly
+                if self.uses_openzeppelin(full_content) && full_content.contains("ERC2771Context") {
+                    return false;
+                }
+                true
+            }
+
             _ => true // Report all other categories by default
         }
     }

@@ -244,12 +244,14 @@ impl ReachabilityAnalyzer {
         let target_function = self.find_function_at_line(call_graph, target_line, content);
 
         if target_function.is_none() {
+            // Lines outside functions (pragma, state variables, imports, etc.) are
+            // always reachable — they're contract-level declarations, not dead code.
             return ReachabilityResult {
-                is_reachable: false,
+                is_reachable: true,
                 call_paths: vec![],
                 entry_points: vec![],
-                confidence_adjustment: -30,
-                reason: "Line is not within any function".to_string(),
+                confidence_adjustment: 0,
+                reason: "Contract-level declaration (outside function scope)".to_string(),
             };
         }
 
