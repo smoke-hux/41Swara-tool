@@ -1,20 +1,63 @@
+//! Advanced analysis module for the 41Swara smart contract security scanner.
+//!
+//! This module provides deep, domain-specific vulnerability detection beyond
+//! basic pattern matching. It covers:
+//!
+//! - **Control flow analysis**: Reentrancy, flash loan vectors, sandwich attacks
+//! - **Complexity metrics**: Cyclomatic complexity per function
+//! - **Access control auditing**: Unprotected critical functions
+//! - **Storage layout checks**: Upgradeable contract pitfalls
+//! - **Gas optimization**: Storage reads in loops, batching opportunities
+//! - **DeFi-specific**: Oracle manipulation, slippage, liquidity, yield farming
+//! - **NFT-specific**: Minting caps, unsafe transfers, metadata mutability, royalties
+//! - **Known exploit patterns**: DAO, Parity, integer overflow, unchecked calls
+//! - **REKT.news patterns**: Aevo proxy, Omni callback, signature replay, MEV, precision
+//! - **OWASP 2025 Top 10**: Flash loan callbacks, logic errors, meta-transactions,
+//!   unchecked math, governance attacks, bridge vulnerabilities
+//! - **Phase 6 (2025)**: ERC4626 inflation, read-only reentrancy, Permit2, LayerZero,
+//!   EIP-4337, transient storage, CREATE2 collision, Merkle tree exploits
+//! - **L2/Base chain**: Sequencer downtime, gas oracle, PUSH0, Uniswap V4 hooks,
+//!   Chainlink CCIP, EigenLayer restaking
+//! - **Research paper vulns**: ERC-777 reentrancy, greedy contracts, double claiming,
+//!   emergency stops, signature verification bypass
+
 #![allow(dead_code)]
 
 use std::collections::{HashMap, HashSet};
 use regex::Regex;
 use crate::vulnerabilities::{Vulnerability, VulnerabilitySeverity, VulnerabilityCategory};
 
+/// The primary advanced analyzer that runs multi-category vulnerability detection
+/// on Solidity smart contract source code.
+///
+/// Each public `analyze_*` method returns a `Vec<Vulnerability>` that the scanner
+/// merges into the final report. The analyzer is stateless apart from the `verbose`
+/// flag; all analysis is performed per-invocation on the raw source text.
 pub struct AdvancedAnalyzer {
     #[allow(dead_code)] // Reserved for future verbose diagnostic output
     verbose: bool,
 }
 
 impl AdvancedAnalyzer {
+    /// Create a new `AdvancedAnalyzer`.
+    ///
+    /// `verbose` is reserved for future diagnostic output and currently unused.
     pub fn new(verbose: bool) -> Self {
         Self { verbose }
     }
 
-    // Analyze control flow patterns for complex vulnerabilities
+    // ========================================================================
+    // CONTROL FLOW ANALYSIS
+    // Detects reentrancy, flash loan vectors, and sandwich attack surfaces
+    // by inspecting statement ordering and external call patterns.
+    // ========================================================================
+
+    /// Analyze control flow patterns for complex vulnerabilities.
+    ///
+    /// Checks for:
+    /// - State changes after external calls (reentrancy)
+    /// - Flash loan attack vectors (manipulable price sources)
+    /// - MEV / sandwich attack surfaces (swaps without slippage protection)
     pub fn analyze_control_flow(&self, content: &str) -> Vec<Vulnerability> {
         let mut vulnerabilities = Vec::new();
 
@@ -36,7 +79,10 @@ impl AdvancedAnalyzer {
         vulnerabilities
     }
 
-    // Advanced reentrancy detection using control flow analysis
+    // Advanced reentrancy detection: walks lines after each external call
+    // (.call{}, .transfer(), .send()) looking for state modifications within the
+    // next 10 lines. Skips contracts with ReentrancyGuard / nonReentrant and
+    // lines inside try-catch blocks. Only flags storage writes (excludes memory/calldata).
     fn detect_reentrancy_pattern(&self, content: &str) -> Option<Vulnerability> {
         // Skip if ReentrancyGuard is present
         if content.contains("ReentrancyGuard") || content.contains("nonReentrant") {
@@ -91,7 +137,9 @@ impl AdvancedAnalyzer {
         None
     }
 
-    // Detect flash loan attack vulnerabilities
+    // Detect flash loan attack vulnerabilities by looking for contracts that
+    // rely on manipulable spot price sources (getReserves, balanceOf(this))
+    // in the presence of flash loan callbacks.
     fn detect_flash_loan_vulnerability(&self, content: &str) -> Option<Vulnerability> {
         let flash_loan_pattern = Regex::new(r"flashLoan|executeOperation|onFlashLoan").unwrap();
         let price_dependency = Regex::new(r"getReserves|balanceOf\(address\(this\)\)").unwrap();
@@ -115,7 +163,8 @@ impl AdvancedAnalyzer {
         None
     }
 
-    // Detect MEV/sandwich attack vulnerabilities
+    // Detect MEV/sandwich attack vulnerabilities by identifying swap functions
+    // that lack slippage protection parameters (amountOutMin, slippage, etc.).
     fn detect_sandwich_attack_vector(&self, content: &str) -> Option<Vulnerability> {
         let swap_pattern = Regex::new(r"function\s+swap|swapExact|swapTokens").unwrap();
         let slippage_pattern = Regex::new(r"amountOutMin|slippage").unwrap();
@@ -139,7 +188,16 @@ impl AdvancedAnalyzer {
         None
     }
 
-    // Analyze function complexity
+    // ========================================================================
+    // COMPLEXITY ANALYSIS
+    // Computes a simplified cyclomatic complexity for each function and flags
+    // those exceeding a threshold of 10.
+    // ========================================================================
+
+    /// Compute cyclomatic complexity for every function in the contract.
+    ///
+    /// Complexity is incremented for `if`, `for`, `while`, `&&`, and `||`.
+    /// Functions with complexity > 10 are reported as low-severity issues.
     pub fn analyze_complexity(&self, content: &str) -> Vec<Vulnerability> {
         let mut vulnerabilities = Vec::new();
         let function_pattern = Regex::new(r"function\s+(\w+)\s*\([^)]*\)[^{]*\{").unwrap();
@@ -203,7 +261,17 @@ impl AdvancedAnalyzer {
         vulnerabilities
     }
 
-    // Detect access control issues using data flow analysis
+    // ========================================================================
+    // ACCESS CONTROL ANALYSIS
+    // Identifies critical functions (withdraw, mint, burn, upgrade, etc.)
+    // that are externally / publicly visible but lack access control modifiers.
+    // ========================================================================
+
+    /// Detect access control issues by cross-referencing defined modifiers
+    /// against critical function signatures.
+    ///
+    /// Critical function names include: withdraw, transfer, mint, burn, pause,
+    /// unpause, setOwner, changeOwner, upgrade, initialize, destroy.
     pub fn analyze_access_control(&self, content: &str) -> Vec<Vulnerability> {
         let mut vulnerabilities = Vec::new();
 
@@ -254,7 +322,17 @@ impl AdvancedAnalyzer {
         vulnerabilities
     }
 
-    // Detect storage layout issues in upgradeable contracts
+    // ========================================================================
+    // STORAGE LAYOUT ANALYSIS
+    // Checks upgradeable contract patterns for common pitfalls such as
+    // missing storage gaps and constructors in proxy implementations.
+    // ========================================================================
+
+    /// Detect storage layout issues in upgradeable contracts.
+    ///
+    /// Flags:
+    /// - Missing `__gap` storage variable for future-proof slot reservation
+    /// - Constructor usage in contracts that should use `initializer` functions
     pub fn analyze_storage_layout(&self, content: &str) -> Vec<Vulnerability> {
         let mut vulnerabilities = Vec::new();
 
@@ -290,7 +368,18 @@ impl AdvancedAnalyzer {
         vulnerabilities
     }
 
-    // Analyze gas optimization opportunities
+    // ========================================================================
+    // GAS OPTIMIZATION ANALYSIS
+    // Identifies patterns that waste gas: storage reads inside loops,
+    // redundant storage writes, and short strings that could be bytes32.
+    // ========================================================================
+
+    /// Analyze gas optimization opportunities in the contract.
+    ///
+    /// Reports:
+    /// - Storage reads inside `for` loops (should cache in memory)
+    /// - Variables written more than twice (consider batching)
+    /// - Short string literals that would be cheaper as `bytes32`
     pub fn analyze_gas_optimization(&self, content: &str) -> Vec<Vulnerability> {
         let mut vulnerabilities = Vec::new();
 
@@ -364,7 +453,19 @@ impl AdvancedAnalyzer {
         vulnerabilities
     }
 
-    // DeFi-specific vulnerability detection
+    // ========================================================================
+    // DEFI-SPECIFIC VULNERABILITY DETECTION
+    // Targets DeFi protocol patterns: oracle manipulation, slippage, liquidity
+    // pool edge cases, and yield farming reward precision issues.
+    // ========================================================================
+
+    /// Analyze DeFi-specific vulnerabilities.
+    ///
+    /// Runs sub-detectors for:
+    /// - Price oracle manipulation (spot price without TWAP/Chainlink)
+    /// - Missing slippage protection on swap functions
+    /// - Liquidity removal without proper balance validation
+    /// - Yield farming reward calculation precision loss
     pub fn analyze_defi_vulnerabilities(&self, content: &str) -> Vec<Vulnerability> {
         let mut vulnerabilities = Vec::new();
 
@@ -385,6 +486,9 @@ impl AdvancedAnalyzer {
         vulnerabilities
     }
 
+    // Check for on-chain price sources that are trivially manipulable via
+    // flash loans (contract balance, spot reserves, token0 price). Only flags
+    // when TWAP, Chainlink, and price validation are all absent.
     fn detect_price_oracle_manipulation(&self, content: &str) -> Option<Vulnerability> {
         let unsafe_price_sources = vec![
             ("balanceOf(address(this))", "Using contract balance as price source"),
@@ -416,6 +520,8 @@ impl AdvancedAnalyzer {
         None
     }
 
+    // Flag swap functions whose signature lacks slippage parameters
+    // (minAmount, amountOutMin, slippage, minReturn).
     fn detect_slippage_issues(&self, content: &str) -> Vec<Vulnerability> {
         let mut vulnerabilities = Vec::new();
         let swap_pattern = Regex::new(r"function\s+swap").unwrap();
@@ -441,6 +547,9 @@ impl AdvancedAnalyzer {
         vulnerabilities
     }
 
+    // Check removeLiquidity/withdraw functions for proper balance validation
+    // in the first 15 lines of their body. Absence of require(amount...) or
+    // require(balance...) triggers a medium-severity finding.
     fn detect_liquidity_vulnerabilities(&self, content: &str) -> Vec<Vulnerability> {
         let mut vulnerabilities = Vec::new();
 
@@ -472,6 +581,9 @@ impl AdvancedAnalyzer {
         vulnerabilities
     }
 
+    // Detect reward calculation lines that divide without proper precision
+    // scaling (1e18, PRECISION, MULTIPLIER). Only triggers when a division
+    // appears in the reward calculation.
     fn detect_yield_farming_issues(&self, content: &str) -> Vec<Vulnerability> {
         let mut vulnerabilities = Vec::new();
 
@@ -501,7 +613,19 @@ impl AdvancedAnalyzer {
         vulnerabilities
     }
 
-    // NFT-specific vulnerability detection
+    // ========================================================================
+    // NFT-SPECIFIC VULNERABILITY DETECTION
+    // Covers ERC-721 and ERC-1155 contracts: minting caps, unsafe transfers,
+    // metadata mutability, and EIP-2981 royalty validation.
+    // ========================================================================
+
+    /// Analyze NFT-specific vulnerabilities for ERC-721 and ERC-1155 contracts.
+    ///
+    /// Checks:
+    /// - Mint without supply cap or duplicate token ID protection
+    /// - `transferFrom` instead of `safeTransferFrom`
+    /// - Mutable metadata after minting
+    /// - Uncapped royalty percentages (EIP-2981)
     pub fn analyze_nft_vulnerabilities(&self, content: &str) -> Vec<Vulnerability> {
         let mut vulnerabilities = Vec::new();
 
@@ -518,6 +642,8 @@ impl AdvancedAnalyzer {
         vulnerabilities
     }
 
+    // Check mint functions for (a) a supply cap (maxSupply, MAX_SUPPLY, totalSupply<)
+    // and (b) duplicate token ID protection (_exists check).
     fn detect_nft_minting_issues(&self, content: &str) -> Vec<Vulnerability> {
         let mut vulnerabilities = Vec::new();
         let mint_pattern = Regex::new(r"function\s+mint").unwrap();
@@ -561,6 +687,8 @@ impl AdvancedAnalyzer {
         vulnerabilities
     }
 
+    // Flag usage of transferFrom without safeTransferFrom, which risks sending
+    // NFTs to contracts that cannot handle them (tokens become permanently locked).
     fn detect_nft_transfer_issues(&self, content: &str) -> Vec<Vulnerability> {
         let mut vulnerabilities = Vec::new();
 
@@ -584,6 +712,9 @@ impl AdvancedAnalyzer {
         vulnerabilities
     }
 
+    // Check whether the tokenURI function body contains mutable metadata patterns
+    // (baseURI assignment, _tokenURIs mapping, setTokenURI) that could allow
+    // metadata rug-pulls after minting.
     fn detect_nft_metadata_issues(&self, content: &str) -> Vec<Vulnerability> {
         let mut vulnerabilities = Vec::new();
 
@@ -615,6 +746,9 @@ impl AdvancedAnalyzer {
         vulnerabilities
     }
 
+    // Verify EIP-2981 royalty implementations cap the percentage at 100%
+    // (10000 basis points). Scans 15 lines after royaltyInfo for a require()
+    // containing a ceiling value.
     fn detect_nft_royalty_issues(&self, content: &str) -> Vec<Vulnerability> {
         let mut vulnerabilities = Vec::new();
 
@@ -649,7 +783,19 @@ impl AdvancedAnalyzer {
         vulnerabilities
     }
 
-    // Detect known exploit patterns from past attacks
+    // ========================================================================
+    // KNOWN EXPLOIT PATTERN DETECTION
+    // Matches structural patterns from historically significant attacks:
+    // The DAO, Parity wallet, BEC token overflow, and unchecked calls.
+    // ========================================================================
+
+    /// Detect known exploit patterns from past high-profile attacks.
+    ///
+    /// Covers:
+    /// - The DAO attack pattern (reentrancy in withdraw)
+    /// - Parity wallet bug (delegatecall to user-controlled address)
+    /// - Integer overflow in token transfers (pre-Solidity 0.8 without SafeMath)
+    /// - Unchecked low-level call return values
     pub fn detect_known_exploits(&self, content: &str) -> Vec<Vulnerability> {
         let mut vulnerabilities = Vec::new();
 
@@ -668,6 +814,9 @@ impl AdvancedAnalyzer {
         vulnerabilities
     }
 
+    // Classic DAO reentrancy: looks for withdraw functions where .call{value:}
+    // appears before a balance state update, without nonReentrant guard.
+    // Scans up to 25 lines of the function body.
     fn detect_dao_attack_pattern(&self, content: &str) -> Vec<Vulnerability> {
         let mut vulnerabilities = Vec::new();
 
@@ -713,6 +862,9 @@ impl AdvancedAnalyzer {
         vulnerabilities
     }
 
+    // Parity wallet bug: delegatecall targeting an address that may be
+    // user-controlled (msg.sender, _target, target, implementation) without
+    // an accompanying require() validation on the same line.
     fn detect_parity_bug_pattern(&self, content: &str) -> Vec<Vulnerability> {
         let mut vulnerabilities = Vec::new();
 
@@ -742,6 +894,9 @@ impl AdvancedAnalyzer {
         vulnerabilities
     }
 
+    // Integer overflow in pre-0.8.0 token contracts: flags balance arithmetic
+    // (+=, -=, +, -) on balances[]/\_balances[] when SafeMath is absent and
+    // the pragma targets Solidity 0.4.x through 0.7.x.
     fn detect_integer_overflow_token_pattern(&self, content: &str) -> Vec<Vulnerability> {
         let mut vulnerabilities = Vec::new();
 
@@ -772,6 +927,8 @@ impl AdvancedAnalyzer {
         vulnerabilities
     }
 
+    // Detect low-level calls (.call, .delegatecall, .staticcall) whose return
+    // value is not captured into (bool ...) or immediately checked via require/if.
     fn detect_unchecked_call_pattern(&self, content: &str) -> Vec<Vulnerability> {
         let mut vulnerabilities = Vec::new();
 
@@ -811,6 +968,15 @@ impl AdvancedAnalyzer {
     // High-severity real-world exploit patterns from $3.1B+ in losses (2024-2025)
     // ============================================================================
 
+    /// Analyze patterns sourced from REKT.news incident reports ($3.1B+ in losses).
+    ///
+    /// Sub-detectors cover:
+    /// - Aevo/Ribbon proxy admin + oracle manipulation ($2.7M)
+    /// - Omni NFT callback reentrancy ($1.43M)
+    /// - Input validation failures (34.6% of all exploits, $69M)
+    /// - Signature replay (cross-chain incidents)
+    /// - MEV exploitation ($675M surface)
+    /// - Precision attack / decimal mismatch
     pub fn analyze_rekt_news_patterns(&self, content: &str) -> Vec<Vulnerability> {
         let mut vulnerabilities = Vec::new();
 
@@ -824,8 +990,10 @@ impl AdvancedAnalyzer {
         vulnerabilities
     }
 
-    // Aevo/Ribbon Finance Pattern ($2.7M - Dec 2025)
-    // Unprotected proxy admin functions with oracle manipulation
+    // Aevo/Ribbon Finance Pattern ($2.7M - Dec 2025):
+    // Two sub-checks for proxy contracts:
+    //   1. transferOwnership without access control modifier
+    //   2. setOracle-style functions without governance/timelock protection
     fn detect_aevo_proxy_pattern(&self, content: &str) -> Vec<Vulnerability> {
         let mut vulnerabilities = Vec::new();
 
@@ -1213,6 +1381,48 @@ impl AdvancedAnalyzer {
 
         // Bridge vulnerability patterns
         vulnerabilities.extend(self.detect_bridge_vulnerability_patterns(content));
+
+        // FN-5: ERC20 approve race condition
+        vulnerabilities.extend(self.detect_erc20_approve_race_condition(content));
+
+        vulnerabilities
+    }
+
+    // FN-5: Detect ERC20 approve race condition in custom implementations
+    fn detect_erc20_approve_race_condition(&self, content: &str) -> Vec<Vulnerability> {
+        let mut vulnerabilities = Vec::new();
+
+        // Only check if contract defines its own approve function
+        let approve_pattern = Regex::new(r"function\s+approve\s*\(").unwrap();
+        if !approve_pattern.is_match(content) {
+            return vulnerabilities;
+        }
+
+        // Skip if importing from OpenZeppelin ERC20 (already handled)
+        if content.contains("@openzeppelin") && content.contains("ERC20") {
+            return vulnerabilities;
+        }
+
+        // Check if increaseAllowance/decreaseAllowance exist
+        let has_safe_allowance = content.contains("function increaseAllowance")
+            || content.contains("function decreaseAllowance");
+
+        if !has_safe_allowance {
+            for (idx, line) in content.lines().enumerate() {
+                if approve_pattern.is_match(line) {
+                    vulnerabilities.push(Vulnerability::new(
+                        VulnerabilitySeverity::Medium,
+                        VulnerabilityCategory::LogicError,
+                        "ERC20 Approve Race Condition".to_string(),
+                        "Custom ERC20 implements approve() without increaseAllowance/decreaseAllowance - vulnerable to front-running".to_string(),
+                        idx + 1,
+                        line.trim().to_string(),
+                        "Add increaseAllowance() and decreaseAllowance() functions, or inherit from OpenZeppelin ERC20".to_string(),
+                    ));
+                    break; // Only report once
+                }
+            }
+        }
 
         vulnerabilities
     }
@@ -2607,36 +2817,39 @@ impl AdvancedAnalyzer {
         vulnerabilities
     }
 
-    // PUSH0 Opcode Compatibility Detection
+    // FN-6: PUSH0 Opcode Compatibility Detection - warn for ALL 0.8.20+ contracts
     fn detect_push0_compatibility(&self, content: &str) -> Vec<Vulnerability> {
         let mut vulnerabilities = Vec::new();
 
         // Check pragma version for PUSH0 compatibility
-        let pragma_pattern = Regex::new(r"pragma\s+solidity\s+(\^?>=?)?(\d+\.\d+\.\d+)").unwrap();
+        let pragma_pattern = Regex::new(r"pragma\s+solidity\s*[\^>=<\s]*(\d+\.\d+\.\d+)").unwrap();
 
         for (idx, line) in content.lines().enumerate() {
             if let Some(captures) = pragma_pattern.captures(line) {
-                if let Some(version) = captures.get(2) {
+                if let Some(version) = captures.get(1) {
                     let version_str = version.as_str();
 
                     // PUSH0 was introduced in 0.8.20
                     if version_str.starts_with("0.8.") {
                         if let Ok(minor) = version_str.split('.').nth(2).unwrap_or("0").parse::<u32>() {
                             if minor >= 20 {
-                                // Check if targeting chains that don't support PUSH0
-                                let targets_legacy_chain = content.contains("// chain:") ||
-                                    content.contains("arbitrum") ||
-                                    content.contains("Arbitrum");
+                                // Only suppress if contract explicitly mentions Shanghai-compatible deployment
+                                let explicitly_shanghai = content.contains("// evm-version: shanghai")
+                                    || content.contains("// shanghai")
+                                    || content.contains("evm_version = \"shanghai\"");
 
-                                if targets_legacy_chain {
+                                if !explicitly_shanghai {
                                     vulnerabilities.push(Vulnerability::new(
                                         VulnerabilitySeverity::Medium,
                                         VulnerabilityCategory::Push0Compatibility,
                                         "PUSH0 Opcode Compatibility Risk".to_string(),
-                                        format!("Solidity {} uses PUSH0 which may not be supported on all L2s", version_str),
+                                        format!(
+                                            "Solidity {} uses PUSH0 opcode which is not supported on chains that haven't activated Shanghai (Arbitrum, older BSC, some L2s)",
+                                            version_str
+                                        ),
                                         idx + 1,
                                         line.to_string(),
-                                        "Use --evm-version paris to avoid PUSH0, or verify target chain support".to_string(),
+                                        "Use --evm-version paris to avoid PUSH0, or verify all target chains support Shanghai".to_string(),
                                     ));
                                 }
                             }
@@ -3181,6 +3394,309 @@ impl AdvancedAnalyzer {
                         line.to_string(),
                         "Add: require(recovered != address(0), 'Invalid signature')".to_string(),
                     ));
+                }
+
+                // FN-7: Check for s-value malleability protection
+                let uses_ecdsa_lib = content.contains("ECDSA.recover") || content.contains("ECDSA.tryRecover");
+                if !uses_ecdsa_lib {
+                    let surrounding: Vec<&str> = content.lines()
+                        .skip(idx.saturating_sub(20))
+                        .take(40)
+                        .collect();
+                    let context = surrounding.join("\n");
+                    let has_s_check = context.contains("0x7FFFFFFF")
+                        || context.contains("secp256k1n")
+                        || context.contains("s <= ")
+                        || context.contains("s < ")
+                        || context.contains("malleab");
+                    if !has_s_check {
+                        vulnerabilities.push(Vulnerability::new(
+                            VulnerabilitySeverity::Medium,
+                            VulnerabilityCategory::SignatureVulnerabilities,
+                            "Signature Malleability - Missing s-value Check".to_string(),
+                            "ecrecover without s-value bounds checking allows signature malleability (same hash, different valid signature)".to_string(),
+                            idx + 1,
+                            line.to_string(),
+                            "Use OpenZeppelin ECDSA library, or add: require(uint256(s) <= 0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0)".to_string(),
+                        ));
+                    }
+                }
+            }
+        }
+
+        vulnerabilities
+    }
+
+    // ============================================================================
+    // SECURITY HARDENING PATTERNS (v0.6.0)
+    // New detection functions for common security pitfalls
+    // ============================================================================
+
+    /// Main entry point for v0.6.0 security hardening analysis.
+    /// Covers storage gaps, timelocks, downcasting, deprecated opcodes, and more.
+    pub fn analyze_security_hardening(&self, content: &str) -> Vec<Vulnerability> {
+        let mut vulnerabilities = Vec::new();
+
+        vulnerabilities.extend(self.detect_storage_collision_proxy(content));
+        vulnerabilities.extend(self.detect_missing_timelock(content));
+        vulnerabilities.extend(self.detect_unsafe_downcast_patterns(content));
+        vulnerabilities.extend(self.detect_missing_erc165(content));
+        vulnerabilities.extend(self.detect_unprotected_initialize(content));
+        vulnerabilities.extend(self.detect_missing_gap_in_base(content));
+
+        vulnerabilities
+    }
+
+    /// Detect storage collision risk in upgradeable contracts.
+    /// Checks for contracts that inherit Upgradeable patterns but don't declare
+    /// a storage gap (__gap), which prevents safe future state variable additions.
+    fn detect_storage_collision_proxy(&self, content: &str) -> Vec<Vulnerability> {
+        let mut vulnerabilities = Vec::new();
+
+        // Only apply to upgradeable contracts
+        if !content.contains("Upgradeable") && !content.contains("Initializable") {
+            return vulnerabilities;
+        }
+
+        // Already has storage gap - safe
+        if content.contains("__gap") {
+            return vulnerabilities;
+        }
+
+        // Check if this contract could be inherited (has state variables)
+        let state_var_pattern = Regex::new(
+            r"^\s+(uint\d*|int\d*|address|bool|bytes\d*|string|mapping)\s+"
+        ).unwrap();
+
+        let has_state_vars = content.lines().any(|line| state_var_pattern.is_match(line));
+
+        if has_state_vars {
+            let contract_pattern = Regex::new(r"contract\s+(\w+)\s+is").unwrap();
+            for (idx, line) in content.lines().enumerate() {
+                if let Some(caps) = contract_pattern.captures(line) {
+                    if line.contains("Upgradeable") || line.contains("Initializable") {
+                        let name = caps.get(1).map_or("Unknown", |m| m.as_str());
+                        vulnerabilities.push(Vulnerability::new(
+                            VulnerabilitySeverity::High,
+                            VulnerabilityCategory::MissingStorageGap,
+                            format!("Missing Storage Gap in {}", name),
+                            "Upgradeable contract with state variables but no __gap. Adding new variables in future upgrades will shift storage slots of child contracts, corrupting their data.".to_string(),
+                            idx + 1,
+                            line.trim().to_string(),
+                            "Add `uint256[50] private __gap;` after all state variable declarations.".to_string(),
+                        ));
+                        break;
+                    }
+                }
+            }
+        }
+
+        vulnerabilities
+    }
+
+    /// Detect admin/privileged functions that lack a timelock delay.
+    /// Critical operations (ownership transfer, parameter changes, withdrawals) should
+    /// have a time delay to allow users to react before changes take effect.
+    fn detect_missing_timelock(&self, content: &str) -> Vec<Vulnerability> {
+        let mut vulnerabilities = Vec::new();
+
+        // Skip if contract already uses a timelock
+        if content.contains("TimelockController") || content.contains("Timelock")
+            || content.contains("timelock") || content.contains("delay") && content.contains("queue") {
+            return vulnerabilities;
+        }
+
+        // Look for critical admin functions
+        let admin_fn_pattern = Regex::new(
+            r"function\s+(setFee|updateFee|changeFee|setOracle|updateOracle|setAdmin|changeAdmin|setReward|updateReward|setTreasury|setReceiver|setPauser|setMinter|changeOwner)\s*\([^)]*\)\s+(?:external|public)"
+        ).unwrap();
+
+        for (idx, line) in content.lines().enumerate() {
+            if admin_fn_pattern.is_match(line) {
+                // Check if there's a delay mechanism in the next 20 lines
+                let end = (idx + 20).min(content.lines().count());
+                let func_body: String = content.lines().skip(idx).take(end - idx).collect::<Vec<_>>().join("\n");
+
+                let has_delay = func_body.contains("delay") || func_body.contains("pending")
+                    || func_body.contains("queue") || func_body.contains("timelock")
+                    || func_body.contains("block.timestamp +") || func_body.contains("block.timestamp >=");
+
+                if !has_delay {
+                    vulnerabilities.push(Vulnerability::new(
+                        VulnerabilitySeverity::Medium,
+                        VulnerabilityCategory::MissingTimelock,
+                        "Missing Timelock on Admin Function".to_string(),
+                        "Critical parameter change function executes immediately without time delay. Users cannot react to malicious or accidental parameter changes.".to_string(),
+                        idx + 1,
+                        line.trim().to_string(),
+                        "Implement a timelock pattern: queue the change, wait for a delay period, then execute. Consider OpenZeppelin's TimelockController.".to_string(),
+                    ));
+                }
+            }
+        }
+
+        vulnerabilities
+    }
+
+    /// Detect unsafe integer downcasting patterns that could silently truncate values.
+    /// In Solidity, casting from a larger type to a smaller type (e.g., uint256 → uint128)
+    /// silently truncates, potentially leading to loss of funds.
+    fn detect_unsafe_downcast_patterns(&self, content: &str) -> Vec<Vulnerability> {
+        let mut vulnerabilities = Vec::new();
+
+        // Skip if SafeCast is used
+        if content.contains("SafeCast") || content.contains("safeCast") {
+            return vulnerabilities;
+        }
+
+        // Detect explicit downcasts of non-constant expressions in financial contexts
+        let downcast_pattern = Regex::new(
+            r"\b(uint(?:8|16|32|48|64|96|128)|int(?:8|16|32|48|64|96|128))\s*\(\s*(\w+(?:\.\w+|\[\w+\])*)\s*\)"
+        ).unwrap();
+
+        let financial_vars = ["amount", "balance", "supply", "reserve", "liquidity",
+            "price", "fee", "reward", "deposit", "value", "totalSupply"];
+
+        for (idx, line) in content.lines().enumerate() {
+            if line.trim().starts_with("//") || line.trim().starts_with("*") {
+                continue;
+            }
+            if let Some(caps) = downcast_pattern.captures(line) {
+                let var_name = caps.get(2).map_or("", |m| m.as_str());
+                // Only flag if it's a financial-looking variable
+                if financial_vars.iter().any(|fv| var_name.to_lowercase().contains(fv)) {
+                    vulnerabilities.push(Vulnerability::new(
+                        VulnerabilitySeverity::Medium,
+                        VulnerabilityCategory::UnsafeDowncast,
+                        "Unsafe Downcast of Financial Value".to_string(),
+                        format!(
+                            "Casting `{}` to `{}` will silently truncate if the value exceeds the target type's maximum, potentially causing incorrect financial calculations.",
+                            var_name, caps.get(1).map_or("", |m| m.as_str())
+                        ),
+                        idx + 1,
+                        line.trim().to_string(),
+                        "Use OpenZeppelin SafeCast (e.g., `amount.toUint128()`) which reverts on overflow.".to_string(),
+                    ));
+                }
+            }
+        }
+
+        vulnerabilities
+    }
+
+    /// Detect contracts implementing ERC-721/1155 without ERC-165 supportsInterface.
+    /// Missing ERC-165 breaks composability since other contracts can't detect
+    /// which interfaces are supported.
+    fn detect_missing_erc165(&self, content: &str) -> Vec<Vulnerability> {
+        let mut vulnerabilities = Vec::new();
+
+        // Check if contract implements token interfaces
+        let is_nft = content.contains("ERC721") || content.contains("ERC1155")
+            || content.contains("onERC721Received") || content.contains("onERC1155Received")
+            || content.contains("tokenURI") || content.contains("_mint(");
+
+        if !is_nft {
+            return vulnerabilities;
+        }
+
+        // Check if supportsInterface is implemented
+        let has_erc165 = content.contains("supportsInterface") || content.contains("ERC165")
+            || content.contains("IERC165");
+
+        if !has_erc165 {
+            // Find the contract declaration line
+            let contract_pattern = Regex::new(r"contract\s+(\w+)").unwrap();
+            for (idx, line) in content.lines().enumerate() {
+                if let Some(caps) = contract_pattern.captures(line) {
+                    if !line.trim().starts_with("//") {
+                        let name = caps.get(1).map_or("Unknown", |m| m.as_str());
+                        vulnerabilities.push(Vulnerability::new(
+                            VulnerabilitySeverity::Low,
+                            VulnerabilityCategory::MissingERC165,
+                            format!("Missing ERC-165 in NFT Contract {}", name),
+                            "Token contract does not implement ERC-165 supportsInterface(). This breaks composability as other contracts cannot detect supported interfaces.".to_string(),
+                            idx + 1,
+                            line.trim().to_string(),
+                            "Implement ERC-165 by adding `function supportsInterface(bytes4 interfaceId) public view returns (bool)` and returning true for supported interfaces.".to_string(),
+                        ));
+                        break;
+                    }
+                }
+            }
+        }
+
+        vulnerabilities
+    }
+
+    /// Detect initialize() functions without proper protection against re-initialization.
+    /// Implementation contracts behind proxies must prevent direct initialization.
+    fn detect_unprotected_initialize(&self, content: &str) -> Vec<Vulnerability> {
+        let mut vulnerabilities = Vec::new();
+
+        // Check for initialize function
+        let init_pattern = Regex::new(
+            r"function\s+initialize\s*\([^)]*\)\s+(?:external|public)"
+        ).unwrap();
+
+        for (idx, line) in content.lines().enumerate() {
+            if init_pattern.is_match(line) {
+                // Check if initializer modifier is present
+                if !line.contains("initializer") && !line.contains("reinitializer") {
+                    // Check if _disableInitializers is in constructor
+                    if !content.contains("_disableInitializers") {
+                        vulnerabilities.push(Vulnerability::high_confidence(
+                            VulnerabilitySeverity::Critical,
+                            VulnerabilityCategory::DoubleInitialization,
+                            "Unprotected Initializer Function".to_string(),
+                            "initialize() function lacks the `initializer` modifier and no _disableInitializers() in constructor. This allows re-initialization which can reset contract state and potentially steal funds.".to_string(),
+                            idx + 1,
+                            line.trim().to_string(),
+                            "Add the `initializer` modifier from OpenZeppelin's Initializable contract, and call `_disableInitializers()` in the constructor.".to_string(),
+                        ));
+                    }
+                }
+            }
+        }
+
+        vulnerabilities
+    }
+
+    /// Detect upgradeable base contracts that are missing storage gap reservations.
+    /// When a base contract adds new state variables, it shifts storage slots for all
+    /// derived contracts, corrupting their data.
+    fn detect_missing_gap_in_base(&self, content: &str) -> Vec<Vulnerability> {
+        let mut vulnerabilities = Vec::new();
+
+        // Check if this is an abstract/base upgradeable contract
+        let is_abstract_upgradeable = content.contains("abstract contract")
+            && (content.contains("Upgradeable") || content.contains("Initializable"));
+
+        if !is_abstract_upgradeable {
+            return vulnerabilities;
+        }
+
+        if content.contains("__gap") {
+            return vulnerabilities;
+        }
+
+        // Check for state variables
+        let has_state = Regex::new(r"^\s+(?:uint|int|address|bool|bytes|string|mapping)\w*\s+(?:public|private|internal)")
+            .unwrap()
+            .is_match(content);
+
+        if has_state {
+            for (idx, line) in content.lines().enumerate() {
+                if line.contains("abstract contract") {
+                    vulnerabilities.push(Vulnerability::new(
+                        VulnerabilitySeverity::High,
+                        VulnerabilityCategory::MissingStorageGap,
+                        "Abstract Upgradeable Contract Missing __gap".to_string(),
+                        "This abstract upgradeable contract has state variables but no __gap reservation. Child contracts will have corrupted storage if state variables are added here in future upgrades.".to_string(),
+                        idx + 1,
+                        line.trim().to_string(),
+                        "Add `uint256[50] private __gap;` as the last state variable.".to_string(),
+                    ));
+                    break;
                 }
             }
         }

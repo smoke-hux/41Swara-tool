@@ -113,12 +113,18 @@ impl VulnerabilityReporter {
                 _ => self.print_text_results(file_path, &vulnerabilities),
             }
         } else {
-            println!("{} No vulnerabilities found in {}", 
-                "✅".green(), 
+            println!("{} No vulnerabilities found in {}",
+                "✅".green(),
                 file_path.display()
             );
         }
-        
+
+        self.results.insert(file_path.clone(), vulnerabilities);
+    }
+
+    /// Add results without printing to stdout.
+    /// Used when output format is JSON/SARIF but we still need results for markdown report generation.
+    pub fn add_file_results_silent(&mut self, file_path: &PathBuf, vulnerabilities: Vec<Vulnerability>) {
         self.results.insert(file_path.clone(), vulnerabilities);
     }
     
@@ -342,5 +348,137 @@ impl VulnerabilityReporter {
             VulnerabilitySeverity::Info => "ℹ️ ",
         }
     }
-    
+
+    /// Generate a full markdown report as a String for saving to a file.
+    /// Includes title, scan metadata, severity summary table, per-file findings
+    /// with code snippets, and a category breakdown.
+    pub fn generate_markdown_report(&self) -> String {
+        let mut report = String::new();
+        let total_files = self.results.len();
+        let total_vulnerabilities: usize = self.results.values().map(|v| v.len()).sum();
+        let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC");
+
+        // Header
+        report.push_str("# 41Swara Smart Contract Security Report\n\n");
+        report.push_str(&format!("**Scanner Version**: 0.6.0\n"));
+        report.push_str(&format!("**Analysis Date**: {}\n", now));
+        report.push_str(&format!("**Files Scanned**: {}\n", total_files));
+        report.push_str(&format!("**Total Vulnerabilities**: {}\n\n", total_vulnerabilities));
+
+        if total_vulnerabilities == 0 {
+            report.push_str("No vulnerabilities detected. The scanned contracts passed all checks.\n\n");
+            report.push_str("> **Note**: This is an automated scan. Consider a professional audit for production contracts.\n");
+            return report;
+        }
+
+        // Severity summary table
+        let severity_counts = self.get_severity_breakdown();
+        report.push_str("## Severity Summary\n\n");
+        report.push_str("| Severity | Count |\n");
+        report.push_str("|----------|-------|\n");
+        for (label, key) in [
+            ("🚨 Critical", "CRITICAL"),
+            ("⚠️  High", "HIGH"),
+            ("⚡ Medium", "MEDIUM"),
+            ("💡 Low", "LOW"),
+            ("ℹ️  Info", "INFO"),
+        ] {
+            let count = severity_counts.get(key).unwrap_or(&0);
+            if *count > 0 {
+                report.push_str(&format!("| **{}** | {} |\n", label, count));
+            }
+        }
+        report.push('\n');
+
+        // Category breakdown
+        let mut categories: Vec<_> = self.get_category_breakdown().into_iter().collect();
+        categories.sort_by(|a, b| b.1.cmp(&a.1));
+        if !categories.is_empty() {
+            report.push_str("## Category Breakdown\n\n");
+            report.push_str("| Category | Count |\n");
+            report.push_str("|----------|-------|\n");
+            for (category, count) in &categories {
+                report.push_str(&format!("| {} | {} |\n", category, count));
+            }
+            report.push('\n');
+        }
+
+        // Per-file detailed findings
+        report.push_str("---\n\n");
+        report.push_str("## Detailed Findings\n\n");
+
+        // Sort files for deterministic output
+        let mut sorted_files: Vec<_> = self.results.iter().collect();
+        sorted_files.sort_by_key(|(path, _)| (*path).clone());
+
+        for (file_path, vulnerabilities) in &sorted_files {
+            if vulnerabilities.is_empty() {
+                continue;
+            }
+
+            report.push_str(&format!("### {}\n\n", file_path.display()));
+
+            // Group vulnerabilities by severity for this file
+            let mut by_severity: Vec<(&str, Vec<&Vulnerability>)> = Vec::new();
+            for (label, severity) in [
+                ("🚨 Critical", VulnerabilitySeverity::Critical),
+                ("⚠️  High", VulnerabilitySeverity::High),
+                ("⚡ Medium", VulnerabilitySeverity::Medium),
+                ("💡 Low", VulnerabilitySeverity::Low),
+                ("ℹ️  Info", VulnerabilitySeverity::Info),
+            ] {
+                let matching: Vec<&Vulnerability> = vulnerabilities.iter()
+                    .filter(|v| v.severity == severity)
+                    .collect();
+                if !matching.is_empty() {
+                    by_severity.push((label, matching));
+                }
+            }
+
+            for (severity_label, vulns) in by_severity {
+                report.push_str(&format!("#### {} ({})\n\n", severity_label, vulns.len()));
+
+                for (i, vuln) in vulns.iter().enumerate() {
+                    let location = if let Some(end_line) = vuln.end_line_number {
+                        if end_line > vuln.line_number {
+                            format!("Lines {}-{}", vuln.line_number, end_line)
+                        } else {
+                            format!("Line {}", vuln.line_number)
+                        }
+                    } else {
+                        format!("Line {}", vuln.line_number)
+                    };
+
+                    let confidence_str = match vuln.confidence {
+                        VulnerabilityConfidence::High => "High",
+                        VulnerabilityConfidence::Medium => "Medium",
+                        VulnerabilityConfidence::Low => "Low",
+                    };
+
+                    report.push_str(&format!("**{}.** {} — `{}`\n\n", i + 1, vuln.title, location));
+                    report.push_str(&format!("- **Category**: {}\n", vuln.category.as_str()));
+                    report.push_str(&format!("- **Confidence**: {} ({}%)\n", confidence_str, vuln.confidence_percent));
+                    if let Some(ref swc) = vuln.swc_id {
+                        report.push_str(&format!("- **SWC**: {}", swc.id));
+                        if let Some(ref cwe) = swc.cwe_id {
+                            report.push_str(&format!(" | **CWE**: {}", cwe));
+                        }
+                        report.push('\n');
+                    }
+                    report.push_str(&format!("- **Description**: {}\n", vuln.description));
+                    report.push_str(&format!("\n```solidity\n{}\n```\n\n", vuln.code_snippet));
+                    report.push_str(&format!("**Recommendation**: {}\n\n", vuln.recommendation));
+                    report.push_str("---\n\n");
+                }
+            }
+        }
+
+        // Footer
+        report.push_str("## Disclaimer\n\n");
+        report.push_str("This report was generated by **41Swara Smart Contract Scanner v0.6.0**. ");
+        report.push_str("Automated scanning provides broad coverage but may produce false positives or miss complex vulnerabilities. ");
+        report.push_str("A professional manual audit is recommended for production contracts.\n");
+
+        report
+    }
 }

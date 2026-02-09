@@ -1,6 +1,6 @@
 [package]
 name = "solidity_scanner"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2021"
 description = "High-performance smart contract vulnerability scanner for Ethereum Foundation and blockchain security researchers"
 authors = ["41Swara Security Team"]

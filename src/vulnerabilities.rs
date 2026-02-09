@@ -1,17 +1,41 @@
+//! Vulnerability rules and type definitions for the 41Swara Solidity smart contract scanner.
+//!
+//! This module defines:
+//! - Core data types for representing detected vulnerabilities (`Vulnerability`, `VulnerabilitySeverity`, etc.)
+//! - The `VulnerabilityCategory` enum covering 80+ vulnerability classes from SWC Registry,
+//!   OWASP Smart Contract Top 10, rekt.news exploit patterns, and academic research.
+//! - `VulnerabilityRule` -- a regex-based pattern matcher tied to a category and severity.
+//! - `create_vulnerability_rules()` -- the main rule set applied to all contracts.
+//! - `create_version_specific_rules()` -- additional rules that depend on the Solidity compiler version.
+//!
+//! Rules are organized into thematic groups (reentrancy, access control, DeFi exploits, etc.)
+//! and each rule carries a title, description, and remediation recommendation. Detected
+//! vulnerabilities are further refined by the false-positive filter and reachability analyzer
+//! in downstream pipeline stages.
+
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use crate::parser::CompilerVersion;
 
-/// SWC Registry ID mapping for smart contract weaknesses
-/// Based on https://swcregistry.io/
+/// SWC (Smart Contract Weakness) Registry ID with optional CWE (Common Weakness Enumeration) mapping.
+///
+/// Standard SWC IDs follow the format "SWC-NNN" (e.g., "SWC-107" for Reentrancy).
+/// Custom 41Swara-specific IDs use the format "41S-NNN" for DeFi and modern exploit patterns
+/// not yet covered by the SWC registry.
+///
+/// Reference: <https://swcregistry.io/>
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SwcId {
-    pub id: String,        // e.g., "SWC-107"
-    pub title: String,     // e.g., "Reentrancy"
-    pub cwe_id: Option<String>,  // Corresponding CWE, e.g., "CWE-841"
+    /// The SWC or 41Swara weakness identifier (e.g., "SWC-107" or "41S-001").
+    pub id: String,
+    /// Human-readable title of the weakness (e.g., "Reentrancy").
+    pub title: String,
+    /// Optional corresponding CWE identifier (e.g., "CWE-841").
+    pub cwe_id: Option<String>,
 }
 
 impl SwcId {
+    /// Construct a new `SwcId` from string slices. Clones into owned `String` values.
     pub fn new(id: &str, title: &str, cwe_id: Option<&str>) -> Self {
         Self {
             id: id.to_string(),
@@ -21,29 +45,54 @@ impl SwcId {
     }
 }
 
+/// A single detected vulnerability finding in a Solidity source file.
+///
+/// Created by the scanner when a `VulnerabilityRule` pattern matches, then enriched
+/// with context lines, confidence scoring, and optional fix suggestions before being
+/// passed through the false-positive filter and reachability analyzer.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Vulnerability {
+    /// How severe the finding is (Critical, High, Medium, Low, Info).
     pub severity: VulnerabilitySeverity,
+    /// The vulnerability class this finding belongs to.
     pub category: VulnerabilityCategory,
+    /// Short human-readable title shown in scan output.
     pub title: String,
+    /// Longer explanation of why this pattern is dangerous.
     pub description: String,
+    /// 1-based line number where the vulnerability was detected.
     pub line_number: usize,
-    pub end_line_number: Option<usize>,  // For multi-line vulnerabilities
+    /// Optional end line for multi-line vulnerability spans.
+    pub end_line_number: Option<usize>,
+    /// The source code snippet that matched the detection rule.
     pub code_snippet: String,
-    pub context_before: Option<String>,  // Lines before the vulnerability for context
-    pub context_after: Option<String>,   // Lines after the vulnerability for context
+    /// Source lines immediately before the finding for reviewer context.
+    pub context_before: Option<String>,
+    /// Source lines immediately after the finding for reviewer context.
+    pub context_after: Option<String>,
+    /// Actionable remediation advice.
     pub recommendation: String,
-    pub confidence: VulnerabilityConfidence,  // How confident we are this is a real issue
-    pub confidence_percent: u8,  // Confidence as percentage (0-100)
-    pub swc_id: Option<SwcId>,   // SWC Registry ID with CWE mapping
-    pub fix_suggestion: Option<String>,  // Suggested code fix
+    /// Qualitative confidence level (High / Medium / Low).
+    pub confidence: VulnerabilityConfidence,
+    /// Confidence expressed as a 0--100 percentage.
+    pub confidence_percent: u8,
+    /// SWC Registry ID and CWE mapping, if applicable.
+    pub swc_id: Option<SwcId>,
+    /// Optional inline code fix suggestion.
+    pub fix_suggestion: Option<String>,
 }
 
+/// Qualitative confidence that a detected finding is a true positive.
+///
+/// Mapped from a numeric percentage via `from_percent()` and back via `to_percent()`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum VulnerabilityConfidence {
-    High,    // Very likely a real vulnerability (80-100%)
-    Medium,  // Likely a vulnerability, needs review (50-79%)
-    Low,     // Possible vulnerability, may be false positive (0-49%)
+    /// Very likely a real vulnerability (80--100%).
+    High,
+    /// Likely a vulnerability but needs manual review (50--79%).
+    Medium,
+    /// Possible vulnerability; may be a false positive (0--49%).
+    Low,
 }
 
 impl VulnerabilityConfidence {
@@ -192,132 +241,290 @@ impl Vulnerability {
     }
 }
 
+/// Severity rating for a vulnerability finding, modeled after common audit report scales.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum VulnerabilitySeverity {
+    /// Immediate risk of fund loss or contract takeover.
     Critical,
+    /// Significant risk that should be fixed before deployment.
     High,
+    /// Moderate risk or a pattern that becomes dangerous under certain conditions.
     Medium,
+    /// Minor issue with limited impact.
     Low,
+    /// Informational observation or gas optimization suggestion.
     Info,
 }
 
+/// All recognized vulnerability categories.
+///
+/// Categories are organized into several groups:
+///
+/// 1. **Core SWC categories** -- standard Smart Contract Weakness classifications.
+/// 2. **Rekt.news real-world exploit patterns** -- derived from documented DeFi hacks.
+/// 3. **ABI-level vulnerabilities** -- detected from contract ABI analysis.
+/// 4. **OWASP Smart Contract Top 10 (2025)** -- the most impactful recent exploit classes.
+/// 5. **Modern DeFi / L2 patterns (2024-2025)** -- ERC-4626, Permit2, LayerZero, etc.
+/// 6. **Academic research patterns** -- from "Security Analysis of DeFi" (arXiv:2205.09524v1).
+///
+/// Each variant maps to an optional `SwcId` via `get_swc_id()`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum VulnerabilityCategory {
+    // --- Core SWC Registry Categories ---
+    /// SWC-107: State-changing external calls before state updates.
     Reentrancy,
+    /// SWC-105: Missing or insufficient access control on sensitive functions.
     AccessControl,
+    /// SWC-105 (specialized): Role-based access control misconfigurations.
     RoleBasedAccessControl,
+    /// SWC-101: Integer overflow / underflow (primarily pre-0.8.0).
     ArithmeticIssues,
+    /// SWC-104: Uncaught exceptions from external calls.
     UnhandledExceptions,
+    /// Gas-related inefficiencies (informational).
     GasOptimization,
+    /// SWC-103: Floating or outdated pragma declarations.
     PragmaIssues,
+    /// SWC-120: Use of predictable on-chain values for randomness.
     RandomnessVulnerabilities,
+    /// SWC-114: Transaction ordering dependence / front-running.
     FrontRunning,
+    /// SWC-116: Reliance on `block.timestamp` for critical logic.
     TimeManipulation,
+    /// SWC-128: Denial-of-service via gas limits or unbounded loops.
     DoSAttacks,
+    /// Dead or unreachable code that may indicate logic errors.
     UnusedCode,
+    /// Use of unexplained literal values in calculations.
     MagicNumbers,
+    /// Typos, misleading names, or convention violations.
     NamingConventions,
+    /// Issues with state variable declarations or storage layout.
     StateVariable,
+    /// External calls without proper safety checks.
     UnsafeExternalCalls,
+    /// SWC-112: Dangerous delegatecall usage.
     DelegateCalls,
+    /// Unbounded storage growth that can cause DoS.
     StorageDoSAttacks,
+    /// Loss of precision in financial calculations due to integer division.
     PrecisionLoss,
+    /// SWC-102: Known compiler bugs for the detected Solidity version.
     CompilerBug,
+    /// SWC-120: Bad pseudo-random number generation using block properties.
     BadPRNG,
+    /// SWC-116: Direct `block.timestamp` dependency in comparisons.
     BlockTimestamp,
+    /// SWC-104: Low-level `.call` / `.delegatecall` / `.staticcall` without return checks.
     LowLevelCalls,
+    /// State-changing functions that do not emit events for off-chain tracking.
     MissingEvents,
+    /// SWC-104: External call return values silently ignored.
     UncheckedReturnValues,
+    /// SWC-109: Variables used before being explicitly initialized.
     UninitializedVariables,
+    /// Function return values discarded by the caller.
     UnusedReturnValues,
+    /// State variables that could be declared `immutable` or `constant`.
     ImmutabilityIssues,
+    /// SWC-119: Local variables or parameters shadowing state variable names.
     ShadowingIssues,
+    /// SWC-115: Using `tx.origin` for authentication instead of `msg.sender`.
     TxOriginAuth,
+    /// SWC-106: Inline assembly blocks that bypass Solidity safety checks.
     AssemblyUsage,
+    /// SWC-111: Usage of deprecated Solidity built-ins (e.g., `sha3`, `suicide`).
     DeprecatedFunctions,
+    /// Excessively complex functions (high cyclomatic complexity).
     ComplexityIssues,
+    /// Public functions that are never called internally (could be `external`).
     ExternalFunction,
+    /// SWC-132: Strict equality checks on Ether balances.
     IncorrectEquality,
+    /// SWC-117: Signature malleability and related cryptographic weaknesses.
     SignatureVulnerabilities,
+    /// 41S-001: Price oracle manipulation via spot reserves.
     OracleManipulation,
-    // Rekt.news patterns - Real-world exploits
+
+    // --- Rekt.news Real-World Exploit Patterns ---
+    /// 41S-003: Proxy admin function exposure (e.g., Aevo $2.7M).
     ProxyAdminVulnerability,
+    /// 41S-004: Reentrancy via ERC-721/1155 callback hooks (e.g., Omni $1.43M).
     CallbackReentrancy,
+    /// 41S-005: Calls to user-controlled addresses ($21M across 18 incidents).
     ArbitraryExternalCall,
+    /// SWC-121: Signature replay due to missing nonce or chain ID.
     SignatureReplay,
+    /// 41S-006: Cross-chain replay of messages or signatures.
     CrossChainReplay,
+    /// 41S-007: Insufficient input validation (34.6% of 2024 exploits).
     InputValidationFailure,
+    /// 41S-008: Mixing 18-decimal and 8-decimal token arithmetic.
     DecimalPrecisionMismatch,
+    /// 41S-009: Upgrade functions without access control on proxy contracts.
     UnprotectedProxyUpgrade,
+    /// 41S-010: Functions exploitable by MEV searchers (sandwich attacks, liquidations).
     MEVExploitable,
+    /// 41S-011: State changes after callback-triggering operations.
     CallbackInjection,
-    // ABI-specific vulnerabilities
+
+    // --- ABI-Specific Vulnerabilities ---
+    /// Access control issues detected from ABI function signatures.
     ABIAccessControl,
+    /// Visibility misconfigurations detected from ABI analysis.
     ABIFunctionVisibility,
+    /// Missing parameter validation inferred from ABI.
     ABIParameterValidation,
+    /// Event security concerns from ABI definitions.
     ABIEventSecurity,
+    /// Upgradeability risks inferred from ABI (proxy patterns).
     ABIUpgradeability,
+    /// Token standard compliance issues from ABI.
     ABITokenStandard,
-    // Advanced ABI vulnerabilities (Ethereum Foundation-level analysis)
+
+    // --- Advanced ABI Vulnerabilities (Ethereum Foundation-level analysis) ---
+    /// Function selector collision risk from ABI.
     ABISelectorCollision,
+    /// Reentrancy indicators in ABI call patterns.
     ABIReentrancyIndicator,
+    /// Flash loan risk inferred from ABI function signatures.
     ABIFlashLoanRisk,
+    /// Oracle manipulation exposure from ABI.
     ABIOracleManipulation,
+    /// DEX interaction risks from ABI.
     ABIDEXInteraction,
+    /// Signature-related weaknesses from ABI.
     ABISignatureVulnerability,
+    /// Permit function vulnerabilities from ABI.
     ABIPermitVulnerability,
+    /// Governance risks from ABI.
     ABIGovernanceRisk,
+    /// Timelock bypass risks from ABI.
     ABITimelockBypass,
+    /// MEV exposure from ABI function signatures.
     ABIMEVExposure,
+    /// Front-running risks from ABI.
     ABIFrontrunningRisk,
+    /// Cross-contract interaction risks from ABI.
     ABICrossContractRisk,
+    /// Callback injection risks from ABI.
     ABICallbackInjection,
+    /// Storage collision risks from ABI.
     ABIStorageCollision,
+    /// Initializer vulnerabilities from ABI.
     ABIInitializerVulnerability,
+    /// Self-destruct exposure from ABI.
     ABISelfDestruct,
+    /// Delegatecall risks from ABI.
     ABIDelegateCallRisk,
+    /// Arbitrary call risks from ABI.
     ABIArbitraryCall,
+    /// Price manipulation risks from ABI.
     ABIPriceManipulation,
+    /// Bridge vulnerabilities from ABI.
     ABIBridgeVulnerability,
+    /// Multisig bypass risks from ABI.
     ABIMultisigBypass,
+    /// Emergency function bypass risks from ABI.
     ABIEmergencyBypass,
-    // 2025 OWASP Smart Contract Top 10 & Recent Exploits
-    FlashLoanAttack,           // OWASP #4 - $33.8M in 2024
-    LogicError,                // OWASP #2 - $63.8M in 2024
-    MetaTransactionVulnerability, // KiloEx $7.4M - MinimalForwarder exploit
-    UncheckedMathOperation,    // Cetus $223M - unchecked overflow in calculations
-    TrustedForwarderBypass,    // Meta-tx trust issues
-    GovernanceAttack,          // Flash loan governance attacks (Beanstalk $182M)
-    LiquidityManipulation,     // LP token/pool manipulation
-    BridgeVulnerability,       // Cross-chain bridge exploits
-    // 2024-2025 Modern DeFi/L2 patterns
-    ERC4626Inflation,          // First depositor inflation attack
-    Permit2SignatureReuse,     // Permit2 signature reuse/deadline bypass
-    LayerZeroTrustedRemote,    // LayerZero trusted remote manipulation
-    Create2Collision,          // Create2/Create3 address collision
-    TransientStorageReentrancy,// EIP-1153 transient storage reentrancy
-    Push0Compatibility,        // PUSH0 opcode compatibility issues
-    BlobDataHandling,          // EIP-4844 blob data handling
-    UniswapV4HookExploit,      // Uniswap V4 hook exploitation
-    CrossChainMessageReplay,   // Cross-chain message replay
-    L2SequencerDowntime,       // L2 sequencer uptime issues
-    L2GasOracle,               // L2 gas price oracle manipulation
-    BaseBridgeSecurity,        // Base chain bridge patterns
-    // Research Paper: "Security Analysis of DeFi" (arXiv:2205.09524v1) patterns
-    StrictBalanceEquality,     // 41S-040: Using == for balance checks (bypassable via selfdestruct)
-    MisleadingDataLocation,    // 41S-041: Incorrect storage/memory type usage
-    MissingReturnValue,        // 41S-042: Return declared but not returned
-    GreedyContract,            // 41S-043: Receive ETH but no withdraw mechanism
-    MissingEmergencyStop,      // 41S-044: No circuit breaker/pause for DeFi
-    ERC777CallbackReentrancy,  // 41S-045: ERC-777 tokensReceived attack (dForce $24M)
-    DepositForReentrancy,      // 41S-046: depositFor() callback attack (Grim Finance $30M)
-    DoubleClaiming,            // 41S-047: LP token transfer & claim (Popsicle Finance $25M)
-    SignatureVerificationBypass, // 41S-048: Incomplete sig verification (Wormhole $326M)
+
+    // --- 2025 OWASP Smart Contract Top 10 & Recent Exploits ---
+    /// OWASP #4: Flash loan attack vectors ($33.8M in 2024).
+    FlashLoanAttack,
+    /// OWASP #2: Logic errors in business logic ($63.8M in 2024).
+    LogicError,
+    /// KiloEx $7.4M: MinimalForwarder meta-transaction exploit.
+    MetaTransactionVulnerability,
+    /// Cetus $223M: Unchecked overflow in math operations.
+    UncheckedMathOperation,
+    /// Meta-transaction trusted forwarder trust bypass.
+    TrustedForwarderBypass,
+    /// Flash loan governance attacks (e.g., Beanstalk $182M).
+    GovernanceAttack,
+    /// LP token and liquidity pool manipulation.
+    LiquidityManipulation,
+    /// Cross-chain bridge exploits.
+    BridgeVulnerability,
+
+    // --- 2024-2025 Modern DeFi / L2 Patterns ---
+    /// First depositor inflation attack on ERC-4626 vaults.
+    ERC4626Inflation,
+    /// Permit2 signature reuse or deadline bypass.
+    Permit2SignatureReuse,
+    /// LayerZero trusted remote manipulation.
+    LayerZeroTrustedRemote,
+    /// CREATE2 / CREATE3 address collision attacks.
+    Create2Collision,
+    /// EIP-1153 transient storage reentrancy vectors.
+    TransientStorageReentrancy,
+    /// PUSH0 opcode (EIP-3855) compatibility issues on L2s.
+    Push0Compatibility,
+    /// EIP-4844 blob data handling issues.
+    BlobDataHandling,
+    /// Uniswap V4 hook exploitation vectors.
+    UniswapV4HookExploit,
+    /// Cross-chain message replay attacks.
+    CrossChainMessageReplay,
+    /// L2 sequencer downtime / uptime feed issues.
+    L2SequencerDowntime,
+    /// L2 gas price oracle manipulation.
+    L2GasOracle,
+    /// Base chain bridge security patterns.
+    BaseBridgeSecurity,
+
+    // --- Research Paper Patterns (arXiv:2205.09524v1) ---
+    /// 41S-040: `==` on balance checks, bypassable via `selfdestruct`.
+    StrictBalanceEquality,
+    /// 41S-041: Incorrect `storage` / `memory` data location usage.
+    MisleadingDataLocation,
+    /// 41S-042: Function declares return type but misses return on some paths.
+    MissingReturnValue,
+    /// 41S-043: Contract accepts ETH (payable) but has no withdrawal mechanism.
+    GreedyContract,
+    /// 41S-044: DeFi contract without circuit breaker / pause functionality.
+    MissingEmergencyStop,
+    /// 41S-045: ERC-777 `tokensReceived` callback reentrancy (dForce $24M).
+    ERC777CallbackReentrancy,
+    /// 41S-046: `depositFor()` callback reentrancy (Grim Finance $30M).
+    DepositForReentrancy,
+    /// 41S-047: LP token transfer-and-claim double claiming (Popsicle Finance $25M).
+    DoubleClaiming,
+    /// 41S-048: Incomplete signature verification (Wormhole $326M).
+    SignatureVerificationBypass,
+
+    // --- Security Hardening Categories (v0.6.0) ---
+    /// 41S-050: Missing storage gap in upgradeable contract base.
+    MissingStorageGap,
+    /// 41S-051: Admin function without timelock delay.
+    MissingTimelock,
+    /// 41S-052: selfdestruct usage (deprecated by EIP-6780, restricted post-Dencun).
+    SelfdestructDeprecation,
+    /// 41S-053: Uninitialized proxy implementation contract.
+    UninitializedImplementation,
+    /// 41S-054: Unsafe integer downcast (e.g., uint256 → uint128 truncation).
+    UnsafeDowncast,
+    /// 41S-055: Missing ERC-165 supportsInterface implementation.
+    MissingERC165,
+    /// 41S-056: Missing deadline parameter in DEX swap functions.
+    MissingSwapDeadline,
+    /// 41S-057: Hardcoded gas value in external call.
+    HardcodedGasAmount,
+    /// 41S-058: Unsafe use of `address.transfer()` with hardcoded 2300 gas.
+    UnsafeTransferGas,
+    /// 41S-059: Double initialization risk in proxy pattern.
+    DoubleInitialization,
 }
 
 impl VulnerabilityCategory {
-    /// Get the SWC Registry ID and CWE mapping for this vulnerability category
-    /// Based on https://swcregistry.io/ and MITRE CWE
+    /// Returns the SWC Registry ID and CWE mapping for this vulnerability category.
+    ///
+    /// Standard weaknesses use official SWC IDs (SWC-1xx); DeFi-specific and modern
+    /// exploit categories use custom 41Swara IDs (41S-0xx). Informational/quality
+    /// categories (e.g., `GasOptimization`, `UnusedCode`) return `None`.
+    ///
+    /// References:
+    /// - SWC Registry: <https://swcregistry.io/>
+    /// - MITRE CWE: <https://cwe.mitre.org/>
     pub fn get_swc_id(&self) -> Option<SwcId> {
         match self {
             // Core SWC Registry mappings
@@ -395,6 +602,18 @@ impl VulnerabilityCategory {
             VulnerabilityCategory::DoubleClaiming => Some(SwcId::new("41S-047", "Double Claiming Attack", Some("CWE-672"))),
             VulnerabilityCategory::SignatureVerificationBypass => Some(SwcId::new("41S-048", "Signature Verification Bypass", Some("CWE-347"))),
 
+            // Security hardening categories (v0.6.0)
+            VulnerabilityCategory::MissingStorageGap => Some(SwcId::new("41S-050", "Missing Storage Gap", Some("CWE-665"))),
+            VulnerabilityCategory::MissingTimelock => Some(SwcId::new("41S-051", "Missing Timelock", Some("CWE-284"))),
+            VulnerabilityCategory::SelfdestructDeprecation => Some(SwcId::new("41S-052", "Selfdestruct Deprecation", Some("CWE-749"))),
+            VulnerabilityCategory::UninitializedImplementation => Some(SwcId::new("41S-053", "Uninitialized Implementation", Some("CWE-665"))),
+            VulnerabilityCategory::UnsafeDowncast => Some(SwcId::new("41S-054", "Unsafe Integer Downcast", Some("CWE-681"))),
+            VulnerabilityCategory::MissingERC165 => Some(SwcId::new("41S-055", "Missing ERC-165", Some("CWE-573"))),
+            VulnerabilityCategory::MissingSwapDeadline => Some(SwcId::new("41S-056", "Missing Swap Deadline", Some("CWE-362"))),
+            VulnerabilityCategory::HardcodedGasAmount => Some(SwcId::new("41S-057", "Hardcoded Gas Amount", Some("CWE-1188"))),
+            VulnerabilityCategory::UnsafeTransferGas => Some(SwcId::new("41S-058", "Unsafe Transfer Gas Limit", Some("CWE-1188"))),
+            VulnerabilityCategory::DoubleInitialization => Some(SwcId::new("41S-059", "Double Initialization Risk", Some("CWE-665"))),
+
             // Info/Quality categories (no standard SWC)
             VulnerabilityCategory::GasOptimization |
             VulnerabilityCategory::UnusedCode |
@@ -412,17 +631,36 @@ impl VulnerabilityCategory {
     }
 }
 
+/// A regex-based detection rule that matches a specific vulnerability pattern in Solidity source code.
+///
+/// Each rule carries its own category, severity, and human-readable metadata. The scanner
+/// iterates over all rules, matching `pattern` against either individual lines (single-line
+/// mode) or the full file content (multiline mode). Matched results are wrapped into
+/// `Vulnerability` instances for further filtering.
 pub struct VulnerabilityRule {
+    /// The vulnerability class this rule detects.
     pub category: VulnerabilityCategory,
+    /// Severity rating assigned to matches of this rule.
     pub severity: VulnerabilitySeverity,
+    /// Compiled regex pattern. When `multiline` is true, the `(?s)` flag is prepended
+    /// so that `.` also matches newlines.
     pub pattern: Regex,
+    /// Short title displayed in scan output for matches.
     pub title: String,
+    /// Detailed explanation of why the matched pattern is dangerous.
     pub description: String,
+    /// Remediation guidance shown to the user.
     pub recommendation: String,
+    /// If `true`, the pattern is applied to the full file content (dotall mode).
+    /// If `false`, the pattern is applied line-by-line.
     pub multiline: bool,
 }
 
 impl VulnerabilityRule {
+    /// Create a new rule. When `multiline` is `true`, the pattern is automatically
+    /// wrapped with `(?s)` (dotall mode) so `.` matches across newlines.
+    ///
+    /// Returns `Err` if the regex pattern is invalid.
     pub fn new(
         category: VulnerabilityCategory,
         severity: VulnerabilitySeverity,
@@ -450,10 +688,36 @@ impl VulnerabilityRule {
     }
 }
 
+/// Creates the main set of vulnerability detection rules applied to all Solidity contracts
+/// regardless of compiler version.
+///
+/// Rules are grouped into thematic sections:
+/// - Reentrancy & unsafe external calls
+/// - Access control & role-based access control (RBAC)
+/// - Pragma & compiler issues
+/// - Randomness & PRNG weaknesses
+/// - Denial-of-service (DoS) patterns
+/// - Storage DoS attacks
+/// - Precision loss in financial calculations
+/// - Delegatecall patterns
+/// - Naming conventions & documentation
+/// - Slither-inspired detectors (PRNG, low-level calls, shadowing, etc.)
+/// - ERC standard compliance
+/// - Rekt.news real-world exploit patterns (proxy, callback, arbitrary calls, etc.)
+/// - 2025 OWASP Smart Contract Top 10 (flash loans, logic errors, governance, etc.)
+/// - Meta-transaction / trusted forwarder patterns
+/// - Unchecked math operations (Cetus-style)
+/// - Governance, liquidity manipulation, and bridge vulnerabilities
+/// - Research paper patterns (strict equality, data location, emergency stop, etc.)
+/// - False-negative coverage rules (msg.value in loops, isContract bypass, return bomb, etc.)
+///
+/// Each rule is a `VulnerabilityRule` with a compiled regex, metadata, and remediation advice.
+/// Rules intentionally removed due to false-positive history are documented inline with
+/// `// REMOVED:` comments explaining why.
 pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
     let mut rules = Vec::new();
 
-    // Reentrancy vulnerabilities
+    // --- Reentrancy Rules ---
     rules.push(VulnerabilityRule::new(
         VulnerabilityCategory::Reentrancy,
         VulnerabilitySeverity::Critical,
@@ -1475,15 +1739,15 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
         false,
     ).unwrap());
 
-    // Flash loan amount not validated
+    // Flash loan amount not validated - match within a single function (limit search window)
     rules.push(VulnerabilityRule::new(
         VulnerabilityCategory::FlashLoanAttack,
         VulnerabilitySeverity::Critical,
-        r"function\s+\w+\([^)]*uint\w*\s+(amount|loanAmount)[^)]*\).*flashLoan",
+        r"function\s+\w*(flashLoan|executeOperation|onFlashLoan)\w*\s*\([^)]*uint\w*\s+(amount|loanAmount)",
         "Flash Loan Amount Manipulation Risk".to_string(),
         "Flash loan amount passed to critical logic without validation enables price manipulation".to_string(),
         "Validate flash loan amounts against protocol limits and check price impact".to_string(),
-        true,
+        false,
     ).unwrap());
 
     // Price calculation using spot reserves (vulnerable to flash loans)
@@ -1501,7 +1765,7 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
     rules.push(VulnerabilityRule::new(
         VulnerabilityCategory::GovernanceAttack,
         VulnerabilitySeverity::Critical,
-        r"function\s+(propose|vote|castVote)\w*\([^)]*\).*external|public",
+        r"function\s+(propose|vote|castVote)\w*\([^)]*\)\s+(?:external|public)",
         "Flash Loan Governance Attack Vector (Beanstalk $182M)".to_string(),
         "Governance function without flash loan protection - Beanstalk style attack possible".to_string(),
         "Implement voting power snapshots, time-locks, or flash loan guards".to_string(),
@@ -1958,10 +2222,175 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
         false,
     ).unwrap());
 
+    // FN-1: msg.value used in a loop (CRITICAL) - Logic bug, not arithmetic
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::LogicError,
+        VulnerabilitySeverity::Critical,
+        r"(for|while)\s*\([^)]*\)\s*\{[\s\S]*?msg\.value[\s\S]*?\n\s*\}",
+        "msg.value Reused in Loop".to_string(),
+        "msg.value is constant across loop iterations - each iteration uses the full value, not a fraction".to_string(),
+        "Track total sent and decrement from msg.value, or use a separate amount per iteration".to_string(),
+        true,
+    ).unwrap());
+
+    // FN-2: isContract/extcodesize bypass during construction
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::InputValidationFailure,
+        VulnerabilitySeverity::High,
+        r"isContract\s*\(|\.code\.length\s*(==|>)\s*0|extcodesize\s*\(",
+        "Contract Check Bypassable During Construction".to_string(),
+        "isContract()/extcodesize returns 0 during constructor execution - attacker contracts can bypass this check".to_string(),
+        "Do not rely on isContract() for security. Use msg.sender == tx.origin for EOA checks or implement whitelisting".to_string(),
+        false,
+    ).unwrap());
+
+    // FN-3: Return bomb attack - unbounded return data capture
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::LowLevelCalls,
+        VulnerabilitySeverity::Medium,
+        r"\(bool\s+\w+,\s*bytes\s+memory\s+\w+\)\s*=\s*\w+\.(call|delegatecall|staticcall)",
+        "Return Bomb Risk - Unbounded Return Data".to_string(),
+        "Capturing full return data from external calls allows callee to return enormous data, consuming all gas in memory expansion".to_string(),
+        "Use assembly to limit return data size, or use `(bool success, ) = addr.call(...)` if return data is not needed".to_string(),
+        false,
+    ).unwrap());
+
+    // FN-4: Unchecked ERC20 transfer (2 args = token transfer, not payable)
+    // Match both `token.transfer(to, amount)` and `IERC20(token).transfer(to, amount)`
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::UnusedReturnValues,
+        VulnerabilitySeverity::Medium,
+        r"^\s*(?:\w+|\w+\([^)]*\))\.transfer\s*\(\s*\w+\s*,\s*\w+",
+        "Unchecked ERC20 transfer Return Value".to_string(),
+        "ERC20 transfer() returns bool but some tokens don't revert on failure".to_string(),
+        "Use SafeERC20.safeTransfer() or check: require(token.transfer(to, amount))".to_string(),
+        false,
+    ).unwrap());
+
+    // ====================================================================
+    // Security Hardening Rules (v0.6.0) - New Detections
+    // ====================================================================
+
+    // 41S-050: Missing storage gap in upgradeable base contracts
+    // Upgradeable contracts that serve as base contracts need __gap to prevent
+    // storage collision when new state variables are added in future upgrades.
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::MissingStorageGap,
+        VulnerabilitySeverity::High,
+        r"contract\s+\w+\s+is\s+[^{]*Upgradeable[^{]*\{",
+        "Missing Storage Gap in Upgradeable Contract".to_string(),
+        "Upgradeable base contracts should reserve storage slots with __gap to prevent storage collision in future upgrades".to_string(),
+        "Add `uint256[50] private __gap;` at the end of the contract's state variables".to_string(),
+        false,
+    ).unwrap());
+
+    // 41S-052: selfdestruct deprecation (EIP-6780)
+    // Post-Dencun, selfdestruct only sends ETH without destroying the contract
+    // except during the same transaction as creation. Using it is misleading.
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::SelfdestructDeprecation,
+        VulnerabilitySeverity::High,
+        r"\bselfdestruct\s*\(|\.selfdestruct\s*\(",
+        "Deprecated selfdestruct Usage (EIP-6780)".to_string(),
+        "selfdestruct is deprecated and restricted post-Dencun (EIP-6780). It no longer destroys contract code/storage except during the same creation transaction.".to_string(),
+        "Remove selfdestruct. Use withdraw patterns for fund recovery. For upgradeable contracts, use the proxy upgrade pattern instead.".to_string(),
+        false,
+    ).unwrap());
+
+    // 41S-053: Uninitialized implementation contract
+    // If a proxy's implementation contract isn't initialized, an attacker can
+    // call initialize() on the implementation directly and potentially take control.
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::UninitializedImplementation,
+        VulnerabilitySeverity::Critical,
+        r"function\s+initialize\s*\([^)]*\)\s*(?:external|public)\s+initializer",
+        "Potentially Uninitialized Implementation".to_string(),
+        "Implementation contracts behind proxies must be initialized in the constructor to prevent attackers from calling initialize() directly.".to_string(),
+        "Add `_disableInitializers()` in the constructor, or use `/// @custom:oz-upgrades-unsafe-allow constructor` with a constructor that calls `_disableInitializers()`.".to_string(),
+        false,
+    ).unwrap());
+
+    // 41S-054: Unsafe integer downcast
+    // Casting uint256 to a smaller type silently truncates in Solidity < 0.8.0.
+    // Even in 0.8+, explicit casts like uint128(x) silently truncate.
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::UnsafeDowncast,
+        VulnerabilitySeverity::Medium,
+        r"\b(?:uint(?:8|16|24|32|48|64|96|128|160|192|224)|int(?:8|16|24|32|48|64|96|128|160|192|224))\s*\(\s*\w+\s*\)",
+        "Unsafe Integer Downcast".to_string(),
+        "Casting to a smaller integer type silently truncates the value, potentially causing incorrect calculations or loss of funds.".to_string(),
+        "Use OpenZeppelin's SafeCast library (e.g., toUint128()) which reverts on overflow, or add explicit range validation.".to_string(),
+        false,
+    ).unwrap());
+
+    // 41S-056: Missing deadline in swap functions
+    // DEX swap functions without a deadline parameter are vulnerable to
+    // transaction sitting in the mempool and being executed at an unfavorable time.
+    // Note: Context filtering in scanner.rs checks for deadline in function body.
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::MissingSwapDeadline,
+        VulnerabilitySeverity::Medium,
+        r"function\s+\w*(?:swap|Swap)\w*\s*\([^)]*\)\s*(?:external|public)",
+        "Missing Deadline Parameter in Swap Function".to_string(),
+        "Swap functions without a deadline parameter allow transactions to sit in the mempool indefinitely and be executed at an unfavorable time.".to_string(),
+        "Add a `uint256 deadline` parameter and validate with `require(block.timestamp <= deadline)`.".to_string(),
+        false,
+    ).unwrap());
+
+    // 41S-057: Hardcoded gas amount in external calls
+    // Hardcoded gas values break when EVM gas costs change (e.g., Istanbul, Berlin).
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::HardcodedGasAmount,
+        VulnerabilitySeverity::Medium,
+        r"\.call\{[^}]*gas\s*:\s*\d+",
+        "Hardcoded Gas Amount in External Call".to_string(),
+        "Hardcoded gas values may break after EVM upgrades that change opcode gas costs (e.g., EIP-1884 in Istanbul, EIP-2929 in Berlin).".to_string(),
+        "Avoid hardcoding gas amounts. Forward all available gas or use a configurable gas parameter.".to_string(),
+        false,
+    ).unwrap());
+
+    // 41S-058: address.transfer() with 2300 gas stipend
+    // .transfer() and .send() only forward 2300 gas which may not be enough
+    // if the recipient is a contract with a receive/fallback function.
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::UnsafeTransferGas,
+        VulnerabilitySeverity::Low,
+        r"\.\s*transfer\s*\(\s*[^,)]+\s*\)\s*;",
+        "Low Gas Stipend with .transfer()".to_string(),
+        "address.transfer() forwards only 2300 gas, which can cause failures if the recipient is a contract with logic in receive/fallback (especially after EIP-1884 gas cost changes).".to_string(),
+        "Use `.call{value: amount}(\"\")` with proper return value checking instead of `.transfer()`.".to_string(),
+        false,
+    ).unwrap());
+
+    // 41S-059: Double initialization risk
+    // Contracts with initialize() that don't use the initializer modifier
+    // or Initializable pattern can be initialized multiple times.
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::DoubleInitialization,
+        VulnerabilitySeverity::Critical,
+        r"function\s+initialize\s*\([^)]*\)\s+(?:external|public)\s*(?:\{|returns)",
+        "Missing Initializer Modifier".to_string(),
+        "The initialize() function lacks the `initializer` modifier, allowing it to be called multiple times which can reset critical state.".to_string(),
+        "Add OpenZeppelin's `initializer` modifier: `function initialize(...) external initializer { ... }`".to_string(),
+        false,
+    ).unwrap());
+
+    // Missing events on critical state changes (detected per-line, filtered by context in scanner)
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::MissingEvents,
+        VulnerabilitySeverity::Low,
+        r"function\s+(set|update|change|modify)\w+\s*\([^)]*\)\s+(?:external|public)",
+        "Missing Event Emission on State Change".to_string(),
+        "State-changing function may not emit an event, making off-chain monitoring and auditing difficult.".to_string(),
+        "Emit an event at the end of every state-changing function for transparency and monitoring.".to_string(),
+        false,
+    ).unwrap());
+
     rules
 }
 
 impl VulnerabilitySeverity {
+    /// Return the severity level as an uppercase display string (e.g., "CRITICAL", "HIGH").
     pub fn as_str(&self) -> &str {
         match self {
             VulnerabilitySeverity::Critical => "CRITICAL",
@@ -1972,6 +2401,7 @@ impl VulnerabilitySeverity {
         }
     }
     
+    /// Return the terminal color associated with this severity for colored output.
     pub fn color(&self) -> colored::Color {
         match self {
             VulnerabilitySeverity::Critical => colored::Color::Red,
@@ -1984,6 +2414,7 @@ impl VulnerabilitySeverity {
 }
 
 impl VulnerabilityCategory {
+    /// Return a human-readable display name for this vulnerability category.
     pub fn as_str(&self) -> &str {
         match self {
             VulnerabilityCategory::Reentrancy => "Reentrancy",
@@ -2094,10 +2525,24 @@ impl VulnerabilityCategory {
             VulnerabilityCategory::DepositForReentrancy => "DepositFor Reentrancy",
             VulnerabilityCategory::DoubleClaiming => "Double Claiming Attack",
             VulnerabilityCategory::SignatureVerificationBypass => "Signature Verification Bypass",
+            // Security hardening categories (v0.6.0)
+            VulnerabilityCategory::MissingStorageGap => "Missing Storage Gap",
+            VulnerabilityCategory::MissingTimelock => "Missing Timelock",
+            VulnerabilityCategory::SelfdestructDeprecation => "Selfdestruct Deprecation",
+            VulnerabilityCategory::UninitializedImplementation => "Uninitialized Implementation",
+            VulnerabilityCategory::UnsafeDowncast => "Unsafe Integer Downcast",
+            VulnerabilityCategory::MissingERC165 => "Missing ERC-165 Support",
+            VulnerabilityCategory::MissingSwapDeadline => "Missing Swap Deadline",
+            VulnerabilityCategory::HardcodedGasAmount => "Hardcoded Gas Amount",
+            VulnerabilityCategory::UnsafeTransferGas => "Unsafe Transfer Gas Limit",
+            VulnerabilityCategory::DoubleInitialization => "Double Initialization Risk",
         }
     }
 }
 
+/// Create additional vulnerability rules that depend on the detected Solidity compiler version.
+/// Pre-0.8 contracts get arithmetic overflow/underflow rules, older versions get
+/// additional known compiler bug checks, and cross-version attack patterns are added.
 pub fn create_version_specific_rules(version: &CompilerVersion) -> Vec<VulnerabilityRule> {
     let mut rules = Vec::new();
     
@@ -2371,6 +2816,9 @@ pub fn create_version_specific_rules(version: &CompilerVersion) -> Vec<Vulnerabi
     rules
 }
 
+/// Add rules for known compiler bugs specific to each Solidity version (0.4.x through 0.8.x).
+/// Each version branch adds patterns for documented compiler vulnerabilities from the
+/// Solidity changelog and security advisories.
 fn add_compiler_vulnerabilities(rules: &mut Vec<VulnerabilityRule>, version: &CompilerVersion) {
     match version {
         CompilerVersion::V04 => {
@@ -2550,6 +2998,8 @@ fn add_compiler_vulnerabilities(rules: &mut Vec<VulnerabilityRule>, version: &Co
     add_cross_version_attacks(rules, version);
 }
 
+/// Add rules for attack patterns that span multiple Solidity versions
+/// (e.g., abi.encodePacked hash collisions, constructor confusion in 0.4.x).
 fn add_cross_version_attacks(rules: &mut Vec<VulnerabilityRule>, version: &CompilerVersion) {
     // Hash collision attacks (all versions with abi.encodePacked)
     rules.push(VulnerabilityRule::new(

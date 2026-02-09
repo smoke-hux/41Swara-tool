@@ -1,38 +1,59 @@
 //! Enhanced False Positive Filter
 //!
-//! Advanced filtering engine that removes false positive findings by:
-//! 1. Context-aware pattern analysis
-//! 2. Safe library detection (OpenZeppelin, Solmate, etc.)
-//! 3. Code path analysis
-//! 4. Semantic understanding of Solidity patterns
-//! 5. Cross-reference with known safe implementations
+//! This module implements the second of three filtering layers in the scanner pipeline:
 //!
-//! Achieves 90%+ false positive reduction while maintaining high detection accuracy.
+//! **Layer 1** (`scanner.rs::should_report_vulnerability`) -- context-aware per-category
+//! filtering applied at detection time.
+//!
+//! **Layer 2** (this module) -- post-detection filtering that operates on the full list of
+//! findings. It removes false positives through:
+//!   1. **Safe-pattern matching**: recognizes well-known safe implementations (ReentrancyGuard,
+//!      SafeMath, SafeERC20, ECDSA.recover, etc.) and suppresses findings they already guard.
+//!   2. **Contract-context extraction**: detects Solidity version, imported libraries,
+//!      inheritance chains, custom modifiers, and audit annotations to inform per-category
+//!      filtering decisions.
+//!   3. **Category-specific filters**: each vulnerability category has a dedicated filter
+//!      function that checks for mitigating patterns (e.g., `nonReentrant` on a function,
+//!      `onlyOwner` modifier for access-control, `SafeERC20` for unchecked returns).
+//!   4. **Confidence adjustment**: raises or lowers the confidence score depending on
+//!      whether safety measures are present (library usage, audit annotations, test context).
+//!   5. **Deduplication**: removes exact (line, category) duplicates and merges related
+//!      findings from the same code region, keeping only the highest-severity entry.
+//!
+//! **Layer 3** (advanced analyzers: `reachability_analyzer.rs`, `logic_analyzer.rs`) --
+//! structural analysis that checks call-graph reachability and logic-level correctness.
+//!
+//! Together the three layers achieve 90%+ false-positive reduction while maintaining high
+//! detection accuracy.
 
 #![allow(dead_code)]
 
 use regex::Regex;
 use std::collections::HashSet;
-use crate::vulnerabilities::{Vulnerability, VulnerabilityCategory};
-#[cfg(test)]
-use crate::vulnerabilities::VulnerabilitySeverity;
+use crate::vulnerabilities::{Vulnerability, VulnerabilityCategory, VulnerabilitySeverity};
 
-/// Configuration for false positive filtering
+/// Configuration knobs that control how aggressively the false-positive filter
+/// suppresses findings. All boolean flags default to `true` (trust safe libraries,
+/// use version-aware filtering, etc.) except `strict_mode` which defaults to `false`.
 #[derive(Clone)]
 pub struct FilterConfig {
-    /// Trust OpenZeppelin implementations
+    /// When `true`, findings already guarded by OpenZeppelin patterns are suppressed.
     pub trust_openzeppelin: bool,
-    /// Trust Solmate implementations
+    /// When `true`, findings already guarded by Solmate patterns are suppressed.
     pub trust_solmate: bool,
-    /// Trust Solady implementations
+    /// When `true`, findings already guarded by Solady patterns are suppressed.
     pub trust_solady: bool,
-    /// Filter based on Solidity version
+    /// When `true`, the Solidity compiler version is used to suppress findings that
+    /// are handled by the compiler itself (e.g., overflow checks in 0.8+).
     pub version_aware_filtering: bool,
-    /// Enable semantic analysis
+    /// When `true`, semantic analysis of code patterns (CEI ordering, modifier
+    /// presence, etc.) is applied during filtering.
     pub semantic_analysis: bool,
-    /// Minimum confidence to keep (0-100)
+    /// Findings with a confidence score below this threshold (0--100) are dropped
+    /// after all other filtering and confidence adjustments have been applied.
     pub min_confidence: u8,
-    /// Enable strict mode (more aggressive filtering)
+    /// When `true`, enables more aggressive filtering: all findings in test/mock
+    /// contracts are suppressed entirely.
     pub strict_mode: bool,
 }
 
@@ -50,52 +71,100 @@ impl Default for FilterConfig {
     }
 }
 
-/// Context information extracted from the contract
+/// Contextual information extracted from the contract source code. This is built
+/// once per file by `extract_context()` and then passed to every per-category
+/// filter so that filtering decisions can take the whole contract into account
+/// (e.g., compiler version, library imports, modifier definitions).
 #[derive(Debug, Default)]
 pub struct ContractContext {
+    /// The raw Solidity version string from the pragma (e.g., "0.8.20").
     pub solidity_version: Option<String>,
+    /// `true` if the compiler version is 0.8.x or higher (built-in overflow checks).
     pub is_solidity_0_8_plus: bool,
+    /// `true` if the contract uses the SafeMath library (pre-0.8 overflow protection).
     pub uses_safemath: bool,
+    /// `true` if a ReentrancyGuard / nonReentrant pattern is detected.
     pub uses_reentrancy_guard: bool,
+    /// `true` if the contract imports from `@openzeppelin`.
     pub uses_openzeppelin: bool,
+    /// `true` if the contract imports from `solmate`.
     pub uses_solmate: bool,
+    /// `true` if the contract imports from `solady`.
     pub uses_solady: bool,
+    /// `true` if the contract uses SafeERC20 or `.safeTransfer()`.
     pub uses_safe_erc20: bool,
+    /// `true` if the file contains only `interface` declarations and no `contract`.
     pub is_interface_only: bool,
+    /// `true` if the file declares a `library` (not a contract).
     pub is_library: bool,
+    /// `true` if the file is a Foundry/Hardhat test contract.
     pub is_test_contract: bool,
+    /// `true` if the contract name or content indicates a mock.
     pub is_mock_contract: bool,
+    /// `true` if any access-control pattern (Ownable, AccessControl, etc.) is detected.
     pub has_access_control: bool,
+    /// Names of all `modifier` declarations found in the contract.
     pub custom_modifiers: Vec<String>,
+    /// Names of contracts/interfaces in the `is` clause of the contract declaration.
     pub inherited_contracts: Vec<String>,
+    /// Paths of all `import` statements.
     pub imported_files: Vec<String>,
+    /// Parsed function signatures with visibility, modifiers, and access-control flags.
     pub defined_functions: Vec<FunctionInfo>,
+    /// Any `@audit`, `@security`, `// SAFE:`, or `// AUDITED` annotations found.
     pub audit_annotations: Vec<String>,
 }
 
+/// Metadata for a single function definition parsed from the contract source.
+/// Used by category-specific filters to determine if a finding's enclosing
+/// function already has mitigating modifiers or restricted visibility.
 #[derive(Debug, Clone)]
 pub struct FunctionInfo {
+    /// Function name (e.g., "withdraw", "transfer").
     pub name: String,
+    /// Visibility keyword: "external", "public", "internal", or "private".
     pub visibility: String,
+    /// Non-standard modifiers on the function (excludes visibility, view/pure,
+    /// payable, virtual, override). Typically custom access-control modifiers.
     pub modifiers: Vec<String>,
+    /// `true` if the function is declared `view` or `pure` (read-only).
     pub is_view_pure: bool,
+    /// 1-based line number where the function declaration appears.
     pub line_number: usize,
+    /// `true` if any modifier starts with "only" or matches known auth patterns.
     pub has_access_control: bool,
 }
 
+/// The main false-positive filtering engine. It holds a `FilterConfig` and a
+/// pre-compiled set of `SafePattern` regexes. Call `filter()` to run the full
+/// pipeline (context extraction -> per-category filtering -> confidence
+/// adjustment -> deduplication) on a list of findings.
 pub struct FalsePositiveFilter {
+    /// User-supplied configuration controlling filter aggressiveness.
     config: FilterConfig,
+    /// Pre-compiled regexes that match known-safe implementations. If any of
+    /// these match the contract source for a finding's category, the finding
+    /// is suppressed.
     safe_patterns: Vec<SafePattern>,
 }
 
+/// A single safe-pattern rule: if `pattern` matches the contract source and the
+/// finding's category equals `category`, the finding is considered a false
+/// positive and is suppressed.
 #[derive(Debug)]
 struct SafePattern {
+    /// The vulnerability category this pattern guards against.
     category: VulnerabilityCategory,
+    /// A regex that matches known-safe code constructs for this category.
     pattern: Regex,
+    /// Human-readable description logged when this pattern triggers.
     description: String,
 }
 
 impl FalsePositiveFilter {
+    /// Create a new `FalsePositiveFilter` with the given configuration.
+    /// Pre-compiles all safe-pattern regexes on construction so they can be
+    /// reused across multiple `filter()` calls without recompilation overhead.
     pub fn new(config: FilterConfig) -> Self {
         Self {
             config,
@@ -103,60 +172,67 @@ impl FalsePositiveFilter {
         }
     }
 
-    /// Create patterns that indicate safe implementations
+    /// Build the list of safe-pattern regexes. Each entry maps a vulnerability
+    /// category to a regex that, if it matches the contract source, indicates
+    /// the contract already mitigates that class of vulnerability. These are
+    /// broad whole-file checks; category-specific filters perform finer-grained
+    /// analysis afterwards.
     fn create_safe_patterns() -> Vec<SafePattern> {
         vec![
-            // Reentrancy - Safe patterns
+            // Reentrancy: suppress if any reentrancy guard mechanism is present
             SafePattern {
                 category: VulnerabilityCategory::Reentrancy,
                 pattern: Regex::new(r"(?i)(ReentrancyGuard|nonReentrant|_reentrancyGuard|locked\s*=\s*true)").unwrap(),
                 description: "ReentrancyGuard detected".to_string(),
             },
+            // Reentrancy: suppress if a CEI pattern annotation exists in comments
             SafePattern {
                 category: VulnerabilityCategory::Reentrancy,
                 pattern: Regex::new(r"CEI\s*pattern|checks-effects-interactions").unwrap(),
                 description: "CEI pattern annotation detected".to_string(),
             },
 
-            // Arithmetic - Safe patterns
+            // Arithmetic: suppress if SafeMath is imported (pre-0.8 protection)
             SafePattern {
                 category: VulnerabilityCategory::ArithmeticIssues,
                 pattern: Regex::new(r"using\s+SafeMath\s+for|SafeMath\.").unwrap(),
                 description: "SafeMath library in use".to_string(),
             },
+            // Arithmetic: suppress if Solidity 0.8+ (compiler-level overflow protection)
             SafePattern {
                 category: VulnerabilityCategory::ArithmeticIssues,
                 pattern: Regex::new(r"pragma\s+solidity\s*[\^>=<]*\s*0\.[89]").unwrap(),
                 description: "Solidity 0.8+ has built-in overflow protection".to_string(),
             },
 
-            // Access Control - Safe patterns
+            // Access control: suppress if common owner/role modifier keywords found
             SafePattern {
                 category: VulnerabilityCategory::AccessControl,
                 pattern: Regex::new(r"(?i)(onlyOwner|onlyAdmin|onlyRole|onlyMinter|onlyGovernance|requiresAuth|auth\(\))").unwrap(),
                 description: "Access control modifier present".to_string(),
             },
+            // Access control: suppress if inline require checks msg.sender
             SafePattern {
                 category: VulnerabilityCategory::AccessControl,
                 pattern: Regex::new(r"require\s*\(\s*msg\.sender\s*==|require\s*\(\s*_msgSender\s*\(\s*\)\s*==").unwrap(),
                 description: "Sender verification in function".to_string(),
             },
 
-            // ERC20 - Safe patterns
+            // Unchecked returns: suppress if SafeERC20 wrappers are used
             SafePattern {
                 category: VulnerabilityCategory::UncheckedReturnValues,
                 pattern: Regex::new(r"using\s+SafeERC20\s+for|\.safeTransfer\(|\.safeTransferFrom\(").unwrap(),
                 description: "SafeERC20 library in use".to_string(),
             },
 
-            // Proxy - Safe patterns
+            // Proxy upgrade: suppress if _authorizeUpgrade is protected by onlyOwner
             SafePattern {
                 category: VulnerabilityCategory::UnprotectedProxyUpgrade,
                 pattern: Regex::new(r"_authorizeUpgrade\s*\([^)]*\)\s*internal\s*(virtual\s*)?(override\s*)?onlyOwner").unwrap(),
                 description: "Protected upgrade function".to_string(),
             },
 
-            // Signature - Safe patterns
+            // Signature: suppress if using OZ ECDSA or SignatureChecker (handles malleability)
             SafePattern {
                 category: VulnerabilityCategory::SignatureVulnerabilities,
                 pattern: Regex::new(r"ECDSA\.recover|ECDSA\.tryRecover|SignatureChecker").unwrap(),
@@ -165,11 +241,14 @@ impl FalsePositiveFilter {
         ]
     }
 
-    /// Extract context information from the contract
+    /// Parse the full contract source to extract contextual information that
+    /// informs filtering decisions. This runs once per file and produces a
+    /// `ContractContext` struct containing compiler version, library usage,
+    /// inheritance, modifiers, and more.
     pub fn extract_context(&self, content: &str) -> ContractContext {
         let mut ctx = ContractContext::default();
 
-        // Detect Solidity version
+        // Detect Solidity version from the pragma directive
         let version_pattern = Regex::new(r"pragma\s+solidity\s*([\^>=<]*)?\s*(\d+\.\d+\.\d+|\d+\.\d+)").unwrap();
         if let Some(caps) = version_pattern.captures(content) {
             ctx.solidity_version = caps.get(2).map(|m| m.as_str().to_string());
@@ -179,15 +258,15 @@ impl FalsePositiveFilter {
             }
         }
 
-        // Detect SafeMath
+        // Detect SafeMath (pre-0.8 overflow library)
         ctx.uses_safemath = content.contains("using SafeMath for") || content.contains("SafeMath.");
 
-        // Detect ReentrancyGuard
+        // Detect ReentrancyGuard (OZ, Solmate, or custom mutex pattern)
         ctx.uses_reentrancy_guard = content.contains("ReentrancyGuard")
             || content.contains("nonReentrant")
             || content.contains("_reentrancyGuard");
 
-        // Detect OpenZeppelin
+        // Detect OpenZeppelin imports or references
         ctx.uses_openzeppelin = content.contains("@openzeppelin")
             || content.contains("openzeppelin-contracts")
             || content.contains("OpenZeppelin");
@@ -198,39 +277,40 @@ impl FalsePositiveFilter {
         // Detect Solady
         ctx.uses_solady = content.contains("solady") || content.contains("Solady");
 
-        // Detect SafeERC20
+        // Detect SafeERC20 (wraps ERC20 calls with revert-on-failure)
         ctx.uses_safe_erc20 = content.contains("using SafeERC20 for")
             || content.contains("SafeERC20.")
             || content.contains(".safeTransfer(");
 
-        // Detect interface-only files
+        // Detect interface-only files (no findings are relevant for pure interfaces)
         let interface_pattern = Regex::new(r"^\s*interface\s+\w+").unwrap();
         let contract_pattern = Regex::new(r"^\s*(contract|abstract\s+contract)\s+\w+").unwrap();
         let has_interface = content.lines().any(|line| interface_pattern.is_match(line));
         let has_contract = content.lines().any(|line| contract_pattern.is_match(line));
         ctx.is_interface_only = has_interface && !has_contract;
 
-        // Detect library
+        // Detect library declarations (libraries have restricted capabilities)
         ctx.is_library = Regex::new(r"^\s*library\s+\w+").unwrap()
             .find(content).is_some();
 
-        // Detect test/mock contracts
+        // Detect test contracts (Foundry, Hardhat, DSTest frameworks)
         ctx.is_test_contract = content.contains("import \"forge-std")
             || content.contains("import \"hardhat")
             || content.contains("is Test")
             || content.contains("is DSTest");
 
+        // Detect mock contracts by name or keyword
         ctx.is_mock_contract = content.contains("contract Mock")
             || content.contains("Contract Mock")
             || content.to_lowercase().contains("mock");
 
-        // Detect access control patterns
+        // Detect broad access-control patterns (Ownable, RBAC, modifier keywords)
         ctx.has_access_control = content.contains("Ownable")
             || content.contains("AccessControl")
             || content.contains("onlyOwner")
             || content.contains("onlyRole");
 
-        // Extract custom modifiers
+        // Extract custom modifier names (used later to check per-function guards)
         let modifier_pattern = Regex::new(r"modifier\s+(\w+)").unwrap();
         for cap in modifier_pattern.captures_iter(content) {
             if let Some(name) = cap.get(1) {
@@ -238,7 +318,7 @@ impl FalsePositiveFilter {
             }
         }
 
-        // Extract inherited contracts
+        // Extract the inheritance list (contracts/interfaces after `is`)
         let inherit_pattern = Regex::new(r"(contract|abstract\s+contract)\s+\w+\s+is\s+([^{]+)").unwrap();
         if let Some(caps) = inherit_pattern.captures(content) {
             if let Some(inherited) = caps.get(2) {
@@ -251,7 +331,7 @@ impl FalsePositiveFilter {
             }
         }
 
-        // Extract imports
+        // Extract all import paths (both direct and named import syntax)
         let import_pattern = Regex::new(r#"import\s+["']([^"']+)["']|import\s+\{[^}]+\}\s+from\s+["']([^"']+)["']"#).unwrap();
         for cap in import_pattern.captures_iter(content) {
             let path = cap.get(1).or_else(|| cap.get(2)).map(|m| m.as_str().to_string());
@@ -260,21 +340,24 @@ impl FalsePositiveFilter {
             }
         }
 
-        // Extract audit annotations
+        // Extract developer-placed audit/security annotations from comments
         let audit_pattern = Regex::new(r"@audit|@security|@notice\s+SAFE|// SAFE:|// AUDITED").unwrap();
         for mat in audit_pattern.find_iter(content) {
             ctx.audit_annotations.push(mat.as_str().to_string());
         }
 
-        // Extract function information
+        // Parse all function declarations into structured FunctionInfo records
         ctx.defined_functions = self.extract_functions(content);
 
         ctx
     }
 
-    /// Extract function information from content
+    /// Parse every `function` declaration in the source into a `FunctionInfo`
+    /// struct. Extracts name, visibility, custom modifiers, view/pure status,
+    /// line number, and whether the function has an access-control modifier.
     fn extract_functions(&self, content: &str) -> Vec<FunctionInfo> {
         let mut functions = Vec::new();
+        // Matches: function <name>(<params>) <modifiers...>
         let func_pattern = Regex::new(
             r"function\s+(\w+)\s*\([^)]*\)\s*((?:external|public|internal|private|view|pure|payable|virtual|override|\w+\s*)*)"
         ).unwrap();
@@ -286,6 +369,7 @@ impl FalsePositiveFilter {
                 let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
                 let modifiers_str = caps.get(2).map_or("", |m| m.as_str());
 
+                // Determine visibility; default to "public" if none specified
                 let visibility = if modifiers_str.contains("external") {
                     "external"
                 } else if modifiers_str.contains("public") {
@@ -300,12 +384,14 @@ impl FalsePositiveFilter {
 
                 let is_view_pure = modifiers_str.contains("view") || modifiers_str.contains("pure");
 
+                // Collect non-standard modifiers (i.e., custom ones like onlyOwner)
                 let modifiers: Vec<String> = modifiers_str
                     .split_whitespace()
                     .filter(|m| !["external", "public", "internal", "private", "view", "pure", "payable", "virtual", "override"].contains(m))
                     .map(|s| s.to_string())
                     .collect();
 
+                // Heuristic: any modifier starting with "only" or matching auth keywords
                 let has_access_control = modifiers.iter().any(|m| {
                     m.starts_with("only") || m == "auth" || m == "authorized" || m == "requiresAuth"
                 });
@@ -324,31 +410,43 @@ impl FalsePositiveFilter {
         functions
     }
 
-    /// Filter vulnerabilities to remove false positives
+    /// Run the full false-positive filtering pipeline on a list of findings.
+    ///
+    /// The pipeline proceeds in four stages:
+    /// 1. **Context extraction** -- parse the contract source once to build a
+    ///    `ContractContext` (compiler version, imports, modifiers, etc.).
+    /// 2. **Per-finding filtering** -- each finding is checked against safe
+    ///    patterns and category-specific filters; false positives are dropped.
+    /// 3. **Confidence adjustment** -- remaining findings have their confidence
+    ///    score raised or lowered based on contextual signals (library usage,
+    ///    audit annotations, test context).
+    /// 4. **Deduplication** -- exact (line, category) duplicates are removed,
+    ///    and related findings within a 5-line window are merged.
     pub fn filter(&self, vulnerabilities: Vec<Vulnerability>, content: &str) -> Vec<Vulnerability> {
         let ctx = self.extract_context(content);
 
-        // Skip filtering for interface-only files
+        // Interface-only files have no executable code; discard all findings
         if ctx.is_interface_only {
             return vec![];
         }
 
+        // Stage 2: apply per-finding safe-pattern and category-specific filters
         let mut filtered: Vec<Vulnerability> = vulnerabilities
             .into_iter()
             .filter(|v| self.should_keep(v, content, &ctx))
             .collect();
 
-        // Adjust confidence based on context
+        // Stage 3: adjust confidence scores based on contract context
         for vuln in &mut filtered {
             self.adjust_confidence(vuln, &ctx);
         }
 
-        // Apply minimum confidence filter
+        // Drop findings that fall below the minimum confidence threshold
         if self.config.min_confidence > 0 {
             filtered.retain(|v| v.confidence_percent >= self.config.min_confidence);
         }
 
-        // Deduplicate by line and category
+        // Stage 4: remove exact duplicates and merge related nearby findings
         self.deduplicate(&mut filtered);
 
         filtered
@@ -407,8 +505,31 @@ impl FalsePositiveFilter {
             VulnerabilityCategory::MagicNumbers => {
                 self.filter_magic_numbers(vuln, content)
             }
+            VulnerabilityCategory::OracleManipulation => {
+                // FP-6: Suppress if no pricing context (just routing usage)
+                let lines: Vec<&str> = content.lines().collect();
+                let vuln_line = vuln.line_number.saturating_sub(1);
+                let start = vuln_line.saturating_sub(5);
+                let end = (vuln_line + 6).min(lines.len());
+                let context: String = lines[start..end].join("\n").to_lowercase();
+                let has_pricing_context = context.contains("price") || context.contains("oracle")
+                    || context.contains(" / ") || context.contains(" * ");
+                if !has_pricing_context {
+                    return false;
+                }
+                true
+            }
             VulnerabilityCategory::UnprotectedProxyUpgrade
             | VulnerabilityCategory::ProxyAdminVulnerability => {
+                // FP-7: Suppress transferOwnership findings with Ownable2Step
+                if content.contains("Ownable2Step") || content.contains("acceptOwnership")
+                    || content.contains("pendingOwner") {
+                    if vuln.code_snippet.contains("transferOwnership")
+                        || vuln.title.contains("transferOwnership")
+                        || vuln.description.contains("transferOwnership") {
+                        return false;
+                    }
+                }
                 self.filter_proxy_upgrade(vuln, content, ctx)
             }
             VulnerabilityCategory::SignatureVulnerabilities
@@ -470,6 +591,10 @@ impl FalsePositiveFilter {
                 true
             }
             VulnerabilityCategory::LowLevelCalls => {
+                // Don't suppress return bomb findings (they flag captured data as the risk)
+                if vuln.title.contains("Return Bomb") {
+                    return true;
+                }
                 // Don't report if return value is captured
                 if vuln.code_snippet.contains("(bool") || vuln.code_snippet.contains("success") {
                     return false;
@@ -483,6 +608,73 @@ impl FalsePositiveFilter {
                 }
                 // Don't report if timelock is present
                 if content.contains("TimelockController") || content.contains("timelock") {
+                    return false;
+                }
+                true
+            }
+            VulnerabilityCategory::MissingStorageGap => {
+                // Don't report if __gap exists
+                if content.contains("__gap") {
+                    return false;
+                }
+                // Don't report for non-upgradeable contracts
+                if !content.contains("Upgradeable") && !content.contains("Initializable") {
+                    return false;
+                }
+                true
+            }
+            VulnerabilityCategory::MissingTimelock => {
+                // Don't report if timelock pattern exists
+                if content.contains("TimelockController") || content.contains("Timelock")
+                    || content.contains("delay") && content.contains("queue") {
+                    return false;
+                }
+                // Don't report in test contracts
+                if ctx.is_test_contract {
+                    return false;
+                }
+                true
+            }
+            VulnerabilityCategory::SelfdestructDeprecation => {
+                // Don't report in test/mock contracts
+                if ctx.is_test_contract || ctx.is_mock_contract {
+                    return false;
+                }
+                true
+            }
+            VulnerabilityCategory::UnsafeDowncast => {
+                // Don't report if SafeCast is used
+                if content.contains("SafeCast") || content.contains("safeCast") {
+                    return false;
+                }
+                true
+            }
+            VulnerabilityCategory::UninitializedImplementation
+            | VulnerabilityCategory::DoubleInitialization => {
+                // Don't report if _disableInitializers is present
+                if content.contains("_disableInitializers") {
+                    return false;
+                }
+                // Don't report if initializer modifier is on the function
+                if vuln.code_snippet.contains("initializer") {
+                    return false;
+                }
+                true
+            }
+            VulnerabilityCategory::HardcodedGasAmount => {
+                // Don't report if using gasleft()
+                if vuln.code_snippet.contains("gasleft()") {
+                    return false;
+                }
+                true
+            }
+            VulnerabilityCategory::UnsafeTransferGas => {
+                // Don't report ERC20 transfers (have 2 args)
+                if vuln.code_snippet.contains(",") {
+                    return false;
+                }
+                // Don't report in test
+                if ctx.is_test_contract {
                     return false;
                 }
                 true
@@ -756,6 +948,7 @@ impl FalsePositiveFilter {
 
     /// Remove duplicate vulnerabilities
     fn deduplicate(&self, vulnerabilities: &mut Vec<Vulnerability>) {
+        // Pass 1: exact (line, category) dedup
         let mut seen: HashSet<(usize, String)> = HashSet::new();
         vulnerabilities.retain(|v| {
             let key = (v.line_number, format!("{:?}", v.category));
@@ -765,6 +958,85 @@ impl FalsePositiveFilter {
                 seen.insert(key);
                 true
             }
+        });
+
+        // FP-8: Pass 2 - Merge related categories within 5 lines, keep highest severity
+        let category_group = |cat: &VulnerabilityCategory| -> u8 {
+            match cat {
+                VulnerabilityCategory::Reentrancy
+                | VulnerabilityCategory::CallbackReentrancy
+                | VulnerabilityCategory::ERC777CallbackReentrancy
+                | VulnerabilityCategory::DepositForReentrancy
+                | VulnerabilityCategory::TransientStorageReentrancy => 1,
+                VulnerabilityCategory::AccessControl
+                | VulnerabilityCategory::RoleBasedAccessControl
+                | VulnerabilityCategory::ProxyAdminVulnerability => 2,
+                VulnerabilityCategory::FlashLoanAttack
+                | VulnerabilityCategory::OracleManipulation => 3,
+                _ => 0,  // group 0 = no grouping
+            }
+        };
+
+        let severity_rank = |v: &Vulnerability| -> u8 {
+            match v.severity {
+                VulnerabilitySeverity::Critical => 4,
+                VulnerabilitySeverity::High => 3,
+                VulnerabilitySeverity::Medium => 2,
+                VulnerabilitySeverity::Low => 1,
+                VulnerabilitySeverity::Info => 0,
+            }
+        };
+
+        // Also treat LogicError with CEI/State After title as reentrancy group
+        let effective_group = |v: &Vulnerability| -> u8 {
+            let g = category_group(&v.category);
+            if g != 0 {
+                return g;
+            }
+            if matches!(v.category, VulnerabilityCategory::LogicError) {
+                if v.title.contains("CEI") || v.title.contains("State After") {
+                    return 1; // reentrancy group
+                }
+            }
+            0
+        };
+
+        let mut to_remove: HashSet<usize> = HashSet::new();
+        for i in 0..vulnerabilities.len() {
+            if to_remove.contains(&i) {
+                continue;
+            }
+            let gi = effective_group(&vulnerabilities[i]);
+            if gi == 0 {
+                continue;
+            }
+            for j in (i + 1)..vulnerabilities.len() {
+                if to_remove.contains(&j) {
+                    continue;
+                }
+                let gj = effective_group(&vulnerabilities[j]);
+                if gi != gj {
+                    continue;
+                }
+                let line_diff = (vulnerabilities[i].line_number as isize
+                    - vulnerabilities[j].line_number as isize).unsigned_abs();
+                if line_diff <= 5 {
+                    // Keep the higher-severity one
+                    if severity_rank(&vulnerabilities[i]) >= severity_rank(&vulnerabilities[j]) {
+                        to_remove.insert(j);
+                    } else {
+                        to_remove.insert(i);
+                        break; // i is removed, stop comparing from i
+                    }
+                }
+            }
+        }
+
+        let mut idx = 0;
+        vulnerabilities.retain(|_| {
+            let keep = !to_remove.contains(&idx);
+            idx += 1;
+            keep
         });
     }
 

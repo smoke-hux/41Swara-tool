@@ -1,51 +1,54 @@
-//! 41Swara Smart Contract Security Scanner v0.5.0 - Security Researcher Edition
+//! 41Swara Smart Contract Security Scanner v0.6.0 - Security Researcher Edition
 //!
 //! High-performance vulnerability scanner for Ethereum Foundation and blockchain security researchers.
 //! Features parallel scanning, severity filtering, CWE/SWC mapping, and multiple output formats.
 
-use clap::{Parser, ValueEnum};
-use colored::*;
-use rayon::prelude::*;
+// --- External crate imports ---
+use clap::{Parser, ValueEnum};   // CLI argument parsing framework
+use colored::*;                   // Terminal color output support
+use rayon::prelude::*;            // Parallel iterator support for multi-threaded scanning
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
-use std::time::Instant;
-use walkdir::WalkDir;
-use git2::{Repository, DiffOptions, Delta};
-use notify::{Watcher, RecursiveMode, Event, Result as NotifyResult, EventKind};
-use std::sync::mpsc::channel;
+use std::sync::{Arc, Mutex};     // Thread-safe shared state for parallel scanning
+use std::time::Instant;          // Performance timing
+use walkdir::WalkDir;            // Recursive directory traversal
+use git2::{Repository, DiffOptions, Delta}; // Git integration for diff-based scanning
+use notify::{Watcher, RecursiveMode, Event, Result as NotifyResult, EventKind}; // File watcher for --watch mode
+use std::sync::mpsc::channel;    // Channel for file watcher event communication
 
-mod scanner;
-mod vulnerabilities;
-mod parser;
-mod reporter;
-mod professional_reporter;
-mod project_scanner;
-mod advanced_analysis;
-mod abi_scanner;
-mod sarif;
+// --- Internal module declarations ---
+mod scanner;               // Core scanning orchestration engine
+mod vulnerabilities;       // Vulnerability rules, types, and severity definitions
+mod parser;                // Solidity source code parser (line splitting, version extraction)
+mod reporter;              // Terminal-based vulnerability report output
+mod professional_reporter; // Professional audit-style report generation
+mod project_scanner;       // Cross-file project-wide analysis
+mod advanced_analysis;     // DeFi/NFT/exploit pattern analyzers
+mod abi_scanner;           // ABI JSON file vulnerability scanner
+mod sarif;                 // SARIF 2.1.0 output format (GitHub Code Scanning integration)
 
 // Phase 1: AST-Based Analysis Engine
 mod ast;
 
-// Phase 2: DeFi-Specific Analyzers
+// Phase 2: DeFi-Specific Analyzers (AMM, lending, oracle patterns)
 mod defi;
 
-// Phase 4: Performance & Caching
+// Phase 4: Performance & Caching (incremental scanning support)
 mod cache;
 
-// Phase 5: Tool Integration
+// Phase 5: Tool Integration (Slither/Foundry correlation)
 mod integrations;
 
-// Phase 6: Advanced Analysis Engine
+// Phase 6: Advanced Analysis Engine (business logic, reachability, dependencies, threat models)
 mod logic_analyzer;
 mod reachability_analyzer;
 mod dependency_analyzer;
 mod threat_model;
 
 // Phase 7: EIP Analysis & Enhanced False Positive Filtering
-mod eip_analyzer;
-mod false_positive_filter;
+mod eip_analyzer;          // ERC-20/721/777/1155/4626/2771 standard compliance checks
+mod false_positive_filter; // Multi-pass false positive reduction (~90% FP reduction)
 
+// --- Re-exports used across main ---
 use scanner::{ContractScanner, ScannerConfig};
 use reporter::VulnerabilityReporter;
 use vulnerabilities::{Vulnerability, VulnerabilitySeverity};
@@ -53,7 +56,9 @@ use abi_scanner::ABIScanner;
 use professional_reporter::{ProfessionalReporter, AuditInfo};
 use sarif::SarifReport;
 
-/// Minimum severity level filter
+/// Minimum severity threshold for filtering scan results.
+/// Used with `--min-severity` CLI flag to suppress lower-priority findings.
+/// Ordered from most to least severe: Critical > High > Medium > Low > Info.
 #[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq, PartialOrd, Ord)]
 enum MinSeverity {
     Critical,
@@ -64,6 +69,8 @@ enum MinSeverity {
 }
 
 impl MinSeverity {
+    /// Returns true if the given vulnerability severity meets or exceeds this threshold.
+    /// For example, MinSeverity::High matches Critical and High but not Medium/Low/Info.
     fn matches(&self, severity: &VulnerabilitySeverity) -> bool {
         match (self, severity) {
             (MinSeverity::Critical, VulnerabilitySeverity::Critical) => true,
@@ -81,11 +88,11 @@ impl MinSeverity {
 
 #[derive(Parser)]
 #[command(name = "solidity-scanner")]
-#[command(version = "0.5.0")]
+#[command(version = "0.6.0")]
 #[command(author = "41Swara Security Team")]
 #[command(about = "High-performance smart contract vulnerability scanner - Security Researcher Edition")]
 #[command(long_about = r#"
-41Swara Smart Contract Security Scanner v0.5.0 - Security Researcher Edition
+41Swara Smart Contract Security Scanner v0.6.0 - Security Researcher Edition
 
 Production-grade scanner for Ethereum Foundation and Base chain security researchers.
 Features AST-based analysis, DeFi-specific detectors, CWE/SWC mapping, Slither/Foundry integration,
@@ -102,7 +109,7 @@ FEATURES:
   - L2/Base chain specific patterns
   - Modern Solidity 0.8.20+ support (PUSH0, transient storage)
 
-ADVANCED ANALYSIS (v0.5.0 - ENABLED BY DEFAULT):
+ADVANCED ANALYSIS (v0.6.0 - ENABLED BY DEFAULT):
   - Logic vulnerability detection (business logic bugs)
   - Reachability analysis (filters unreachable code paths)
   - Dependency/import analysis (known CVEs in dependencies)
@@ -279,7 +286,7 @@ struct Args {
     cache_dir: Option<PathBuf>,
 
     // ============================================================================
-    // NEW CLI OPTIONS (v0.5.0 - Security Researcher Edition)
+    // NEW CLI OPTIONS (v0.6.0 - Security Researcher Edition)
     // ============================================================================
 
     /// Only show findings above confidence percentage (0-100)
@@ -319,7 +326,7 @@ struct Args {
     version_full: bool,
 
     // ============================================================================
-    // ADVANCED ANALYSIS OPTIONS (v0.5.0)
+    // ADVANCED ANALYSIS OPTIONS (v0.6.0)
     // All features are ENABLED by default for maximum accuracy
     // ============================================================================
 
@@ -394,7 +401,7 @@ fn main() {
 
     // Print scanner header (unless quiet mode)
     if !args.quiet && args.format != "json" && args.format != "sarif" {
-        println!("{}", "41Swara Smart Contract Scanner v0.5.0".bright_blue().bold());
+        println!("{}", "41Swara Smart Contract Scanner v0.6.0".bright_blue().bold());
         println!("{}", "Security Researcher Edition".bright_cyan());
         println!("{}", "High-performance security analysis for Ethereum & Base".bright_blue());
         println!("{}", "=".repeat(55).bright_blue());
@@ -459,6 +466,59 @@ fn create_scanner(args: &Args) -> ContractScanner {
     ContractScanner::with_config(args.verbose, config)
 }
 
+/// Generate an auto-save markdown report from collected scan results.
+/// If `--output` is specified, use that path. Otherwise, auto-generate a filename
+/// based on the scan target name and current timestamp.
+/// Returns the path where the report was saved, or None if saving was skipped/failed.
+fn save_markdown_report(
+    reporter: &VulnerabilityReporter,
+    target_path: &PathBuf,
+    output_override: &Option<PathBuf>,
+    quiet: bool,
+) -> Option<PathBuf> {
+    let report_content = reporter.generate_markdown_report();
+
+    // Determine output path
+    let output_path = if let Some(ref path) = output_override {
+        path.clone()
+    } else {
+        // Auto-generate filename: 41swara_report_<name>_<timestamp>.md
+        let target_name = target_path.file_stem()
+            .or_else(|| target_path.file_name())
+            .and_then(|n| n.to_str())
+            .unwrap_or("scan");
+        // Sanitize: replace non-alphanumeric characters
+        let clean_name: String = target_name.chars()
+            .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+            .collect();
+        let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+        PathBuf::from(format!("41swara_report_{}_{}.md", clean_name, timestamp))
+    };
+
+    // Write the report
+    match std::fs::write(&output_path, &report_content) {
+        Ok(()) => {
+            if !quiet {
+                eprintln!("\n{} Report saved to: {}",
+                    "📄".green(),
+                    output_path.display().to_string().bright_white().bold()
+                );
+            }
+            Some(output_path)
+        }
+        Err(e) => {
+            eprintln!("{} Failed to save report to {}: {}",
+                "Error:".red().bold(),
+                output_path.display(),
+                e
+            );
+            None
+        }
+    }
+}
+
+/// Process a single file (either .sol or .json ABI).
+/// Returns an exit code: 0 = clean, 1 = critical/high, 2 = medium, 3 = low/info, 10 = error.
 fn process_file(args: &Args, path: &PathBuf) -> i32 {
     let extension = path.extension().and_then(|e| e.to_str());
 
@@ -481,14 +541,19 @@ fn process_file(args: &Args, path: &PathBuf) -> i32 {
                     // Apply severity filter
                     vulnerabilities.retain(|v| args.min_severity.matches(&v.severity));
 
+                    // Build a reporter for both terminal output and report saving
+                    let mut reporter = VulnerabilityReporter::new(&args.format);
+                    reporter.add_file_results(path, vulnerabilities.clone());
+
                     // Output results based on format
                     if args.format == "json" || args.format == "sarif" {
                         scan_file_structured_format(&scanner, path, args);
                     } else {
-                        let mut reporter = VulnerabilityReporter::new(&args.format);
-                        reporter.add_file_results(path, vulnerabilities.clone());
                         reporter.print_summary();
                     }
+
+                    // Auto-save markdown report
+                    save_markdown_report(&reporter, path, &args.output, args.quiet);
 
                     // Calculate exit code
                     if let Some(ref fail_severity) = args.fail_on {
@@ -739,6 +804,9 @@ fn perform_quick_scan(scanner: &ContractScanner, dir: &PathBuf, args: &Args) {
     println!("{}", "━".repeat(60).blue());
 }
 
+/// Process a directory of Solidity files using parallel scanning with rayon.
+/// Supports git-diff mode, watch mode, project analysis, audit reports, and normal scanning.
+/// Returns exit code based on the highest severity finding discovered.
 fn process_directory(args: &Args, dir: &PathBuf) -> i32 {
     if !args.quiet {
         println!("\n{} {}", "Scanning directory:".green(), dir.display());
@@ -832,10 +900,21 @@ fn process_directory(args: &Args, dir: &PathBuf) -> i32 {
     let results = all_results.lock().unwrap();
     let total_vulns: usize = results.iter().map(|(_, v)| v.len()).sum();
 
-    // Generate output
+    // Build a reporter with all results (used for both terminal output and markdown save)
+    let mut reporter = VulnerabilityReporter::new("text");
+    for (path, vulns) in results.iter() {
+        if args.format != "text" {
+            // For non-text formats, add results silently (don't print text output)
+            reporter.add_file_results_silent(path, vulns.clone());
+        } else {
+            reporter.add_file_results(path, vulns.clone());
+        }
+    }
+
+    // Generate terminal output
     if args.format == "json" {
         let json_output = serde_json::json!({
-            "version": "0.5.0",
+            "version": "0.6.0",
             "files_scanned": sol_files.len(),
             "total_vulnerabilities": total_vulns,
             "min_severity_filter": format!("{:?}", args.min_severity),
@@ -853,15 +932,15 @@ fn process_directory(args: &Args, dir: &PathBuf) -> i32 {
             .iter()
             .map(|(path, vulns)| (path.clone(), vulns.clone()))
             .collect();
-        let sarif_report = SarifReport::new(sarif_results, "0.5.0");
+        let sarif_report = SarifReport::new(sarif_results, "0.6.0");
         println!("{}", serde_json::to_string_pretty(&sarif_report).unwrap());
     } else {
-        // Text output
-        let mut reporter = VulnerabilityReporter::new("text");
-        for (path, vulns) in results.iter() {
-            reporter.add_file_results(path, vulns.clone());
-        }
         reporter.print_summary();
+    }
+
+    // Auto-save markdown report to file
+    if !args.watch {
+        save_markdown_report(&reporter, dir, &args.output, args.quiet);
     }
 
     // Determine exit code based on severity or --fail-on override
@@ -907,6 +986,7 @@ fn severity_to_exit_code(severity: &VulnerabilitySeverity) -> i32 {
     }
 }
 
+/// Run cross-file project-wide analysis for inter-contract vulnerabilities.
 fn run_project_analysis(dir: &PathBuf, args: &Args) -> i32 {
     use crate::project_scanner::ProjectScanner;
 
@@ -924,6 +1004,7 @@ fn run_project_analysis(dir: &PathBuf, args: &Args) -> i32 {
 }
 
 
+/// Output scan results in a structured format (JSON or SARIF).
 fn scan_file_structured_format(scanner: &ContractScanner, path: &PathBuf, args: &Args) {
     if !args.quiet {
         println!("\n{} {}", "Scanning:".green(), path.display());
@@ -936,7 +1017,7 @@ fn scan_file_structured_format(scanner: &ContractScanner, path: &PathBuf, args: 
 
             if args.format == "json" {
                 let json_output = serde_json::json!({
-                    "version": "0.5.0",
+                    "version": "0.6.0",
                     "files_scanned": 1,
                     "total_vulnerabilities": vulnerabilities.len(),
                     "min_severity_filter": format!("{:?}", args.min_severity),
@@ -948,7 +1029,7 @@ fn scan_file_structured_format(scanner: &ContractScanner, path: &PathBuf, args: 
                 println!("{}", serde_json::to_string_pretty(&json_output).unwrap());
             } else if args.format == "sarif" {
                 let sarif_results = vec![(path.clone(), vulnerabilities)];
-                let sarif_report = SarifReport::new(sarif_results, "0.5.0");
+                let sarif_report = SarifReport::new(sarif_results, "0.6.0");
                 println!("{}", serde_json::to_string_pretty(&sarif_report).unwrap());
             }
         }
@@ -959,6 +1040,7 @@ fn scan_file_structured_format(scanner: &ContractScanner, path: &PathBuf, args: 
     }
 }
 
+/// Generate a clean markdown-style report for a single file.
 fn scan_file_clean_report(scanner: &ContractScanner, reporter: &VulnerabilityReporter, path: &PathBuf) {
     match scanner.scan_file(path) {
         Ok(vulnerabilities) => {
@@ -971,6 +1053,7 @@ fn scan_file_clean_report(scanner: &ContractScanner, reporter: &VulnerabilityRep
     }
 }
 
+/// Generate a professional security audit report for a single file with auditor metadata.
 fn scan_file_professional_audit(path: &PathBuf, args: &Args) {
     use chrono::Utc;
 
@@ -1005,6 +1088,7 @@ fn scan_file_professional_audit(path: &PathBuf, args: &Args) {
     }
 }
 
+/// Generate a professional audit report scanning all .sol files in a directory.
 fn scan_directory_professional_audit(dir: &PathBuf, args: &Args) {
     use chrono::Utc;
 
@@ -1065,6 +1149,7 @@ fn scan_directory_professional_audit(dir: &PathBuf, args: &Args) {
     println!("{}", report);
 }
 
+/// Generate a combined clean markdown report for all .sol files in a directory.
 fn scan_directory_clean_report(scanner: &ContractScanner, reporter: &VulnerabilityReporter, dir: &PathBuf) {
     use std::collections::HashMap;
 
@@ -1110,6 +1195,7 @@ fn scan_directory_clean_report(scanner: &ContractScanner, reporter: &Vulnerabili
     }
 }
 
+/// Parse and scan an ABI JSON file for interface-level security issues.
 fn scan_abi_file(path: &PathBuf, args: &Args) {
     println!("\n{} {}", "Scanning ABI:".green(), path.display());
 
@@ -1128,7 +1214,7 @@ fn scan_abi_file(path: &PathBuf, args: &Args) {
                         println!("{}", serde_json::to_string_pretty(&vulnerabilities).unwrap());
                     } else if args.format == "sarif" {
                         let sarif_results = vec![(path.clone(), vulnerabilities)];
-                        let sarif_report = SarifReport::new(sarif_results, "0.5.0");
+                        let sarif_report = SarifReport::new(sarif_results, "0.6.0");
                         println!("{}", serde_json::to_string_pretty(&sarif_report).unwrap());
                     } else {
                         print_abi_vulnerabilities(&vulnerabilities, path);
@@ -1147,6 +1233,7 @@ fn scan_abi_file(path: &PathBuf, args: &Args) {
     }
 }
 
+/// Pretty-print ABI analysis results grouped by vulnerability category.
 fn print_abi_vulnerabilities(vulnerabilities: &[Vulnerability], path: &PathBuf) {
     println!("\n{} ABI ANALYSIS: {}", "Results".bright_blue().bold(), path.display());
     println!("{}", "=".repeat(70).bright_blue());
@@ -1182,8 +1269,9 @@ fn print_abi_vulnerabilities(vulnerabilities: &[Vulnerability], path: &PathBuf) 
     println!("Total issues: {}", vulnerabilities.len());
 }
 
+/// Print comprehensive usage examples for all scanner features.
 fn show_examples() {
-    println!("{}", "41Swara Smart Contract Scanner v0.5.0 - Usage Examples".bright_blue().bold());
+    println!("{}", "41Swara Smart Contract Scanner v0.6.0 - Usage Examples".bright_blue().bold());
     println!("{}", "Security Researcher Edition".bright_cyan());
     println!("{}", "=".repeat(60).bright_blue());
 
@@ -1250,11 +1338,12 @@ fn show_examples() {
     println!("  {} Scanner error", "10".red());
 }
 
+/// Print detailed version info including build target, features, and SWC coverage.
 fn print_version_full() {
     println!("{}", "41Swara Smart Contract Scanner".bright_blue().bold());
     println!("{}", "Security Researcher Edition".bright_cyan());
     println!();
-    println!("Version:       {}", "0.5.0".bright_white().bold());
+    println!("Version:       {}", "0.6.0".bright_white().bold());
     println!("Build Target:  {}", std::env::consts::ARCH);
     println!("OS:            {}", std::env::consts::OS);
     println!("Rust Version:  {}", env!("CARGO_PKG_RUST_VERSION", "1.70+"));

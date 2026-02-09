@@ -3,6 +3,20 @@
 //! Detects business logic vulnerabilities that static pattern matching typically misses.
 //! This module uses semantic analysis to identify complex logic bugs, state machine violations,
 //! and protocol-specific vulnerabilities.
+//!
+//! Unlike regex-based rule matching (which scans line-by-line for known patterns), this module
+//! first parses the contract into a structured representation (functions, state variables, state
+//! machines) and then reasons about cross-function relationships, invariant consistency, and
+//! protocol-level correctness.
+//!
+//! ## Analysis Pipeline
+//! 1. **Structural extraction** -- functions, state variables, and state machine are parsed.
+//! 2. **Ten analysis passes** run over the extracted structures (state transitions, invariants,
+//!    logic bypass, inconsistent updates, missing conditions, authorization flow, race conditions,
+//!    asymmetric behavior, unreachable code, and protocol-specific checks).
+//! 3. Results are returned as [`Vulnerability`] items to the caller (typically `scanner.rs`),
+//!    which may further filter them through `false_positive_filter.rs` and
+//!    `reachability_analyzer.rs`.
 
 #![allow(dead_code)]
 
@@ -10,130 +24,196 @@ use std::collections::{HashMap, HashSet};
 use regex::Regex;
 use crate::vulnerabilities::{Vulnerability, VulnerabilitySeverity, VulnerabilityCategory};
 
-/// Logic vulnerability types that go beyond pattern matching
+/// Classification of logic vulnerability types that go beyond simple pattern matching.
+///
+/// Each variant maps to a distinct class of semantic bug that requires understanding
+/// the contract's structure, not just individual lines of code.
 #[derive(Debug, Clone, PartialEq)]
 pub enum LogicVulnType {
+    /// State machine transition without validating the current state first.
     StateTransitionViolation,
+    /// Balance/supply or other domain invariant broken across functions.
     InvariantViolation,
+    /// Access-control or flow bypass (e.g., asymmetric modifiers on paired operations).
     BusinessLogicBypass,
+    /// A state variable is written with validation in some functions but without in others.
     InconsistentStateUpdate,
+    /// Division without zero-check, array access without bounds-check, etc.
     MissingConditionCheck,
+    /// Admin function can silently break a user-facing function's assumptions.
     ImproperAuthorizationFlow,
+    /// approve() race condition, or state reads after external calls.
     RaceConditionWindow,
+    /// Deadline/expiry referenced without timestamp validation.
     IncompleteValidation,
+    /// Paired operations (deposit/withdraw) have mismatched validation or events.
     AsymmetricBehavior,
+    /// Code that can never execute (after top-level return/revert, impossible conditions).
     UnreachableCode,
 }
 
-/// Function representation for semantic analysis
+/// Parsed representation of a single Solidity function, used for semantic analysis.
+///
+/// Extracted by [`LogicAnalyzer::extract_functions`] from the raw source text.
+/// Stores enough information to reason about visibility, access control, state
+/// interaction, and external-call patterns without re-parsing the source.
 #[derive(Debug, Clone)]
 pub struct FunctionInfo {
+    /// The function's identifier (e.g., `deposit`, `withdraw`).
     pub name: String,
+    /// Solidity visibility: `external`, `public`, `internal`, or `private`.
     pub visibility: String,
+    /// Custom modifiers applied to the function (excludes visibility/mutability keywords).
     pub modifiers: Vec<String>,
-    pub parameters: Vec<(String, String)>, // (type, name)
+    /// Parameter list as `(type, name)` pairs.
+    pub parameters: Vec<(String, String)>,
+    /// Return types declared in the `returns (...)` clause.
     pub returns: Vec<String>,
+    /// State variable names that appear to be read inside the function body.
     pub state_reads: Vec<String>,
+    /// State variable names that appear to be written (assigned) inside the function body.
     pub state_writes: Vec<String>,
+    /// Targets of external calls (`.call`, `.delegatecall`, `.transfer`, `.send`).
     pub external_calls: Vec<String>,
+    /// 1-based line number where the function signature begins.
     pub line_start: usize,
+    /// 1-based line number where the function's closing brace is.
     pub line_end: usize,
+    /// Full text of the function body (from opening `{` to closing `}`).
     pub body: String,
 }
 
-/// State variable representation
+/// Parsed representation of a contract-level state variable.
+///
+/// Extracted by [`LogicAnalyzer::extract_state_variables`]. Used to identify
+/// balance/supply invariant pairs and state-machine variables.
 #[derive(Debug, Clone)]
 pub struct StateVariable {
+    /// Variable identifier.
     pub name: String,
+    /// Solidity type (e.g., `uint256`, `mapping(...)`, `address`).
     pub var_type: String,
+    /// Visibility: `public`, `private`, or `internal` (default).
     pub visibility: String,
+    /// Whether the variable is declared `constant`.
     pub is_constant: bool,
+    /// Whether the variable is declared `immutable`.
     pub is_immutable: bool,
+    /// 1-based source line where the variable is declared.
     pub line: usize,
 }
 
-/// Contract state machine representation
+/// Inferred state machine extracted from an enum-based state pattern.
+///
+/// Many contracts use an `enum State { Active, Paused, ... }` with a storage
+/// variable to implement a state machine. This struct captures the known states,
+/// the allowed transitions between them, and the name of the state variable.
 #[derive(Debug, Clone)]
 pub struct ContractStateMachine {
+    /// Set of known state names (enum members).
     pub states: HashSet<String>,
+    /// Adjacency list of state transitions: `from_state -> [to_state, ...]`.
     pub transitions: HashMap<String, Vec<String>>,
+    /// Name of the storage variable that holds the current state (if detected).
     pub current_state_var: Option<String>,
 }
 
+/// Top-level driver for business-logic vulnerability analysis.
+///
+/// Instantiated once per scan and invoked via [`LogicAnalyzer::analyze`].
+/// All detection logic is stateless -- no data is retained between calls.
 pub struct LogicAnalyzer {
+    /// When `true`, additional diagnostic output may be emitted (currently unused).
     verbose: bool,
 }
 
 impl LogicAnalyzer {
+    /// Create a new analyzer. Pass `verbose: true` for extra diagnostics.
     pub fn new(verbose: bool) -> Self {
         Self { verbose }
     }
 
-    /// Main entry point for logic vulnerability analysis
+    /// Main entry point for logic vulnerability analysis.
+    ///
+    /// Accepts the full Solidity source as `content`, parses it into structured
+    /// representations (functions, state variables, state machine), and runs ten
+    /// independent analysis passes. Returns all detected vulnerabilities.
     pub fn analyze(&self, content: &str) -> Vec<Vulnerability> {
         let mut vulnerabilities = Vec::new();
 
-        // Extract contract structure
+        // --- Phase 1: structural extraction ---
         let functions = self.extract_functions(content);
         let state_vars = self.extract_state_variables(content);
         let state_machine = self.detect_state_machine(content, &state_vars);
 
-        // 1. State Transition Analysis
+        // --- Phase 2: run each analysis pass ---
+
+        // 1. Verify state transitions check current state before modifying it
         vulnerabilities.extend(self.analyze_state_transitions(content, &functions, &state_machine));
 
-        // 2. Invariant Violation Detection
+        // 2. Detect balance/supply and deadline invariant violations
         vulnerabilities.extend(self.analyze_invariants(content, &functions, &state_vars));
 
-        // 3. Business Logic Bypass Detection
+        // 3. Find asymmetric access control on paired operations (deposit/withdraw, etc.)
         vulnerabilities.extend(self.detect_logic_bypass(content, &functions));
 
-        // 4. Inconsistent State Update Detection
+        // 4. Flag state variables written with validation in some paths but not others
         vulnerabilities.extend(self.detect_inconsistent_state_updates(content, &functions, &state_vars));
 
-        // 5. Missing Condition Check Detection
+        // 5. Check for division without zero-check and array access without bounds-check
         vulnerabilities.extend(self.detect_missing_conditions(content, &functions));
 
-        // 6. Authorization Flow Analysis
+        // 6. Find admin functions that silently break user-facing functions
         vulnerabilities.extend(self.analyze_authorization_flow(content, &functions));
 
-        // 7. Race Condition Window Detection
+        // 7. Detect approve race conditions and state reads after external calls
         vulnerabilities.extend(self.detect_race_condition_windows(content, &functions));
 
-        // 8. Asymmetric Behavior Detection (deposit vs withdraw, mint vs burn)
+        // 8. Compare paired operations (deposit/withdraw, mint/burn) for consistent validation and events
         vulnerabilities.extend(self.detect_asymmetric_behavior(content, &functions));
 
-        // 9. Unreachable/Dead Code Detection (beyond simple patterns)
+        // 9. Find impossible conditions and code after top-level return/revert
         vulnerabilities.extend(self.detect_unreachable_logic(content, &functions));
 
-        // 10. Protocol-Specific Logic Bugs
+        // 10. Protocol-specific checks: ERC4626 vaults, AMMs, lending, staking
         vulnerabilities.extend(self.detect_protocol_logic_bugs(content, &functions));
 
         vulnerabilities
     }
 
-    /// Extract function information from contract
+    /// Extract structured [`FunctionInfo`] records from the raw contract source.
+    ///
+    /// Scans each line for `function <name>(...) <modifiers> returns (...) {` and then
+    /// uses brace-counting to delimit the body. State reads/writes and external calls
+    /// are approximated with regexes over the body text.
     fn extract_functions(&self, content: &str) -> Vec<FunctionInfo> {
         let mut functions = Vec::new();
+
+        // Matches a Solidity function signature up to and including the opening brace.
         let func_pattern = Regex::new(
             r"function\s+(\w+)\s*\(([^)]*)\)\s*((?:external|public|internal|private|view|pure|payable|virtual|override|\s|,)*)\s*(?:returns\s*\(([^)]*)\))?\s*\{"
         ).unwrap();
 
+        // Captures individual modifier identifiers (ignoring their arguments).
         let modifier_pattern = Regex::new(r"(\w+)(?:\([^)]*\))?").unwrap();
+        // Heuristic for state reads: any lowercase identifier not followed by `=`.
         let state_read_pattern = Regex::new(r"\b([a-z_]\w*)\s*[^=]").unwrap();
-        // Match assignment (single =) but exclude comparison (==)
+        // Heuristic for state writes: identifier followed by `=` but NOT `==`.
         let state_write_pattern = Regex::new(r"\b([a-z_]\w*)\s*=[^=]").unwrap();
+        // Detects external call targets (address.call, .delegatecall, etc.).
         let external_call_pattern = Regex::new(r"(\w+)\.(?:call|delegatecall|staticcall|transfer|send)\(").unwrap();
 
         let lines: Vec<&str> = content.lines().collect();
 
         for (idx, line) in lines.iter().enumerate() {
             if let Some(caps) = func_pattern.captures(line) {
+                // Capture groups: (1) name, (2) params, (3) modifiers/visibility, (4) returns
                 let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
                 let params_str = caps.get(2).map_or("", |m| m.as_str());
                 let modifiers_str = caps.get(3).map_or("", |m| m.as_str());
                 let returns_str = caps.get(4).map_or("", |m| m.as_str());
 
-                // Parse visibility
+                // Determine visibility from the modifier string; defaults to `public` per Solidity spec
                 let visibility = if modifiers_str.contains("external") {
                     "external"
                 } else if modifiers_str.contains("public") {
@@ -146,7 +226,7 @@ impl LogicAnalyzer {
                     "public" // default
                 }.to_string();
 
-                // Parse modifiers
+                // Extract custom modifiers (strip out Solidity built-in keywords)
                 let modifiers: Vec<String> = modifier_pattern
                     .captures_iter(modifiers_str)
                     .filter_map(|c| c.get(1))
@@ -154,7 +234,7 @@ impl LogicAnalyzer {
                     .filter(|m| !["external", "public", "internal", "private", "view", "pure", "payable", "virtual", "override"].contains(&m.as_str()))
                     .collect();
 
-                // Parse parameters
+                // Parse parameter list into (type, name) pairs
                 let parameters: Vec<(String, String)> = params_str
                     .split(',')
                     .filter(|p| !p.trim().is_empty())
@@ -168,17 +248,17 @@ impl LogicAnalyzer {
                     })
                     .collect();
 
-                // Parse returns
+                // Parse return type list (only the type, not the optional name)
                 let returns: Vec<String> = returns_str
                     .split(',')
                     .filter(|r| !r.trim().is_empty())
                     .map(|r| r.trim().split_whitespace().next().unwrap_or("").to_string())
                     .collect();
 
-                // Find function body
+                // Use brace-counting to extract the full function body
                 let (body, line_end) = self.extract_function_body(&lines, idx);
 
-                // Extract state reads and writes from body
+                // Approximate state reads: deduplicated lowercase identifiers in the body
                 let state_reads: Vec<String> = state_read_pattern
                     .captures_iter(&body)
                     .filter_map(|c| c.get(1))
@@ -187,6 +267,7 @@ impl LogicAnalyzer {
                     .into_iter()
                     .collect();
 
+                // Approximate state writes: identifiers on the left side of `=` (excluding `==`)
                 let state_writes: Vec<String> = state_write_pattern
                     .captures_iter(&body)
                     .filter_map(|c| c.get(1))
@@ -195,6 +276,7 @@ impl LogicAnalyzer {
                     .into_iter()
                     .collect();
 
+                // Collect targets of low-level and high-level external calls
                 let external_calls: Vec<String> = external_call_pattern
                     .captures_iter(&body)
                     .filter_map(|c| c.get(1))
@@ -220,13 +302,17 @@ impl LogicAnalyzer {
         functions
     }
 
-    /// Extract function body between braces
+    /// Extract the full function body by counting braces from `start_idx`.
+    ///
+    /// Returns `(body_text, end_line)` where `end_line` is 1-based. The body includes
+    /// every line from the function signature through the matching closing `}`.
     fn extract_function_body(&self, lines: &[&str], start_idx: usize) -> (String, usize) {
         let mut brace_count = 0;
         let mut body = String::new();
         let mut started = false;
 
         for (i, line) in lines.iter().enumerate().skip(start_idx) {
+            // Count braces to track nesting depth
             for ch in line.chars() {
                 if ch == '{' {
                     brace_count += 1;
@@ -239,17 +325,24 @@ impl LogicAnalyzer {
             body.push_str(line);
             body.push('\n');
 
+            // When we return to brace depth 0 after opening, the function body is complete
             if started && brace_count == 0 {
                 return (body, i + 1);
             }
         }
 
+        // Fallback: unterminated function (EOF before closing brace)
         (body, lines.len())
     }
 
-    /// Extract state variables from contract
+    /// Extract contract-level state variable declarations from the source.
+    ///
+    /// Matches common Solidity types (`mapping`, `address`, `uint*`, `int*`, `bool`,
+    /// `bytes*`, `string`) at the start of a line. Captures visibility and
+    /// `constant`/`immutable` modifiers.
     fn extract_state_variables(&self, content: &str) -> Vec<StateVariable> {
         let mut vars = Vec::new();
+        // Pattern anchored to line start to avoid matching local variables inside functions.
         let var_pattern = Regex::new(
             r"^\s*(mapping\s*\([^)]+\)|address|uint\d*|int\d*|bool|bytes\d*|string|bytes)\s+(public|private|internal)?\s*(constant|immutable)?\s*(\w+)"
         ).unwrap();
@@ -275,7 +368,11 @@ impl LogicAnalyzer {
         vars
     }
 
-    /// Detect if contract uses a state machine pattern
+    /// Detect whether the contract uses an enum-based state machine pattern.
+    ///
+    /// Looks for `enum <...State...> { A, B, C }`, then identifies the storage
+    /// variable whose name contains "state" or "status", and finally infers
+    /// transitions from assignment patterns like `stateVar.From = ... .To`.
     fn detect_state_machine(&self, content: &str, state_vars: &[StateVariable]) -> ContractStateMachine {
         let mut machine = ContractStateMachine {
             states: HashSet::new(),
@@ -283,7 +380,7 @@ impl LogicAnalyzer {
             current_state_var: None,
         };
 
-        // Look for enum-based state machine
+        // Step 1: Find an enum whose name contains "state" (case-insensitive)
         let enum_pattern = Regex::new(r"enum\s+(\w*[Ss]tate\w*)\s*\{([^}]+)\}").unwrap();
         if let Some(caps) = enum_pattern.captures(content) {
             let states_str = caps.get(2).map_or("", |m| m.as_str());
@@ -292,7 +389,7 @@ impl LogicAnalyzer {
             }
         }
 
-        // Look for state variable
+        // Step 2: Find the storage variable that holds the current state
         for var in state_vars {
             if var.name.to_lowercase().contains("state") || var.name.to_lowercase().contains("status") {
                 machine.current_state_var = Some(var.name.clone());
@@ -300,7 +397,7 @@ impl LogicAnalyzer {
             }
         }
 
-        // Detect state transitions
+        // Step 3: Infer transitions from assignment patterns on the state variable
         if let Some(ref state_var) = machine.current_state_var {
             let transition_pattern = Regex::new(&format!(r"{}\.(\w+).*=.*\.(\w+)", regex::escape(state_var))).unwrap();
             for caps in transition_pattern.captures_iter(content) {
@@ -316,7 +413,12 @@ impl LogicAnalyzer {
         machine
     }
 
-    /// Analyze state transitions for violations
+    /// Analyze state transitions for violations.
+    ///
+    /// For every external/public function that writes to the state-machine variable,
+    /// checks whether the function first validates the *current* state via a
+    /// `require()` or `if` guard. Also flags "dead states" that have no outgoing
+    /// transitions, which could permanently lock the contract.
     fn analyze_state_transitions(
         &self,
         _content: &str,
@@ -325,6 +427,7 @@ impl LogicAnalyzer {
     ) -> Vec<Vulnerability> {
         let mut vulnerabilities = Vec::new();
 
+        // No state machine detected -- nothing to analyze
         if state_machine.current_state_var.is_none() {
             return vulnerabilities;
         }
@@ -332,7 +435,7 @@ impl LogicAnalyzer {
         let state_var = state_machine.current_state_var.as_ref().unwrap();
 
         for func in functions {
-            // Check if function modifies state without checking current state
+            // Flag: function writes the state variable without first reading/checking it
             if func.state_writes.iter().any(|w| w == state_var) {
                 let has_state_check = func.body.contains(&format!("require({}", state_var)) ||
                                       func.body.contains(&format!("if ({}", state_var)) ||
@@ -352,7 +455,7 @@ impl LogicAnalyzer {
             }
         }
 
-        // Check for missing state transitions
+        // Flag states with no outgoing transitions (potential permanent lock)
         for (from_state, to_states) in &state_machine.transitions {
             if to_states.is_empty() {
                 vulnerabilities.push(Vulnerability::new(
@@ -370,7 +473,16 @@ impl LogicAnalyzer {
         vulnerabilities
     }
 
-    /// Detect invariant violations
+    /// Detect invariant violations across the contract.
+    ///
+    /// Two sub-checks:
+    /// 1. **Balance/supply invariant** -- If a mint/burn/deposit/redeem function modifies
+    ///    a `balance*` variable without also updating `totalSupply`, the ERC20 invariant
+    ///    `sum(balances) == totalSupply` may be broken. Transfer functions are skipped
+    ///    because they are zero-sum.
+    /// 2. **Deadline/expiry invariant** -- If a public function references a deadline or
+    ///    expiry value without a `require(block.timestamp ...)` guard, expired actions
+    ///    may still execute.
     fn analyze_invariants(
         &self,
         content: &str,
@@ -379,24 +491,34 @@ impl LogicAnalyzer {
     ) -> Vec<Vulnerability> {
         let mut vulnerabilities = Vec::new();
 
-        // Track variables that should be synchronized
+        // Collect state variables likely involved in balance/supply tracking
         let balance_vars: Vec<&StateVariable> = state_vars.iter()
             .filter(|v| v.name.to_lowercase().contains("balance") ||
                        v.name.to_lowercase().contains("supply") ||
                        v.name.to_lowercase().contains("total"))
             .collect();
 
-        // Check for balance/supply invariant violations
+        // --- Sub-check 1: balance/supply invariant ---
+        // Only flag mint/burn-like functions (not transfers which are zero-sum)
         for func in functions {
-            // If function modifies one balance variable but not corresponding total
+            let name_lower = func.name.to_lowercase();
+            // Transfer functions are zero-sum: they debit one balance and credit another.
+            // Only supply-changing operations (mint/burn/deposit/redeem) can break the invariant.
+            let is_supply_changing = name_lower.contains("mint") || name_lower.contains("burn")
+                || name_lower.contains("deposit") || name_lower.contains("redeem");
+            if !is_supply_changing {
+                continue;
+            }
+
             for balance_var in &balance_vars {
                 if func.state_writes.contains(&balance_var.name) {
-                    // Check for corresponding invariant update
+                    // Check whether totalSupply (or equivalent) is also updated
                     let has_total_update = func.state_writes.iter()
                         .any(|w| w.to_lowercase().contains("total") || w.to_lowercase().contains("supply"));
 
+                    // Only report when modifying a "balance" var without touching a "total/supply" var,
+                    // and only for contracts that declare a totalSupply (i.e., likely ERC20)
                     if !has_total_update && balance_var.name.contains("balance") {
-                        // Check if it's an ERC20 pattern
                         let is_erc20 = content.contains("totalSupply") || content.contains("_totalSupply");
 
                         if is_erc20 {
@@ -415,9 +537,10 @@ impl LogicAnalyzer {
             }
         }
 
-        // Check for timestamp/deadline invariants
+        // --- Sub-check 2: deadline/expiry invariant ---
         for func in functions {
             if func.body.contains("deadline") || func.body.contains("expiry") {
+                // Look for a time-based guard: require(...block.timestamp...)
                 let has_time_check = func.body.contains("block.timestamp") ||
                                     func.body.contains("block.number");
                 let has_validation = func.body.contains("require(") && has_time_check;
@@ -568,25 +691,34 @@ impl LogicAnalyzer {
             }
         }
 
-        // Check for partial updates to related variables
+        // Check for partial updates to tightly-coupled variable pairs
+        // Only flag when: both vars exist as state vars, func writes one AND reads the other but doesn't update it
         let related_pairs = vec![
-            ("amount", "balance"),
-            ("price", "rate"),
             ("start", "end"),
             ("min", "max"),
         ];
 
         for func in functions {
+            // Skip view/pure, internal/private, and common safe function names
+            if func.visibility == "internal" || func.visibility == "private" {
+                continue;
+            }
+            let name_lower = func.name.to_lowercase();
+            if name_lower.contains("get") || name_lower.contains("view")
+                || name_lower.contains("fee") || name_lower.contains("collect") {
+                continue;
+            }
+
             for (var1, var2) in &related_pairs {
                 let writes_var1 = func.state_writes.iter().any(|w| w.to_lowercase().contains(var1));
                 let writes_var2 = func.state_writes.iter().any(|w| w.to_lowercase().contains(var2));
 
-                // If function writes one but not both, might be incomplete
+                // Only flag if one is written and the other is read but not written
                 if writes_var1 && !writes_var2 {
-                    // Check if the paired variable exists
                     let paired_exists = state_vars.iter().any(|v| v.name.to_lowercase().contains(var2));
+                    let reads_paired = func.body.to_lowercase().contains(var2);
 
-                    if paired_exists {
+                    if paired_exists && reads_paired {
                         vulnerabilities.push(Vulnerability::new(
                             VulnerabilitySeverity::Low,
                             VulnerabilityCategory::LogicError,
@@ -897,36 +1029,48 @@ impl LogicAnalyzer {
                 }
             }
 
-            // Check for code after return/revert
+            // Check for code after return/revert at function top-level only
             let lines: Vec<&str> = func.body.lines().collect();
-            let mut found_return = false;
-            let mut brace_depth = 0;
+            let mut brace_depth: i32 = 0;
 
             for (i, line) in lines.iter().enumerate() {
-                for ch in line.chars() {
+                let trimmed = line.trim();
+
+                // Track brace depth BEFORE checking
+                for ch in trimmed.chars() {
                     if ch == '{' { brace_depth += 1; }
                     if ch == '}' { brace_depth -= 1; }
                 }
 
-                if (line.contains("return") || line.contains("revert")) &&
-                   !line.contains("//") && brace_depth == 1 {
-                    found_return = true;
-                }
-
-                if found_return && brace_depth == 1 && i + 1 < lines.len() {
-                    let next_line = lines[i + 1].trim();
-                    if !next_line.is_empty() && !next_line.starts_with("}") && !next_line.starts_with("//") {
+                // Only flag return/revert at the function body level (depth 1)
+                // A return inside an if/else/for block (depth >= 2) is normal control flow
+                if brace_depth == 1
+                    && (trimmed.starts_with("return ") || trimmed.starts_with("return;")
+                        || trimmed.starts_with("revert ") || trimmed.starts_with("revert("))
+                    && !trimmed.starts_with("//")
+                {
+                    // Check if the very next non-empty, non-brace, non-comment line exists
+                    for j in (i + 1)..lines.len() {
+                        let next = lines[j].trim();
+                        if next.is_empty() || next.starts_with("//") || next.starts_with("*") {
+                            continue;
+                        }
+                        if next == "}" {
+                            break; // Function ends normally, no unreachable code
+                        }
+                        // Found actual code after a top-level return
                         vulnerabilities.push(Vulnerability::new(
                             VulnerabilitySeverity::Low,
                             VulnerabilityCategory::UnusedCode,
                             format!("Unreachable Code in {}", func.name),
                             "Code exists after return/revert statement and will never execute".to_string(),
-                            func.line_start + i + 1,
-                            next_line.to_string(),
+                            func.line_start + j,
+                            next.to_string(),
                             "Remove unreachable code or fix control flow".to_string(),
                         ));
                         break;
                     }
+                    break; // Only report once per function
                 }
             }
         }
@@ -965,6 +1109,7 @@ impl LogicAnalyzer {
         vulnerabilities
     }
 
+    /// Detect ERC-4626 vault logic bugs (first depositor inflation, share/asset rounding).
     fn detect_erc4626_logic_bugs(&self, content: &str, functions: &[FunctionInfo]) -> Vec<Vulnerability> {
         let mut vulnerabilities = Vec::new();
 
@@ -1013,6 +1158,7 @@ impl LogicAnalyzer {
         vulnerabilities
     }
 
+    /// Detect AMM-specific logic bugs (constant product invariant, reserve sync, K-value manipulation).
     fn detect_amm_logic_bugs(&self, content: &str, functions: &[FunctionInfo]) -> Vec<Vulnerability> {
         let mut vulnerabilities = Vec::new();
 
@@ -1057,6 +1203,7 @@ impl LogicAnalyzer {
         vulnerabilities
     }
 
+    /// Detect lending protocol logic bugs (collateral factor, liquidation threshold, interest rate).
     fn detect_lending_logic_bugs(&self, content: &str, functions: &[FunctionInfo]) -> Vec<Vulnerability> {
         let mut vulnerabilities = Vec::new();
 
@@ -1103,6 +1250,7 @@ impl LogicAnalyzer {
         vulnerabilities
     }
 
+    /// Detect staking contract logic bugs (reward calculation, unbonding period, total supply sync).
     fn detect_staking_logic_bugs(&self, content: &str, functions: &[FunctionInfo]) -> Vec<Vulnerability> {
         let mut vulnerabilities = Vec::new();
 
