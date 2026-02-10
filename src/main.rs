@@ -325,6 +325,10 @@ struct Args {
     #[arg(long)]
     version_full: bool,
 
+    /// Show what the tool does - overview for new users
+    #[arg(long)]
+    about: bool,
+
     // ============================================================================
     // ADVANCED ANALYSIS OPTIONS (v0.6.0)
     // All features are ENABLED by default for maximum accuracy
@@ -379,6 +383,12 @@ fn main() {
     // Handle --version-full flag
     if args.version_full {
         print_version_full();
+        return;
+    }
+
+    // Handle --about flag
+    if args.about {
+        print_about();
         return;
     }
 
@@ -1338,6 +1348,81 @@ fn show_examples() {
     println!("  {} Scanner error", "10".red());
 }
 
+/// Print a user-friendly overview of what the tool does, its capabilities, and how to get started.
+fn print_about() {
+    println!();
+    println!("{}", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━".bright_blue());
+    println!("{}", "  41Swara Smart Contract Security Scanner v0.6.0".bright_blue().bold());
+    println!("{}", "  Security Researcher Edition".bright_cyan());
+    println!("{}", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━".bright_blue());
+    println!();
+    println!("{}", "WHAT IS 41SWARA?".bright_green().bold());
+    println!("  A production-grade static analysis tool that scans Solidity smart contracts");
+    println!("  for security vulnerabilities. Built in Rust for speed and accuracy.");
+    println!();
+    println!("  - Fully offline, zero API keys, 100% local analysis");
+    println!("  - Designed for bug bounty hunters, security auditors, and researchers");
+    println!("  - Detects real-world exploit patterns from $3.1B+ in DeFi losses");
+    println!();
+    println!("{}", "WHAT IT DETECTS".bright_green().bold());
+    println!("  {} 150+ vulnerability patterns with CWE/SWC ID mapping", "->".bright_yellow());
+    println!("  {} Reentrancy, access control, oracle manipulation, flash loans", "->".bright_yellow());
+    println!("  {} DeFi-specific: AMM, lending, staking, bridge, MEV patterns", "->".bright_yellow());
+    println!("  {} L2/cross-chain: sequencer downtime, PUSH0 compat, gas oracle", "->".bright_yellow());
+    println!("  {} Modern Solidity 0.8.20+: transient storage, EIP-4844, permits", "->".bright_yellow());
+    println!("  {} Real exploits: ERC-777 reentrancy, ERC-4626 inflation, Permit2", "->".bright_yellow());
+    println!("  {} Business logic bugs, state machine issues, race conditions", "->".bright_yellow());
+    println!("  {} STRIDE threat model auto-generation per contract", "->".bright_yellow());
+    println!();
+    println!("{}", "HOW IT WORKS".bright_green().bold());
+    println!("  1. Parses your Solidity source code");
+    println!("  2. Runs 150+ regex rules + advanced analyzers (DeFi, logic, reachability)");
+    println!("  3. Filters false positives (90%+ reduction) using context-aware analysis");
+    println!("  4. Reports findings with severity, confidence %, and fix recommendations");
+    println!();
+    println!("{}", "QUICK START".bright_green().bold());
+    println!("  {} {}        Scan current directory", "$".bright_white(), "41swara".bright_cyan().bold());
+    println!("  {} {} {}  Scan a contract", "$".bright_white(), "41swara".bright_cyan().bold(), "MyContract.sol".bright_white());
+    println!("  {} {} {}    Scan all contracts in a folder", "$".bright_white(), "41swara".bright_cyan().bold(), "contracts/".bright_white());
+    println!();
+    println!("{}", "KEY FLAGS".bright_green().bold());
+    println!("  {}           Only show critical/high findings", "--min-severity high".bright_white());
+    println!("  {}  Only high-confidence results", "--confidence-threshold 70".bright_white());
+    println!("  {}         DeFi protocol analysis (AMM, oracle, MEV)", "--defi-analysis".bright_white());
+    println!("  {}     ERC-4626, Permit2, LayerZero, L2 detectors", "--advanced-detectors".bright_white());
+    println!("  {}          EIP-specific vulnerability checks", "--eip-analysis".bright_white());
+    println!("  {}        Enhanced false positive filtering", "--strict-filter".bright_white());
+    println!("  {}              Fast mode (regex only, no advanced analysis)", "--fast".bright_white());
+    println!("  {}          Verbose output with analysis details", "-v".bright_white());
+    println!("  {}         JSON output for scripting/CI", "-f json".bright_white());
+    println!("  {}        SARIF output for GitHub Code Scanning", "-f sarif".bright_white());
+    println!();
+    println!("{}", "OUTPUT FORMATS".bright_green().bold());
+    println!("  {} Text     Colored terminal output with severity indicators", "->".bright_yellow());
+    println!("  {} JSON     Structured data for CI/CD pipelines and scripting", "->".bright_yellow());
+    println!("  {} SARIF    GitHub Code Scanning integration with CWE IDs", "->".bright_yellow());
+    println!("  {} Report   Auto-saved markdown report for every scan", "->".bright_yellow());
+    println!();
+    println!("{}", "SEVERITY LEVELS".bright_green().bold());
+    println!("  {}  CRITICAL  Immediate fund loss, contract compromise", "!!".bright_red().bold());
+    println!("  {}   HIGH      Significant risk, likely exploitable", "!".bright_red());
+    println!("  {}   MEDIUM    Conditional risk, specific circumstances", "*".bright_yellow());
+    println!("  {}   LOW       Best practice violation, minor risk", "-".bright_white());
+    println!();
+    println!("{}", "LEARN MORE".bright_green().bold());
+    println!("  {} {}    See all CLI flags", "$".bright_white(), "41swara --help".bright_cyan());
+    println!("  {} {}    See usage examples", "$".bright_white(), "41swara --examples".bright_cyan());
+    println!("  {} {}    Build and feature info", "$".bright_white(), "41swara --version-full".bright_cyan());
+    println!();
+    println!("  Homepage:  {}", "https://github.com/41swara/smart-contract-scanner".bright_white());
+    println!("  License:   MIT | Built by 41Swara Security Team");
+    println!();
+    println!("{}", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━".bright_blue());
+    println!("  {}", "Detect vulnerabilities before attackers do.".bright_cyan().italic());
+    println!("{}", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━".bright_blue());
+    println!();
+}
+
 /// Print detailed version info including build target, features, and SWC coverage.
 fn print_version_full() {
     println!("{}", "41Swara Smart Contract Scanner".bright_blue().bold());
@@ -1356,11 +1441,5 @@ fn print_version_full() {
     println!("  - L2/Base chain patterns");
     println!("  - SARIF 2.1.0 output for CI/CD");
     println!("  - Parallel scanning with rayon");
-    println!();
-    println!("{}", "SWC Coverage:".bright_yellow().bold());
-    println!("  SWC-100 to SWC-136 (Core Registry)");
-    println!("  41S-001 to 41S-050 (DeFi-specific)");
-    println!();
-    println!("Homepage: {}", "https://github.com/41swara/smart-contract-scanner");
     println!("License:  MIT");
 }
