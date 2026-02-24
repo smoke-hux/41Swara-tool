@@ -1,4 +1,4 @@
-//! 41Swara Smart Contract Security Scanner v0.6.0 - Security Researcher Edition
+//! 41Swara Smart Contract Security Scanner v0.7.0 - Security Researcher Edition
 //!
 //! High-performance vulnerability scanner for Ethereum Foundation and blockchain security researchers.
 //! Features parallel scanning, severity filtering, CWE/SWC mapping, and multiple output formats.
@@ -88,11 +88,11 @@ impl MinSeverity {
 
 #[derive(Parser)]
 #[command(name = "solidity-scanner")]
-#[command(version = "0.6.0")]
+#[command(version = "0.7.0")]
 #[command(author = "41Swara Security Team")]
 #[command(about = "High-performance smart contract vulnerability scanner - Security Researcher Edition")]
 #[command(long_about = r#"
-41Swara Smart Contract Security Scanner v0.6.0 - Security Researcher Edition
+41Swara Smart Contract Security Scanner v0.7.0 - Security Researcher Edition
 
 Production-grade scanner for Ethereum Foundation and Base chain security researchers.
 Features AST-based analysis, DeFi-specific detectors, CWE/SWC mapping, Slither/Foundry integration,
@@ -109,7 +109,7 @@ FEATURES:
   - L2/Base chain specific patterns
   - Modern Solidity 0.8.20+ support (PUSH0, transient storage)
 
-ADVANCED ANALYSIS (v0.6.0 - ENABLED BY DEFAULT):
+ADVANCED ANALYSIS (v0.7.0 - ENABLED BY DEFAULT):
   - Logic vulnerability detection (business logic bugs)
   - Reachability analysis (filters unreachable code paths)
   - Dependency/import analysis (known CVEs in dependencies)
@@ -286,7 +286,7 @@ struct Args {
     cache_dir: Option<PathBuf>,
 
     // ============================================================================
-    // NEW CLI OPTIONS (v0.6.0 - Security Researcher Edition)
+    // NEW CLI OPTIONS (v0.7.0 - Security Researcher Edition)
     // ============================================================================
 
     /// Only show findings above confidence percentage (0-100)
@@ -330,7 +330,7 @@ struct Args {
     about: bool,
 
     // ============================================================================
-    // ADVANCED ANALYSIS OPTIONS (v0.6.0)
+    // ADVANCED ANALYSIS OPTIONS (v0.7.0)
     // All features are ENABLED by default for maximum accuracy
     // ============================================================================
 
@@ -411,7 +411,7 @@ fn main() {
 
     // Print scanner header (unless quiet mode)
     if !args.quiet && args.format != "json" && args.format != "sarif" {
-        println!("{}", "41Swara Smart Contract Scanner v0.6.0".bright_blue().bold());
+        println!("{}", "41Swara Smart Contract Scanner v0.7.0".bright_blue().bold());
         println!("{}", "Security Researcher Edition".bright_cyan());
         println!("{}", "High-performance security analysis for Ethereum & Base".bright_blue());
         println!("{}", "=".repeat(55).bright_blue());
@@ -924,7 +924,7 @@ fn process_directory(args: &Args, dir: &PathBuf) -> i32 {
     // Generate terminal output
     if args.format == "json" {
         let json_output = serde_json::json!({
-            "version": "0.6.0",
+            "version": "0.7.0",
             "files_scanned": sol_files.len(),
             "total_vulnerabilities": total_vulns,
             "min_severity_filter": format!("{:?}", args.min_severity),
@@ -942,7 +942,7 @@ fn process_directory(args: &Args, dir: &PathBuf) -> i32 {
             .iter()
             .map(|(path, vulns)| (path.clone(), vulns.clone()))
             .collect();
-        let sarif_report = SarifReport::new(sarif_results, "0.6.0");
+        let sarif_report = SarifReport::new(sarif_results, "0.7.0");
         println!("{}", serde_json::to_string_pretty(&sarif_report).unwrap());
     } else {
         reporter.print_summary();
@@ -1027,7 +1027,7 @@ fn scan_file_structured_format(scanner: &ContractScanner, path: &PathBuf, args: 
 
             if args.format == "json" {
                 let json_output = serde_json::json!({
-                    "version": "0.6.0",
+                    "version": "0.7.0",
                     "files_scanned": 1,
                     "total_vulnerabilities": vulnerabilities.len(),
                     "min_severity_filter": format!("{:?}", args.min_severity),
@@ -1039,7 +1039,7 @@ fn scan_file_structured_format(scanner: &ContractScanner, path: &PathBuf, args: 
                 println!("{}", serde_json::to_string_pretty(&json_output).unwrap());
             } else if args.format == "sarif" {
                 let sarif_results = vec![(path.clone(), vulnerabilities)];
-                let sarif_report = SarifReport::new(sarif_results, "0.6.0");
+                let sarif_report = SarifReport::new(sarif_results, "0.7.0");
                 println!("{}", serde_json::to_string_pretty(&sarif_report).unwrap());
             }
         }
@@ -1224,7 +1224,7 @@ fn scan_abi_file(path: &PathBuf, args: &Args) {
                         println!("{}", serde_json::to_string_pretty(&vulnerabilities).unwrap());
                     } else if args.format == "sarif" {
                         let sarif_results = vec![(path.clone(), vulnerabilities)];
-                        let sarif_report = SarifReport::new(sarif_results, "0.6.0");
+                        let sarif_report = SarifReport::new(sarif_results, "0.7.0");
                         println!("{}", serde_json::to_string_pretty(&sarif_report).unwrap());
                     } else {
                         print_abi_vulnerabilities(&vulnerabilities, path);
@@ -1281,7 +1281,7 @@ fn print_abi_vulnerabilities(vulnerabilities: &[Vulnerability], path: &PathBuf) 
 
 /// Print comprehensive usage examples for all scanner features.
 fn show_examples() {
-    println!("{}", "41Swara Smart Contract Scanner v0.6.0 - Usage Examples".bright_blue().bold());
+    println!("{}", "41Swara Smart Contract Scanner v0.7.0 - Usage Examples".bright_blue().bold());
     println!("{}", "Security Researcher Edition".bright_cyan());
     println!("{}", "=".repeat(60).bright_blue());
 
@@ -1352,7 +1352,7 @@ fn show_examples() {
 fn print_about() {
     println!();
     println!("{}", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━".bright_blue());
-    println!("{}", "  41Swara Smart Contract Security Scanner v0.6.0".bright_blue().bold());
+    println!("{}", "  41Swara Smart Contract Security Scanner v0.7.0".bright_blue().bold());
     println!("{}", "  Security Researcher Edition".bright_cyan());
     println!("{}", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━".bright_blue());
     println!();
@@ -1425,7 +1425,7 @@ fn print_version_full() {
     println!("{}", "41Swara Smart Contract Scanner".bright_blue().bold());
     println!("{}", "Security Researcher Edition".bright_cyan());
     println!();
-    println!("Version:       {}", "0.6.0".bright_white().bold());
+    println!("Version:       {}", "0.7.0".bright_white().bold());
     println!("Build Target:  {}", std::env::consts::ARCH);
     println!("OS:            {}", std::env::consts::OS);
     println!("Rust Version:  {}", env!("CARGO_PKG_RUST_VERSION", "1.70+"));
