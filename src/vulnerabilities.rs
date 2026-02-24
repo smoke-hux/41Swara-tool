@@ -513,6 +513,44 @@ pub enum VulnerabilityCategory {
     UnsafeTransferGas,
     /// 41S-059: Double initialization risk in proxy pattern.
     DoubleInitialization,
+
+    // --- 2025-2026 Exploit Patterns (v0.7.0) ---
+    /// 41S-060: Multicall batch resets solvency flag (Abracadabra $14.7M).
+    MulticallStateReset,
+    /// 41S-061: totalSupply=0 without clearing cached balances (Yearn $9M).
+    InconsistentStateReset,
+    /// 41S-062: tx.origin==msg.sender broken post-Pectra EIP-7702.
+    EIP7702TxOriginBypass,
+    /// 41S-063: .transfer()/.send() no longer safe with TSTORE gas changes.
+    TransientStorageGasReentrancy,
+    /// 41S-064: View functions return stale state during reentrancy.
+    ReadOnlyReentrancy,
+    /// 41S-065: _msgSender() spoofable via multicall in ERC2771 (Thirdweb).
+    ERC2771MulticallSpoofing,
+    /// 41S-066: msg.value persists across delegatecall sub-calls.
+    MulticallMsgValueReuse,
+    /// 41S-067: Protocols assume transferFrom amount == received amount.
+    FeeOnTransferAssumption,
+    /// 41S-068: Admin sweep without timelock (zkSync $5M).
+    UnprotectedAdminSweep,
+    /// 41S-069: Cross-chain receive without source validation (Atlas $112M).
+    UnvalidatedCrossChainReceiver,
+    /// 41S-070: AVS slash without timelock (EigenLayer restaking).
+    AVSSlashingRisk,
+    /// 41S-071: Bit-shift overflow in liquidity math (Cetus $223M).
+    CLMMMathOverflow,
+    /// 41S-072: mulDown+divUp mismatch in same function (Balancer $128M).
+    InconsistentRounding,
+    /// 41S-073: balanceOf(address(this)) in share price without offset.
+    DonationAttackVector,
+    /// 41S-074: Swap/deposit without minOutput parameter.
+    MissingSlippageProtection,
+    /// 41S-075: User-supplied receiver callback before state update (GMX $42M).
+    ArbitraryReceiverCallback,
+    /// 41S-076: extcodesize/isContract unreliable post-EIP-7702.
+    IsContractPostPectra,
+    /// 41S-077: multicall with delegatecall without msg.value isolation.
+    UnsafeMulticallDelegatecall,
 }
 
 impl VulnerabilityCategory {
@@ -613,6 +651,26 @@ impl VulnerabilityCategory {
             VulnerabilityCategory::HardcodedGasAmount => Some(SwcId::new("41S-057", "Hardcoded Gas Amount", Some("CWE-1188"))),
             VulnerabilityCategory::UnsafeTransferGas => Some(SwcId::new("41S-058", "Unsafe Transfer Gas Limit", Some("CWE-1188"))),
             VulnerabilityCategory::DoubleInitialization => Some(SwcId::new("41S-059", "Double Initialization Risk", Some("CWE-665"))),
+
+            // 2025-2026 Exploit Patterns (v0.7.0)
+            VulnerabilityCategory::MulticallStateReset => Some(SwcId::new("41S-060", "Multicall State Reset", Some("CWE-841"))),
+            VulnerabilityCategory::InconsistentStateReset => Some(SwcId::new("41S-061", "Inconsistent State Reset", Some("CWE-665"))),
+            VulnerabilityCategory::EIP7702TxOriginBypass => Some(SwcId::new("41S-062", "EIP-7702 tx.origin Bypass", Some("CWE-477"))),
+            VulnerabilityCategory::TransientStorageGasReentrancy => Some(SwcId::new("41S-063", "Transient Storage Gas Reentrancy", Some("CWE-841"))),
+            VulnerabilityCategory::ReadOnlyReentrancy => Some(SwcId::new("41S-064", "Read-Only Reentrancy", Some("CWE-841"))),
+            VulnerabilityCategory::ERC2771MulticallSpoofing => Some(SwcId::new("41S-065", "ERC2771 Multicall Spoofing", Some("CWE-290"))),
+            VulnerabilityCategory::MulticallMsgValueReuse => Some(SwcId::new("41S-066", "Multicall msg.value Reuse", Some("CWE-841"))),
+            VulnerabilityCategory::FeeOnTransferAssumption => Some(SwcId::new("41S-067", "Fee-on-Transfer Assumption", Some("CWE-682"))),
+            VulnerabilityCategory::UnprotectedAdminSweep => Some(SwcId::new("41S-068", "Unprotected Admin Sweep", Some("CWE-284"))),
+            VulnerabilityCategory::UnvalidatedCrossChainReceiver => Some(SwcId::new("41S-069", "Unvalidated Cross-Chain Receiver", Some("CWE-345"))),
+            VulnerabilityCategory::AVSSlashingRisk => Some(SwcId::new("41S-070", "AVS Slashing Risk", Some("CWE-284"))),
+            VulnerabilityCategory::CLMMMathOverflow => Some(SwcId::new("41S-071", "CLMM Math Overflow", Some("CWE-190"))),
+            VulnerabilityCategory::InconsistentRounding => Some(SwcId::new("41S-072", "Inconsistent Rounding", Some("CWE-682"))),
+            VulnerabilityCategory::DonationAttackVector => Some(SwcId::new("41S-073", "Donation Attack Vector", Some("CWE-682"))),
+            VulnerabilityCategory::MissingSlippageProtection => Some(SwcId::new("41S-074", "Missing Slippage Protection", Some("CWE-20"))),
+            VulnerabilityCategory::ArbitraryReceiverCallback => Some(SwcId::new("41S-075", "Arbitrary Receiver Callback", Some("CWE-841"))),
+            VulnerabilityCategory::IsContractPostPectra => Some(SwcId::new("41S-076", "isContract Post-Pectra", Some("CWE-477"))),
+            VulnerabilityCategory::UnsafeMulticallDelegatecall => Some(SwcId::new("41S-077", "Unsafe Multicall Delegatecall", Some("CWE-841"))),
 
             // Info/Quality categories (no standard SWC)
             VulnerabilityCategory::GasOptimization |
@@ -2536,6 +2594,25 @@ impl VulnerabilityCategory {
             VulnerabilityCategory::HardcodedGasAmount => "Hardcoded Gas Amount",
             VulnerabilityCategory::UnsafeTransferGas => "Unsafe Transfer Gas Limit",
             VulnerabilityCategory::DoubleInitialization => "Double Initialization Risk",
+            // 2025-2026 Exploit Patterns (v0.7.0)
+            VulnerabilityCategory::MulticallStateReset => "Multicall State Reset",
+            VulnerabilityCategory::InconsistentStateReset => "Inconsistent State Reset",
+            VulnerabilityCategory::EIP7702TxOriginBypass => "EIP-7702 tx.origin Bypass",
+            VulnerabilityCategory::TransientStorageGasReentrancy => "Transient Storage Gas Reentrancy",
+            VulnerabilityCategory::ReadOnlyReentrancy => "Read-Only Reentrancy",
+            VulnerabilityCategory::ERC2771MulticallSpoofing => "ERC2771 Multicall Spoofing",
+            VulnerabilityCategory::MulticallMsgValueReuse => "Multicall msg.value Reuse",
+            VulnerabilityCategory::FeeOnTransferAssumption => "Fee-on-Transfer Assumption",
+            VulnerabilityCategory::UnprotectedAdminSweep => "Unprotected Admin Sweep",
+            VulnerabilityCategory::UnvalidatedCrossChainReceiver => "Unvalidated Cross-Chain Receiver",
+            VulnerabilityCategory::AVSSlashingRisk => "AVS Slashing Risk",
+            VulnerabilityCategory::CLMMMathOverflow => "CLMM Math Overflow",
+            VulnerabilityCategory::InconsistentRounding => "Inconsistent Rounding",
+            VulnerabilityCategory::DonationAttackVector => "Donation Attack Vector",
+            VulnerabilityCategory::MissingSlippageProtection => "Missing Slippage Protection",
+            VulnerabilityCategory::ArbitraryReceiverCallback => "Arbitrary Receiver Callback",
+            VulnerabilityCategory::IsContractPostPectra => "isContract Post-Pectra",
+            VulnerabilityCategory::UnsafeMulticallDelegatecall => "Unsafe Multicall Delegatecall",
         }
     }
 }

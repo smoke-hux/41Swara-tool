@@ -484,8 +484,19 @@ impl FalsePositiveFilter {
             | VulnerabilityCategory::CallbackReentrancy
             | VulnerabilityCategory::ERC777CallbackReentrancy
             | VulnerabilityCategory::DepositForReentrancy
-            | VulnerabilityCategory::TransientStorageReentrancy => {
+            | VulnerabilityCategory::TransientStorageReentrancy
+            | VulnerabilityCategory::TransientStorageGasReentrancy => {
                 self.filter_reentrancy(vuln, content, ctx)
+            }
+            VulnerabilityCategory::ReadOnlyReentrancy => {
+                // ReadOnlyReentrancy IS about view functions — don't filter by view/pure
+                if ctx.uses_reentrancy_guard {
+                    return false;
+                }
+                if ctx.is_test_contract {
+                    return false;
+                }
+                true
             }
             VulnerabilityCategory::AccessControl
             | VulnerabilityCategory::RoleBasedAccessControl => {
@@ -679,6 +690,98 @@ impl FalsePositiveFilter {
                 }
                 true
             }
+
+            // --- v0.7.0 new category filters ---
+
+            VulnerabilityCategory::ERC2771MulticallSpoofing => {
+                // Suppress if using OZ ERC2771Forwarder v4.9+ (fixed version)
+                if content.contains("ERC2771Forwarder") {
+                    return false;
+                }
+                // Suppress if multicall override strips suffix
+                if content.contains("_msgData()") && content.contains("multicall") {
+                    return false;
+                }
+                true
+            }
+            VulnerabilityCategory::FeeOnTransferAssumption => {
+                // Suppress if balance diff pattern exists anywhere in the function
+                if content.contains("balanceBefore") || content.contains("balanceAfter")
+                    || content.contains("received =") || content.contains("_before") && content.contains("_after") {
+                    return false;
+                }
+                // Suppress in test contracts
+                if ctx.is_test_contract {
+                    return false;
+                }
+                true
+            }
+            VulnerabilityCategory::IsContractPostPectra => {
+                // Suppress if used only in non-access-control context (e.g. isContract utility)
+                if vuln.code_snippet.contains("function isContract") {
+                    return false;
+                }
+                // Suppress in test contracts
+                if ctx.is_test_contract {
+                    return false;
+                }
+                true
+            }
+            VulnerabilityCategory::UnprotectedAdminSweep => {
+                // Suppress if timelock exists
+                if content.contains("TimelockController") || content.contains("Timelock")
+                    || content.contains("delay") && content.contains("queue") {
+                    return false;
+                }
+                if ctx.is_test_contract {
+                    return false;
+                }
+                true
+            }
+            VulnerabilityCategory::MissingSlippageProtection => {
+                // Suppress internal/private functions
+                if vuln.code_snippet.contains(" internal ") || vuln.code_snippet.contains(" private ") {
+                    return false;
+                }
+                if ctx.is_test_contract {
+                    return false;
+                }
+                true
+            }
+            VulnerabilityCategory::MulticallStateReset
+            | VulnerabilityCategory::InconsistentStateReset
+            | VulnerabilityCategory::MulticallMsgValueReuse
+            | VulnerabilityCategory::EIP7702TxOriginBypass
+            | VulnerabilityCategory::UnvalidatedCrossChainReceiver
+            | VulnerabilityCategory::CLMMMathOverflow
+            | VulnerabilityCategory::InconsistentRounding
+            | VulnerabilityCategory::ArbitraryReceiverCallback
+            | VulnerabilityCategory::UnsafeMulticallDelegatecall => {
+                // Critical/High findings — suppress in test contracts only
+                if ctx.is_test_contract {
+                    return false;
+                }
+                true
+            }
+            VulnerabilityCategory::DonationAttackVector => {
+                // Suppress if virtual offset pattern exists
+                if content.contains("virtualAssets") || content.contains("_decimalsOffset")
+                    || content.contains("INITIAL_DEPOSIT") || content.contains("+ 1)") {
+                    return false;
+                }
+                if ctx.is_test_contract {
+                    return false;
+                }
+                true
+            }
+            VulnerabilityCategory::AVSSlashingRisk => {
+                // Suppress if dispute/delay mechanism exists
+                if content.contains("dispute") || content.contains("vetoable")
+                    || content.contains("cooldown") && content.contains("queue") {
+                    return false;
+                }
+                true
+            }
             _ => true
         }
     }
@@ -729,7 +832,7 @@ impl FalsePositiveFilter {
 
     /// Filter access control issues
     fn filter_access_control(&self, vuln: &Vulnerability, content: &str, ctx: &ContractContext) -> bool {
-        // Check if function has access control
+        // Check if function has access control modifiers 
         let lines: Vec<&str> = content.lines().collect();
         if vuln.line_number > 0 && vuln.line_number <= lines.len() {
             let line = lines[vuln.line_number - 1];

@@ -8,7 +8,7 @@ contract TestVersion29 {
         // This version has memory expansion cost miscalculation issues
         uint256[] memory largeArray = new uint256[](1000);
         for (uint i = 0; i < largeArray.length; i++) {
-            largeArray[i] = i;
+            largeArray[i] = i;// expensive in the end 
         }
     }
 }

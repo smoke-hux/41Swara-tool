@@ -1356,9 +1356,6 @@ fn print_about() {
     println!("{}", "  Security Researcher Edition".bright_cyan());
     println!("{}", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━".bright_blue());
     println!();
-    println!("{}", "WHAT IS 41SWARA?".bright_green().bold());
-    println!("  A production-grade static analysis tool that scans Solidity smart contracts");
-    println!("  for security vulnerabilities. Built in Rust for speed and accuracy.");
     println!();
     println!("  - Fully offline, zero API keys, 100% local analysis");
     println!("  - Designed for bug bounty hunters, security auditors, and researchers");
@@ -1414,7 +1411,7 @@ fn print_about() {
     println!("  {} {}    See usage examples", "$".bright_white(), "41swara --examples".bright_cyan());
     println!("  {} {}    Build and feature info", "$".bright_white(), "41swara --version-full".bright_cyan());
     println!();
-    println!("  Homepage:  {}", "https://github.com/41swara/smart-contract-scanner".bright_white());
+    println!("  Homepage:  {}", "41Swara.com".bright_white());
     println!("  License:   MIT | Built by 41Swara Security Team");
     println!();
     println!("{}", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━".bright_blue());

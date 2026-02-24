@@ -3703,6 +3703,695 @@ impl AdvancedAnalyzer {
 
         vulnerabilities
     }
+
+    // ========================================================================
+    // 2025-2026 EXPLOIT PATTERN ANALYSIS (v0.7.0)
+    // Detects 18 new vulnerability categories based on $400M+ real-world
+    // exploits: Abracadabra, Yearn, Cetus, Balancer, GMX, Atlas, zkSync,
+    // Thirdweb, and Ethereum Pectra upgrade (EIP-7702) patterns.
+    // ========================================================================
+
+    /// Top-level entry point for 2025-2026 exploit pattern detection.
+    /// Called from `scanner.rs` in the advanced analysis phase.
+    pub fn analyze_2025_exploit_patterns(&self, content: &str) -> Vec<Vulnerability> {
+        let mut vulns = Vec::new();
+
+        vulns.extend(self.detect_multicall_state_reset(content));
+        vulns.extend(self.detect_inconsistent_state_reset(content));
+        vulns.extend(self.detect_eip7702_txorigin_bypass(content));
+        vulns.extend(self.detect_transient_storage_gas_reentrancy(content));
+        vulns.extend(self.detect_read_only_reentrancy_view(content));
+        vulns.extend(self.detect_erc2771_multicall_spoofing(content));
+        vulns.extend(self.detect_multicall_msg_value_reuse(content));
+        vulns.extend(self.detect_fee_on_transfer(content));
+        vulns.extend(self.detect_unprotected_admin_sweep(content));
+        vulns.extend(self.detect_unvalidated_crosschain_receiver(content));
+        vulns.extend(self.detect_avs_slashing_risk(content));
+        vulns.extend(self.detect_clmm_math_overflow(content));
+        vulns.extend(self.detect_inconsistent_rounding(content));
+        vulns.extend(self.detect_donation_attack(content));
+        vulns.extend(self.detect_missing_slippage(content));
+        vulns.extend(self.detect_arbitrary_receiver_callback(content));
+        vulns.extend(self.detect_iscontract_post_pectra(content));
+        vulns.extend(self.detect_unsafe_multicall_delegatecall(content));
+
+        vulns
+    }
+
+    fn detect_multicall_state_reset(&self, content: &str) -> Vec<Vulnerability> {
+        let mut vulns = Vec::new();
+        let multicall_re = Regex::new(
+            r"(?i)function\s+(cook|multicall|batch|multiCall|batchCall)\s*\("
+        ).unwrap();
+        let flag_reset_re = Regex::new(
+            r"(solvent|accrue|status|_status|locked)\s*=\s*(true|false|0|1|_NOT_ENTERED)"
+        ).unwrap();
+
+        for (idx, line) in content.lines().enumerate() {
+            if multicall_re.is_match(line) {
+                let end = (idx + 40).min(content.lines().count());
+                let body: String = content.lines().skip(idx).take(end - idx).collect::<Vec<_>>().join("\n");
+                if flag_reset_re.is_match(&body) && (body.contains("for") || body.contains("while")) {
+                    vulns.push(Vulnerability::high_confidence(
+                        VulnerabilitySeverity::Critical,
+                        VulnerabilityCategory::MulticallStateReset,
+                        "Multicall Resets State Flag Between Sub-Calls".to_string(),
+                        "Batch/multicall function resets a status flag (solvency, lock, accrue) inside a loop. \
+                         Each sub-call sees a clean flag, bypassing cumulative checks. \
+                         Real-world: Abracadabra $14.7M exploit.".to_string(),
+                        idx + 1,
+                        line.trim().to_string(),
+                        "Move solvency/invariant checks AFTER the entire batch completes, not inside the loop. \
+                         Use a deferred check pattern: set dirty flag in loop, validate after.".to_string(),
+                    ));
+                }
+            }
+        }
+        vulns
+    }
+
+    fn detect_inconsistent_state_reset(&self, content: &str) -> Vec<Vulnerability> {
+        let mut vulns = Vec::new();
+        let total_reset_re = Regex::new(
+            r"totalSupply\s*=\s*0|_totalSupply\s*=\s*0|totalShares\s*=\s*0"
+        ).unwrap();
+
+        for (idx, line) in content.lines().enumerate() {
+            if total_reset_re.is_match(line) {
+                let start = idx.saturating_sub(5);
+                let end = (idx + 20).min(content.lines().count());
+                let context: String = content.lines().skip(start).take(end - start).collect::<Vec<_>>().join("\n");
+
+                let clears_balances = context.contains("delete balances")
+                    || context.contains("balances[") && context.contains("= 0")
+                    || context.contains("_balances[") && context.contains("= 0")
+                    || context.contains("delete _balances");
+
+                if !clears_balances {
+                    vulns.push(Vulnerability::high_confidence(
+                        VulnerabilitySeverity::Critical,
+                        VulnerabilityCategory::InconsistentStateReset,
+                        "totalSupply Reset Without Clearing Balances".to_string(),
+                        "totalSupply/totalShares is set to 0 but individual balance mappings are not cleared. \
+                         Users can withdraw based on stale cached balances. \
+                         Real-world: Yearn $9M exploit.".to_string(),
+                        idx + 1,
+                        line.trim().to_string(),
+                        "When resetting totalSupply, also clear all individual balance entries, or use a \
+                         snapshot mechanism that invalidates old balances.".to_string(),
+                    ));
+                }
+            }
+        }
+        vulns
+    }
+
+    fn detect_eip7702_txorigin_bypass(&self, content: &str) -> Vec<Vulnerability> {
+        let mut vulns = Vec::new();
+        let txorigin_check_re = Regex::new(
+            r"(require|assert|if)\s*\(.*tx\.origin\s*==\s*msg\.sender"
+        ).unwrap();
+
+        for (idx, line) in content.lines().enumerate() {
+            if line.trim().starts_with("//") || line.trim().starts_with("*") {
+                continue;
+            }
+            if txorigin_check_re.is_match(line) {
+                vulns.push(Vulnerability::new(
+                    VulnerabilitySeverity::High,
+                    VulnerabilityCategory::EIP7702TxOriginBypass,
+                    "tx.origin == msg.sender EOA Check Broken Post-Pectra".to_string(),
+                    "tx.origin == msg.sender is used to verify the caller is an EOA. Post-Pectra \
+                     (EIP-7702), EOAs can delegate execution to smart contract code, making this \
+                     check unreliable. Attackers can phish users into delegating to malicious code.".to_string(),
+                    idx + 1,
+                    line.trim().to_string(),
+                    "Remove the tx.origin == msg.sender check. Use ERC-4337 account abstraction or \
+                     EIP-1271 isValidSignature for contract-compatible authentication.".to_string(),
+                ));
+            }
+        }
+        vulns
+    }
+
+    fn detect_transient_storage_gas_reentrancy(&self, content: &str) -> Vec<Vulnerability> {
+        let mut vulns = Vec::new();
+        let has_transient = content.contains("tstore") || content.contains("tload")
+            || content.contains("TSTORE") || content.contains("TLOAD")
+            || content.contains("transient");
+        if !has_transient {
+            return vulns;
+        }
+
+        let transfer_send_re = Regex::new(r"\.(transfer|send)\s*\(").unwrap();
+        for (idx, line) in content.lines().enumerate() {
+            if line.trim().starts_with("//") { continue; }
+            if transfer_send_re.is_match(line) {
+                vulns.push(Vulnerability::new(
+                    VulnerabilitySeverity::High,
+                    VulnerabilityCategory::TransientStorageGasReentrancy,
+                    ".transfer()/.send() Unsafe With Transient Storage".to_string(),
+                    "Contract uses transient storage (TSTORE/TLOAD) alongside .transfer()/.send(). \
+                     The 2300 gas stipend is insufficient when transient storage operations are involved \
+                     in the recipient's receive/fallback function, enabling reentrancy.".to_string(),
+                    idx + 1,
+                    line.trim().to_string(),
+                    "Replace .transfer()/.send() with .call{value: amount}(\"\") and use a \
+                     reentrancy guard (nonReentrant modifier).".to_string(),
+                ));
+            }
+        }
+        vulns
+    }
+
+    fn detect_read_only_reentrancy_view(&self, content: &str) -> Vec<Vulnerability> {
+        let mut vulns = Vec::new();
+        if content.contains("ReentrancyGuard") || content.contains("nonReentrant") {
+            return vulns;
+        }
+
+        let view_fn_re = Regex::new(
+            r"(?i)function\s+(\w*(?:price|rate|share|value|balance|total|getRate|getPrice|convertToAssets|convertToShares)\w*)\s*\([^)]*\)\s*(?:external|public)\s+view"
+        ).unwrap();
+        let external_call_re = Regex::new(
+            r"\.(call|transfer|send)\s*[\({]|\.safeTransfer\(|\.withdraw\("
+        ).unwrap();
+
+        if !external_call_re.is_match(content) {
+            return vulns;
+        }
+
+        for (idx, line) in content.lines().enumerate() {
+            if view_fn_re.is_match(line) {
+                vulns.push(Vulnerability::new(
+                    VulnerabilitySeverity::High,
+                    VulnerabilityCategory::ReadOnlyReentrancy,
+                    "Read-Only Reentrancy Risk in View Function".to_string(),
+                    "Public view function reads state (price/rate/balance/shares) that can be stale \
+                     during an external call's callback. An attacker can re-enter via the callback \
+                     and read manipulated values from this view function.".to_string(),
+                    idx + 1,
+                    line.trim().to_string(),
+                    "Apply nonReentrant modifier to state-changing functions that call external contracts, \
+                     or use a read-only reentrancy guard on view functions.".to_string(),
+                ));
+            }
+        }
+        vulns
+    }
+
+    fn detect_erc2771_multicall_spoofing(&self, content: &str) -> Vec<Vulnerability> {
+        let mut vulns = Vec::new();
+        let has_erc2771 = content.contains("ERC2771") || content.contains("_msgSender")
+            && content.contains("trustedForwarder");
+        let has_multicall = content.contains("Multicall") || content.contains("multicall");
+        if !has_erc2771 || !has_multicall {
+            return vulns;
+        }
+
+        let contract_re = Regex::new(r"contract\s+(\w+)\s+is\s+([^{]+)").unwrap();
+        for (idx, line) in content.lines().enumerate() {
+            if let Some(caps) = contract_re.captures(line) {
+                let inheritance = caps.get(2).map_or("", |m| m.as_str());
+                if (inheritance.contains("ERC2771") || inheritance.contains("Context"))
+                    && inheritance.contains("Multicall")
+                {
+                    vulns.push(Vulnerability::high_confidence(
+                        VulnerabilitySeverity::Critical,
+                        VulnerabilityCategory::ERC2771MulticallSpoofing,
+                        "ERC2771 + Multicall _msgSender() Spoofing".to_string(),
+                        "Contract inherits both ERC2771Context and Multicall. An attacker can craft \
+                         a multicall payload that appends a spoofed sender address to sub-call calldata, \
+                         causing _msgSender() to return an arbitrary address. \
+                         Real-world: Thirdweb exploit affecting millions of contracts.".to_string(),
+                        idx + 1,
+                        line.trim().to_string(),
+                        "Use OpenZeppelin's ERC2771Forwarder v4.9+ which includes the fix, or override \
+                         multicall() to strip/validate the ERC2771 suffix in each sub-call.".to_string(),
+                    ));
+                }
+            }
+        }
+        vulns
+    }
+
+    fn detect_multicall_msg_value_reuse(&self, content: &str) -> Vec<Vulnerability> {
+        let mut vulns = Vec::new();
+        let multicall_re = Regex::new(
+            r"(?i)function\s+(multicall|batch|aggregate)\s*\("
+        ).unwrap();
+
+        for (idx, line) in content.lines().enumerate() {
+            if multicall_re.is_match(line) {
+                let end = (idx + 30).min(content.lines().count());
+                let body: String = content.lines().skip(idx).take(end - idx).collect::<Vec<_>>().join("\n");
+                let has_delegatecall = body.contains("delegatecall");
+                let has_payable = line.contains("payable") || body.contains("msg.value");
+                if has_delegatecall && has_payable {
+                    vulns.push(Vulnerability::high_confidence(
+                        VulnerabilitySeverity::Critical,
+                        VulnerabilityCategory::MulticallMsgValueReuse,
+                        "msg.value Reused Across Multicall delegatecall Sub-Calls".to_string(),
+                        "Payable multicall uses delegatecall to execute sub-calls. msg.value persists \
+                         across all delegatecall invocations, so the same ETH can be spent multiple \
+                         times in different sub-calls.".to_string(),
+                        idx + 1,
+                        line.trim().to_string(),
+                        "Track consumed msg.value with a local variable and revert if total exceeds \
+                         msg.value, or avoid delegatecall in payable multicall functions.".to_string(),
+                    ));
+                }
+            }
+        }
+        vulns
+    }
+
+    fn detect_fee_on_transfer(&self, content: &str) -> Vec<Vulnerability> {
+        let mut vulns = Vec::new();
+        let transfer_from_re = Regex::new(
+            r"\.transferFrom\s*\([^,]+,\s*[^,]+,\s*(\w+)\s*\)"
+        ).unwrap();
+
+        for (idx, line) in content.lines().enumerate() {
+            if line.trim().starts_with("//") { continue; }
+            if let Some(caps) = transfer_from_re.captures(line) {
+                let amount_var = caps.get(1).map_or("", |m| m.as_str());
+                let start = idx.saturating_sub(5);
+                let end = (idx + 8).min(content.lines().count());
+                let context: String = content.lines().skip(start).take(end - start).collect::<Vec<_>>().join("\n");
+                let has_balance_diff = context.contains("balanceBefore")
+                    || context.contains("balanceOf") && context.contains("- ")
+                    || context.contains("_before")
+                    || context.contains("received =");
+                if !has_balance_diff && !amount_var.is_empty() {
+                    let after: String = content.lines().skip(idx + 1).take(5).collect::<Vec<_>>().join("\n");
+                    let uses_amount_directly = after.contains(amount_var)
+                        && (after.contains("+=") || after.contains("alances[") || after.contains("mint")
+                            || after.contains("shares") || after.contains("deposit")
+                            || after.contains("credit") || after.contains("supply"));
+                    if uses_amount_directly {
+                        vulns.push(Vulnerability::new(
+                            VulnerabilitySeverity::Medium,
+                            VulnerabilityCategory::FeeOnTransferAssumption,
+                            "Fee-on-Transfer Token Amount Assumption".to_string(),
+                            format!(
+                                "transferFrom credits `{amount_var}` directly without checking actual received \
+                                 amount. Fee-on-transfer tokens (USDT, PAXG, deflationary tokens) deliver less \
+                                 than the specified amount, causing accounting errors."
+                            ),
+                            idx + 1,
+                            line.trim().to_string(),
+                            "Measure actual received amount: uint256 before = token.balanceOf(address(this)); \
+                             token.transferFrom(...); uint256 received = token.balanceOf(address(this)) - before;".to_string(),
+                        ));
+                    }
+                }
+            }
+        }
+        vulns
+    }
+
+    fn detect_unprotected_admin_sweep(&self, content: &str) -> Vec<Vulnerability> {
+        let mut vulns = Vec::new();
+        if content.contains("TimelockController") || content.contains("Timelock")
+            || (content.contains("delay") && content.contains("queue") && content.contains("execute"))
+        {
+            return vulns;
+        }
+
+        let sweep_re = Regex::new(
+            r"function\s+(sweep|recover|rescue|emergencyWithdraw|drain|withdrawAll|withdrawToken|recoverToken|recoverERC20)\s*\("
+        ).unwrap();
+        let admin_mod_re = Regex::new(
+            r"(onlyOwner|onlyAdmin|onlyRole|onlyGovernance|auth)"
+        ).unwrap();
+
+        for (idx, line) in content.lines().enumerate() {
+            if sweep_re.is_match(line) {
+                let end = (idx + 5).min(content.lines().count());
+                let func_header: String = content.lines().skip(idx).take(end - idx).collect::<Vec<_>>().join(" ");
+                if admin_mod_re.is_match(&func_header) {
+                    vulns.push(Vulnerability::new(
+                        VulnerabilitySeverity::High,
+                        VulnerabilityCategory::UnprotectedAdminSweep,
+                        "Admin Sweep Function Without Timelock".to_string(),
+                        "Admin-protected sweep/recover function can withdraw funds instantly without \
+                         a timelock delay. A compromised admin key can drain all funds immediately. \
+                         Real-world: zkSync $5M exploit via admin sweep.".to_string(),
+                        idx + 1,
+                        line.trim().to_string(),
+                        "Add a timelock (e.g., 48h delay) to sweep functions, or use a multi-sig \
+                         with a time-delayed execution pattern.".to_string(),
+                    ));
+                }
+            }
+        }
+        vulns
+    }
+
+    fn detect_unvalidated_crosschain_receiver(&self, content: &str) -> Vec<Vulnerability> {
+        let mut vulns = Vec::new();
+        let receiver_re = Regex::new(
+            r"function\s+(_?(?:receive|execute|handle|process)(?:Message|Payload|CrossChain|FromChain)?|_nonblockingLzReceive|_ccipReceive|onMessageReceived)\s*\("
+        ).unwrap();
+
+        for (idx, line) in content.lines().enumerate() {
+            if line.trim().starts_with("//") { continue; }
+            if receiver_re.is_match(line) {
+                let end = (idx + 20).min(content.lines().count());
+                let body: String = content.lines().skip(idx).take(end - idx).collect::<Vec<_>>().join("\n");
+                let has_validation = body.contains("sourceChain")
+                    || body.contains("srcChainId")
+                    || body.contains("trustedRemote")
+                    || body.contains("allowedSender")
+                    || body.contains("require") && (body.contains("sender") || body.contains("source"))
+                    || body.contains("onlyRelayer")
+                    || body.contains("onlyBridge");
+                if !has_validation {
+                    vulns.push(Vulnerability::high_confidence(
+                        VulnerabilitySeverity::Critical,
+                        VulnerabilityCategory::UnvalidatedCrossChainReceiver,
+                        "Cross-Chain Receiver Without Source Validation".to_string(),
+                        "Cross-chain message handler does not validate the source chain or sender. \
+                         Any chain/contract can send malicious messages to this receiver. \
+                         Real-world: Atlas $112M, CrossCurve $3M exploits.".to_string(),
+                        idx + 1,
+                        line.trim().to_string(),
+                        "Validate source chain ID and sender address against a whitelist: \
+                         require(trustedRemote[srcChainId] == sender). Use LayerZero's lzReceive \
+                         or CCIP's onlyRouter pattern.".to_string(),
+                    ));
+                }
+            }
+        }
+        vulns
+    }
+
+    fn detect_avs_slashing_risk(&self, content: &str) -> Vec<Vulnerability> {
+        let mut vulns = Vec::new();
+        if !content.contains("slash") && !content.contains("Slash") {
+            return vulns;
+        }
+
+        let slash_re = Regex::new(
+            r"function\s+(slash|freezeOperator|penalize|slashOperator|slashStaker)\s*\("
+        ).unwrap();
+
+        for (idx, line) in content.lines().enumerate() {
+            if slash_re.is_match(line) {
+                let end = (idx + 15).min(content.lines().count());
+                let body: String = content.lines().skip(idx).take(end - idx).collect::<Vec<_>>().join("\n");
+                let has_delay = body.contains("delay") || body.contains("timelock")
+                    || body.contains("dispute") || body.contains("cooldown")
+                    || body.contains("vetoable") || body.contains("queue");
+                if !has_delay {
+                    vulns.push(Vulnerability::new(
+                        VulnerabilitySeverity::High,
+                        VulnerabilityCategory::AVSSlashingRisk,
+                        "Slash Function Without Dispute Period".to_string(),
+                        "Slash/freeze function executes immediately without a dispute window or \
+                         timelock delay. A malicious or compromised slasher can instantly confiscate \
+                         staked funds without recourse.".to_string(),
+                        idx + 1,
+                        line.trim().to_string(),
+                        "Add a dispute/veto period (e.g., 7 days) before slash execution. Use a \
+                         two-step process: propose slash -> wait for dispute window -> execute.".to_string(),
+                    ));
+                }
+            }
+        }
+        vulns
+    }
+
+    fn detect_clmm_math_overflow(&self, content: &str) -> Vec<Vulnerability> {
+        let mut vulns = Vec::new();
+        let has_clmm_context = content.contains("sqrtPrice") || content.contains("liquidity")
+            || content.contains("tickMath") || content.contains("TickMath")
+            || content.contains("SqrtPrice") || content.contains("concentrated");
+        if !has_clmm_context {
+            return vulns;
+        }
+
+        let bitshift_re = Regex::new(r"(<<|>>)\s*\d+").unwrap();
+        for (idx, line) in content.lines().enumerate() {
+            if line.trim().starts_with("//") { continue; }
+            if bitshift_re.is_match(line) {
+                let is_in_unchecked = {
+                    let before: String = content.lines().take(idx + 1).collect::<Vec<_>>().join("\n");
+                    before.matches("unchecked {").count() + before.matches("unchecked{").count() > 0
+                };
+                let line_lower = line.to_lowercase();
+                let is_math_context = line_lower.contains("sqrt") || line_lower.contains("price")
+                    || line_lower.contains("liquidity") || line_lower.contains("tick")
+                    || line_lower.contains("amount") || line_lower.contains("ratio");
+                if is_math_context && (is_in_unchecked || !content.contains("SafeMath")) {
+                    vulns.push(Vulnerability::high_confidence(
+                        VulnerabilitySeverity::Critical,
+                        VulnerabilityCategory::CLMMMathOverflow,
+                        "Bit-Shift Overflow in CLMM Math".to_string(),
+                        "Bit-shift operation on price/liquidity/tick math without overflow validation. \
+                         Bit-shifts bypass Solidity 0.8+ overflow checks. An attacker can pass extreme \
+                         values causing silent overflow. Real-world: Cetus $223M exploit.".to_string(),
+                        idx + 1,
+                        line.trim().to_string(),
+                        "Add explicit bounds checking before bit-shift operations: \
+                         require(value <= type(uint128).max) before shifting. Use OpenZeppelin's \
+                         Math.mulDiv for safe fixed-point math.".to_string(),
+                    ));
+                }
+            }
+        }
+        vulns
+    }
+
+    fn detect_inconsistent_rounding(&self, content: &str) -> Vec<Vulnerability> {
+        let mut vulns = Vec::new();
+        let lines: Vec<&str> = content.lines().collect();
+        let fn_re = Regex::new(r"function\s+\w+").unwrap();
+        let mut func_start = 0;
+        let mut brace_depth: i32 = 0;
+        let mut in_function = false;
+
+        for (idx, line) in lines.iter().enumerate() {
+            if fn_re.is_match(line) {
+                func_start = idx;
+                in_function = true;
+                brace_depth = 0;
+            }
+            if in_function {
+                brace_depth += line.matches('{').count() as i32;
+                brace_depth -= line.matches('}').count() as i32;
+                if brace_depth <= 0 && idx > func_start {
+                    let func_body: String = lines[func_start..=idx].join("\n");
+                    let has_mul_down = func_body.contains("mulDown") || func_body.contains("mulDivDown");
+                    let has_div_up = func_body.contains("divUp") || func_body.contains("mulDivUp");
+                    let has_mul_up = func_body.contains("mulUp") || func_body.contains("mulDivUp");
+                    let has_div_down = func_body.contains("divDown") || func_body.contains("mulDivDown");
+                    if (has_mul_down && has_div_up) || (has_mul_up && has_div_down) {
+                        vulns.push(Vulnerability::high_confidence(
+                            VulnerabilitySeverity::Critical,
+                            VulnerabilityCategory::InconsistentRounding,
+                            "Inconsistent Rounding Direction in Same Function".to_string(),
+                            "Function mixes rounding directions (mulDown with divUp, or mulUp with divDown). \
+                             This creates an exploitable rounding error that compounds on each operation. \
+                             Real-world: Balancer $128M exploit.".to_string(),
+                            func_start + 1,
+                            lines[func_start].trim().to_string(),
+                            "Use consistent rounding direction: round DOWN for amounts leaving the protocol \
+                             (user receives) and round UP for amounts entering (user pays). Never mix.".to_string(),
+                        ));
+                    }
+                    in_function = false;
+                }
+            }
+        }
+        vulns
+    }
+
+    fn detect_donation_attack(&self, content: &str) -> Vec<Vulnerability> {
+        let mut vulns = Vec::new();
+        let balance_of_this_re = Regex::new(
+            r"balanceOf\s*\(\s*address\s*\(\s*this\s*\)\s*\)"
+        ).unwrap();
+
+        for (idx, line) in content.lines().enumerate() {
+            if line.trim().starts_with("//") { continue; }
+            if balance_of_this_re.is_match(line) {
+                let start = idx.saturating_sub(3);
+                let end = (idx + 4).min(content.lines().count());
+                let context: String = content.lines().skip(start).take(end - start).collect::<Vec<_>>().join("\n");
+                let ctx_lower = context.to_lowercase();
+                let is_price_context = ctx_lower.contains("price") || ctx_lower.contains("rate")
+                    || ctx_lower.contains("share") || ctx_lower.contains("exchange")
+                    || ctx_lower.contains("convert") || ctx_lower.contains("per")
+                    || ctx_lower.contains(" / total") || ctx_lower.contains("/ _total");
+                if is_price_context {
+                    let has_offset = context.contains("+ 1") || context.contains("+1")
+                        || context.contains("virtualAssets") || context.contains("_decimalsOffset")
+                        || context.contains("OFFSET") || context.contains("INITIAL_DEPOSIT");
+                    if !has_offset {
+                        vulns.push(Vulnerability::new(
+                            VulnerabilitySeverity::High,
+                            VulnerabilityCategory::DonationAttackVector,
+                            "Donation Attack: balanceOf(this) in Share Price Without Offset".to_string(),
+                            "Share price or exchange rate uses balanceOf(address(this)) which can be \
+                             manipulated via direct token transfer (donation). An attacker can inflate \
+                             the price to steal funds from subsequent depositors.".to_string(),
+                            idx + 1,
+                            line.trim().to_string(),
+                            "Use a virtual offset: add 1 to both numerator and denominator (ERC-4626 \
+                             virtual shares pattern), or track internal accounting separate from actual balance.".to_string(),
+                        ));
+                    }
+                }
+            }
+        }
+        vulns
+    }
+
+    fn detect_missing_slippage(&self, content: &str) -> Vec<Vulnerability> {
+        let mut vulns = Vec::new();
+        let swap_fn_re = Regex::new(
+            r"function\s+(swap|deposit|addLiquidity|removeLiquidity|zap|stake)\s*\(([^)]*)\)"
+        ).unwrap();
+
+        for (idx, line) in content.lines().enumerate() {
+            if line.trim().starts_with("//") { continue; }
+            if let Some(caps) = swap_fn_re.captures(line) {
+                let fn_name = caps.get(1).map_or("", |m| m.as_str());
+                let params = caps.get(2).map_or("", |m| m.as_str()).to_lowercase();
+                let has_slippage = params.contains("min") || params.contains("slippage")
+                    || params.contains("deadline") || params.contains("amountoutmin")
+                    || params.contains("minout") || params.contains("minamount");
+                let end = (idx + 3).min(content.lines().count());
+                let header: String = content.lines().skip(idx).take(end - idx).collect::<Vec<_>>().join(" ");
+                if header.contains("internal") || header.contains("private") {
+                    continue;
+                }
+                if !has_slippage {
+                    vulns.push(Vulnerability::new(
+                        VulnerabilitySeverity::Medium,
+                        VulnerabilityCategory::MissingSlippageProtection,
+                        format!("Missing Slippage Protection in {fn_name}()"),
+                        format!(
+                            "Function {fn_name}() performs a swap/deposit without a minimum output amount \
+                             parameter. Users cannot protect themselves against sandwich attacks or \
+                             unfavorable price movements."
+                        ),
+                        idx + 1,
+                        line.trim().to_string(),
+                        "Add a `uint256 minAmountOut` parameter and revert if output is below it: \
+                         require(amountOut >= minAmountOut, \"slippage\").".to_string(),
+                    ));
+                }
+            }
+        }
+        vulns
+    }
+
+    fn detect_arbitrary_receiver_callback(&self, content: &str) -> Vec<Vulnerability> {
+        let mut vulns = Vec::new();
+        let lines: Vec<&str> = content.lines().collect();
+        let callback_re = Regex::new(
+            r"\.(onFlashLoan|onERC721Received|onERC1155Received|tokensReceived|afterExecution|callback|notify)\s*\("
+        ).unwrap();
+
+        for (idx, line) in lines.iter().enumerate() {
+            if line.trim().starts_with("//") { continue; }
+            if callback_re.is_match(line) {
+                let end = (idx + 10).min(lines.len());
+                let after_callback: String = lines[(idx + 1)..end].join("\n");
+                let state_mod_re = Regex::new(
+                    r"(\w+\s*[\[.]\s*\w+\s*\]\s*=|\w+\s*=\s*[^=]|\w+\s*\+=|\w+\s*-=|totalSupply|_mint|_burn)"
+                ).unwrap();
+                if state_mod_re.is_match(&after_callback) {
+                    vulns.push(Vulnerability::new(
+                        VulnerabilitySeverity::High,
+                        VulnerabilityCategory::ArbitraryReceiverCallback,
+                        "Callback to User-Supplied Receiver Before State Update".to_string(),
+                        "External callback is made to a user-supplied address before internal state \
+                         is finalized. The receiver can re-enter or observe inconsistent state. \
+                         Real-world: GMX $42M exploit.".to_string(),
+                        idx + 1,
+                        line.trim().to_string(),
+                        "Follow CEI (Checks-Effects-Interactions): complete ALL state updates \
+                         before making callbacks to external addresses.".to_string(),
+                    ));
+                }
+            }
+        }
+        vulns
+    }
+
+    fn detect_iscontract_post_pectra(&self, content: &str) -> Vec<Vulnerability> {
+        let mut vulns = Vec::new();
+        let iscontract_re = Regex::new(
+            r"(extcodesize|isContract|\.code\.length)\s*"
+        ).unwrap();
+
+        for (idx, line) in content.lines().enumerate() {
+            if line.trim().starts_with("//") || line.trim().starts_with("*") { continue; }
+            if iscontract_re.is_match(line) {
+                let start = idx.saturating_sub(2);
+                let end = (idx + 3).min(content.lines().count());
+                let context: String = content.lines().skip(start).take(end - start).collect::<Vec<_>>().join("\n");
+                let is_access_control = context.contains("require") || context.contains("if")
+                    || context.contains("revert") || context.contains("assert");
+                if line.contains("function isContract") { continue; }
+                if is_access_control {
+                    vulns.push(Vulnerability::new(
+                        VulnerabilitySeverity::Medium,
+                        VulnerabilityCategory::IsContractPostPectra,
+                        "extcodesize/isContract Unreliable Post-EIP-7702".to_string(),
+                        "extcodesize or isContract() is used for access control. Post-Pectra (EIP-7702), \
+                         EOAs can delegate to code, making extcodesize > 0 for regular wallets. \
+                         Also unreliable during constructor execution.".to_string(),
+                        idx + 1,
+                        line.trim().to_string(),
+                        "Do not use extcodesize/isContract for access control. Use EIP-1271 for \
+                         signature verification, or implement account-type-agnostic logic.".to_string(),
+                    ));
+                }
+            }
+        }
+        vulns
+    }
+
+    fn detect_unsafe_multicall_delegatecall(&self, content: &str) -> Vec<Vulnerability> {
+        let mut vulns = Vec::new();
+        let multicall_re = Regex::new(
+            r"(?i)function\s+(multicall|batch|aggregate)\s*\("
+        ).unwrap();
+
+        for (idx, line) in content.lines().enumerate() {
+            if multicall_re.is_match(line) {
+                let end = (idx + 30).min(content.lines().count());
+                let body: String = content.lines().skip(idx).take(end - idx).collect::<Vec<_>>().join("\n");
+                if body.contains("delegatecall") {
+                    let has_value_tracking = body.contains("remainingValue")
+                        || body.contains("valueConsumed")
+                        || body.contains("msg.value -")
+                        || body.contains("ethUsed")
+                        || body.contains("_refund");
+                    if !has_value_tracking && !body.contains("payable") {
+                        vulns.push(Vulnerability::new(
+                            VulnerabilitySeverity::High,
+                            VulnerabilityCategory::UnsafeMulticallDelegatecall,
+                            "Multicall Uses delegatecall Without Value Isolation".to_string(),
+                            "Multicall function uses delegatecall to forward calls. If any sub-call \
+                             reads msg.value, it will see the full value on every iteration, enabling \
+                             double-spending of ETH.".to_string(),
+                            idx + 1,
+                            line.trim().to_string(),
+                            "Use address(this).call instead of delegatecall for multicall, or track \
+                             consumed value and revert if total exceeds msg.value.".to_string(),
+                        ));
+                    }
+                }
+            }
+        }
+        vulns
+    }
 }
 
 // Cross-contract vulnerability detection (reserved for future project-wide analysis)

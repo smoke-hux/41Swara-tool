@@ -433,6 +433,12 @@ impl ContractScanner {
             vulnerabilities.extend(self.advanced_analyzer.analyze_security_hardening(content));
         }
 
+        // Run 2025-2026 exploit pattern analysis (v0.7.0)
+        // Covers $400M+ real-world exploits: Abracadabra, Yearn, Cetus, Balancer, GMX, Atlas, etc.
+        if !is_test {
+            vulnerabilities.extend(self.advanced_analyzer.analyze_2025_exploit_patterns(content));
+        }
+
         // Detect compiler version for version-specific checks
         let compiler_version = self.parser.get_compiler_version(content);
         
@@ -1061,10 +1067,41 @@ impl ContractScanner {
                 true
             }
 
+            // --- v0.7.0 context-aware filtering for new categories ---
+
+            VulnerabilityCategory::TransientStorageGasReentrancy => {
+                // Only report if contract actually uses transient storage
+                let has_transient = full_content.contains("tstore") || full_content.contains("tload")
+                    || full_content.contains("TSTORE") || full_content.contains("TLOAD")
+                    || full_content.contains("transient");
+                has_transient
+            }
+
+            VulnerabilityCategory::EIP7702TxOriginBypass => {
+                // Only report if contract uses tx.origin == msg.sender
+                full_content.contains("tx.origin") && full_content.contains("msg.sender")
+            }
+
+            VulnerabilityCategory::ReadOnlyReentrancy => {
+                // Skip if ReentrancyGuard is present
+                if self.has_reentrancy_guard(full_content) {
+                    return false;
+                }
+                true
+            }
+
+            VulnerabilityCategory::IsContractPostPectra => {
+                // Skip if not used for access control (just a utility check)
+                if !line.contains("require") && !line.contains("if") && !line.contains("revert") {
+                    return false;
+                }
+                true
+            }
+
             _ => true // Report all other categories by default
         }
     }
-    
+
     /// Apply a multiline regex rule against the entire file content.
     /// Used for patterns that span multiple lines (e.g., state changes after external calls).
     fn scan_multiline_pattern(&self, content: &str, rule: &VulnerabilityRule) -> Vec<Vulnerability> {
