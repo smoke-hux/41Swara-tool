@@ -123,9 +123,9 @@ impl SarifReport {
             for vuln in vulns {
                 let rule_id = category_to_rule_id(&vuln.category);
 
-                // Collect unique rules
+                // Collect unique rules (use CVSS score if available)
                 rules_map.entry(rule_id.clone()).or_insert_with(|| {
-                    create_sarif_rule(&vuln.category, &vuln.severity, &vuln.title, &vuln.description, &vuln.recommendation)
+                    create_sarif_rule(&vuln.category, &vuln.severity, &vuln.title, &vuln.description, &vuln.recommendation, vuln.cvss_score)
                 });
 
                 sarif_results.push(SarifResult {
@@ -262,10 +262,14 @@ fn create_sarif_rule(
     title: &str,
     description: &str,
     recommendation: &str,
+    cvss_score: Option<f64>,
 ) -> SarifRule {
     let rule_id = category_to_rule_id(category);
     let level = severity_to_sarif_level(severity);
-    let security_severity = severity_to_score(severity);
+    // Use actual CVSS score if available, otherwise fall back to severity mapping
+    let security_severity = cvss_score
+        .map(|s| format!("{s:.1}"))
+        .unwrap_or_else(|| severity_to_score(severity));
 
     // Get SWC/CWE IDs from the category
     let swc_id = category.get_swc_id();

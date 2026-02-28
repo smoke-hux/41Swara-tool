@@ -1,0 +1,89 @@
+# 41Swara Scanner Configuration
+# Place as .41swara.toml in your project root (auto-discovered) or use --config flag
+#
+# Usage:
+#   cp examples/41swara.toml .41swara.toml   # copy to project root
+#   41swara ./contracts                       # auto-discovers config
+
+# =============================================================================
+# Custom Detection Rules
+# =============================================================================
+# Define your own regex-based vulnerability detection rules.
+# These are added to the built-in rules and run as part of the normal scan.
+
+[[rules]]
+id = "PROJ-001"
+title = "Hardcoded Admin Address"
+description = "Production contracts should not use hardcoded admin addresses"
+severity = "High"
+pattern = "address\\s+(public\\s+)?(constant\\s+)?\\w*(admin|owner|operator)\\w*\\s*=\\s*0x[0-9a-fA-F]{40}"
+recommendation = "Use a governance contract, multisig, or constructor-injected address"
+
+[[rules]]
+id = "PROJ-002"
+title = "Unchecked Block Timestamp Comparison"
+description = "Using block.timestamp for strict equality can be manipulated by miners"
+severity = "Medium"
+pattern = "block\\.timestamp\\s*=="
+recommendation = "Use >= or <= for timestamp comparisons instead of strict equality"
+
+[[rules]]
+id = "PROJ-003"
+title = "TODO/FIXME in Production Code"
+description = "TODO or FIXME comments may indicate incomplete security-critical logic"
+severity = "Info"
+pattern = "(?i)(TODO|FIXME|HACK|XXX|BUG):"
+recommendation = "Resolve all TODO/FIXME comments before deployment"
+
+# Multiline rule example: detect functions that modify state after emitting events
+# [[rules]]
+# id = "PROJ-004"
+# title = "State Change After Event Emission"
+# description = "State modifications after event emission may cause inconsistent indexed data"
+# severity = "Low"
+# pattern = "emit\\s+\\w+.*\\n.*=\\s+"
+# multiline = true
+# recommendation = "Emit events after all state changes are complete"
+
+# =============================================================================
+# Built-in Rule Overrides
+# =============================================================================
+# Override severity or disable built-in rules by their SWC/41S ID.
+
+# Example: Upgrade AVS slashing risk to Critical for EigenLayer projects
+# [[overrides]]
+# rule_id = "41S-070"
+# severity = "Critical"
+
+# Example: Disable missing ERC165 check if not relevant
+# [[overrides]]
+# rule_id = "41S-055"
+# enabled = false
+
+# Example: Downgrade gas optimization findings to Info
+# [[overrides]]
+# rule_id = "SWC-000"
+# severity = "Info"
+
+# =============================================================================
+# Global Settings
+# =============================================================================
+[settings]
+# Minimum confidence percentage to report (0-100, default: 0)
+# min_confidence = 40
+
+# Trust well-known library patterns (reduces false positives)
+trust_openzeppelin = true
+trust_solmate = true
+trust_solady = true
+
+# File patterns to always exclude from scanning
+exclude = [
+    "test/**",
+    "tests/**",
+    "script/**",
+    "lib/**",
+    "node_modules/**",
+    "**/*.t.sol",
+    "**/Mock*.sol",
+]

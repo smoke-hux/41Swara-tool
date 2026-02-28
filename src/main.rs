@@ -7,7 +7,7 @@
 use clap::{Parser, ValueEnum};   // CLI argument parsing framework
 use colored::*;                   // Terminal color output support
 use rayon::prelude::*;            // Parallel iterator support for multi-threaded scanning
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};     // Thread-safe shared state for parallel scanning
 use std::time::Instant;          // Performance timing
 use walkdir::WalkDir;            // Recursive directory traversal
@@ -49,6 +49,12 @@ mod threat_model;
 // Phase 7: EIP Analysis & Enhanced False Positive Filtering
 mod eip_analyzer;          // ERC-20/721/777/1155/4626/2771 standard compliance checks
 mod false_positive_filter; // Multi-pass false positive reduction (~90% FP reduction)
+mod cvss;                  // CVSS 3.1 base score calculator
+mod exploit_db;            // Real-world exploit reference database
+mod attack_path;           // Attack narrative generator
+
+// Phase 8: Configuration System
+mod config;                // TOML-based custom rules and scanner settings
 
 // --- Re-exports used across main ---
 use scanner::{ContractScanner, ScannerConfig};
@@ -57,6 +63,9 @@ use vulnerabilities::{Vulnerability, VulnerabilitySeverity};
 use abi_scanner::ABIScanner;
 use professional_reporter::{ProfessionalReporter, AuditInfo};
 use sarif::SarifReport;
+
+/// Type alias for thread-safe shared scan results (reduces type complexity warnings).
+type SharedResults<T> = Arc<Mutex<Vec<T>>>;
 
 /// Minimum severity threshold for filtering scan results.
 /// Used with `--min-severity` CLI flag to suppress lower-priority findings.
@@ -278,17 +287,38 @@ struct Args {
     show_fixes: bool,
 
     // ============================================================================
-    // EIP ANALYSIS OPTIONS (Phase 7)
+    // EIP ANALYSIS & FALSE POSITIVE FILTERING (v0.8.0)
+    // Both are ENABLED by default for professional-grade accuracy.
+    // Use --no-eip-analysis / --no-fp-filter to disable.
     // ============================================================================
 
-    /// Enable EIP-specific vulnerability analysis
-    /// Detects ERC-20, ERC-721, ERC-777, ERC-1155, ERC-4626, ERC-2771, etc.
+    /// Disable EIP-specific vulnerability analysis
     #[arg(long)]
+    no_eip_analysis: bool,
+
+    /// Disable enhanced false positive filtering
+    #[arg(long)]
+    no_fp_filter: bool,
+
+    /// (Hidden) Legacy alias for --no-eip-analysis=false (kept for backwards compat)
+    #[arg(long, hide = true)]
     eip_analysis: bool,
 
-    /// Enable enhanced false positive filtering (removes ~90% false positives)
-    #[arg(long)]
+    /// (Hidden) Legacy alias for --no-fp-filter=false (kept for backwards compat)
+    #[arg(long, hide = true)]
     strict_filter: bool,
+
+    /// Path to custom rule configuration file (.41swara.toml)
+    #[arg(long, value_name = "FILE")]
+    config: Option<PathBuf>,
+
+    /// Show STRIDE threat model findings (hidden by default)
+    #[arg(long)]
+    show_threat_model: bool,
+
+    /// Show diff against baseline: [NEW], [KNOWN], [RESOLVED] labels
+    #[arg(long, requires = "baseline")]
+    diff_output: bool,
 }
 
 fn main() {
@@ -316,7 +346,7 @@ fn main() {
         rayon::ThreadPoolBuilder::new()
             .num_threads(args.threads)
             .build_global()
-            .unwrap_or_else(|e| eprintln!("Warning: Could not set thread count: {}", e));
+            .unwrap_or_else(|e| eprintln!("Warning: Could not set thread count: {e}"));
     }
 
     // Show examples if requested
@@ -385,17 +415,178 @@ fn create_scanner(args: &Args) -> ContractScanner {
             enable_reachability_analysis: !args.no_reachability_analysis,
             enable_dependency_analysis: !args.no_dependency_analysis,
             enable_threat_model: !args.no_threat_model,
-            enable_eip_analysis: args.eip_analysis,
-            enable_strict_filter: args.strict_filter,
+            // v0.8.0: enabled by default; --no-eip-analysis disables
+            enable_eip_analysis: !args.no_eip_analysis,
+            // v0.8.0: enabled by default; --no-fp-filter disables
+            enable_strict_filter: !args.no_fp_filter,
         }
     };
 
-    ContractScanner::with_config(args.verbose, config)
+    let mut scanner = ContractScanner::with_config(args.verbose, config);
+
+    // Load TOML configuration (custom rules + overrides)
+    let scan_config = load_scan_config(args);
+    if let Some(cfg) = scan_config {
+        // Add custom rules
+        let custom_rules = cfg.compile_custom_rules();
+        if !custom_rules.is_empty() {
+            if !args.quiet {
+                eprintln!("{} Loaded {} custom rules from config",
+                    "Config:".cyan(), custom_rules.len());
+            }
+            scanner.add_custom_rules(custom_rules);
+        }
+
+        // Apply severity overrides and disabled rules
+        let disabled = cfg.disabled_rule_ids();
+        if !disabled.is_empty() && !args.quiet {
+            eprintln!("{} {} rules disabled via config", "Config:".cyan(), disabled.len());
+        }
+        scanner.apply_rule_overrides(&cfg);
+    }
+
+    scanner
 }
 
-/// Apply CLI filters (confidence threshold, SWC include/exclude, baseline) to scan results.
+/// Load scan configuration from --config flag or auto-discovered .41swara.toml.
+fn load_scan_config(args: &Args) -> Option<config::ScanConfig> {
+    // Explicit --config flag takes priority
+    if let Some(ref config_path) = args.config {
+        match config::ScanConfig::load_from_file(config_path) {
+            Ok(cfg) => return Some(cfg),
+            Err(e) => {
+                eprintln!("{} {}", "Config error:".red(), e);
+                return None;
+            }
+        }
+    }
+
+    // Auto-discover .41swara.toml from scan directory upward
+    if let Some(config_path) = config::ScanConfig::find_config(&args.path) {
+        match config::ScanConfig::load_from_file(&config_path) {
+            Ok(cfg) => {
+                if !args.quiet {
+                    eprintln!("{} Using config: {}", "Config:".cyan(), config_path.display());
+                }
+                return Some(cfg);
+            }
+            Err(e) => {
+                eprintln!("{} {}", "Config warning:".yellow(), e);
+            }
+        }
+    }
+
+    None
+}
+
+/// Convert a cached vulnerability back into a full Vulnerability struct.
+/// Uses string matching to reconstruct severity/category/confidence enums.
+fn convert_cached_to_vulnerability(cv: &cache::CachedVulnerability) -> Option<Vulnerability> {
+    use vulnerabilities::VulnerabilityConfidence;
+
+    let severity = match cv.severity.as_str() {
+        "Critical" => VulnerabilitySeverity::Critical,
+        "High" => VulnerabilitySeverity::High,
+        "Medium" => VulnerabilitySeverity::Medium,
+        "Low" => VulnerabilitySeverity::Low,
+        "Info" => VulnerabilitySeverity::Info,
+        _ => return None,
+    };
+
+    let confidence = match cv.confidence.as_str() {
+        "High" => VulnerabilityConfidence::High,
+        "Medium" => VulnerabilityConfidence::Medium,
+        "Low" => VulnerabilityConfidence::Low,
+        _ => VulnerabilityConfidence::Medium,
+    };
+
+    // Default to LogicError for unknown categories; the title/description carry the real info
+    let category = parse_vulnerability_category(&cv.category);
+
+    Some(Vulnerability {
+        severity,
+        category,
+        title: cv.title.clone(),
+        description: cv.description.clone(),
+        line_number: cv.line_number,
+        end_line_number: None,
+        code_snippet: cv.code_snippet.clone(),
+        context_before: None,
+        context_after: None,
+        recommendation: cv.recommendation.clone(),
+        confidence,
+        confidence_percent: match cv.confidence.as_str() {
+            "High" => 85,
+            "Medium" => 65,
+            "Low" => 35,
+            _ => 50,
+        },
+        swc_id: None,
+        fix_suggestion: None,
+        cvss_score: None,
+        cvss_vector: None,
+        exploit_references: Vec::new(),
+        attack_path: None,
+    })
+}
+
+/// Parse a VulnerabilityCategory from its Debug string representation.
+fn parse_vulnerability_category(s: &str) -> vulnerabilities::VulnerabilityCategory {
+    use vulnerabilities::VulnerabilityCategory::*;
+    match s {
+        "Reentrancy" => Reentrancy,
+        "AccessControl" => AccessControl,
+        "ArithmeticIssues" => ArithmeticIssues,
+        "UnsafeExternalCalls" => UnsafeExternalCalls,
+        "DelegateCalls" => DelegateCalls,
+        "GasOptimization" => GasOptimization,
+        "PragmaIssues" => PragmaIssues,
+        "RandomnessVulnerabilities" => RandomnessVulnerabilities,
+        "FrontRunning" => FrontRunning,
+        "TimeManipulation" => TimeManipulation,
+        "DoSAttacks" => DoSAttacks,
+        "UnusedCode" => UnusedCode,
+        "MagicNumbers" => MagicNumbers,
+        "NamingConventions" => NamingConventions,
+        "StateVariable" => StateVariable,
+        "PrecisionLoss" => PrecisionLoss,
+        "UnusedReturnValues" => UnusedReturnValues,
+        "OracleManipulation" => OracleManipulation,
+        "FlashLoanAttack" => FlashLoanAttack,
+        "LogicError" => LogicError,
+        "MissingEvents" => MissingEvents,
+        "SignatureVulnerabilities" => SignatureVulnerabilities,
+        "ProxyAdminVulnerability" => ProxyAdminVulnerability,
+        "CallbackReentrancy" => CallbackReentrancy,
+        "CompilerBug" => CompilerBug,
+        "ComplexityIssues" => ComplexityIssues,
+        "StorageDoSAttacks" => StorageDoSAttacks,
+        "LowLevelCalls" => LowLevelCalls,
+        "AssemblyUsage" => AssemblyUsage,
+        "ShadowingIssues" => ShadowingIssues,
+        "TxOriginAuth" => TxOriginAuth,
+        "DeprecatedFunctions" => DeprecatedFunctions,
+        "UninitializedVariables" => UninitializedVariables,
+        "UncheckedReturnValues" => UncheckedReturnValues,
+        "ImmutabilityIssues" => ImmutabilityIssues,
+        "IncorrectEquality" => IncorrectEquality,
+        "InputValidationFailure" => InputValidationFailure,
+        "MEVExploitable" => MEVExploitable,
+        "GovernanceAttack" => GovernanceAttack,
+        "BridgeVulnerability" => BridgeVulnerability,
+        "LiquidityManipulation" => LiquidityManipulation,
+        _ => LogicError,
+    }
+}
+
+/// Apply CLI filters (confidence threshold, SWC include/exclude, baseline, threat model) to scan results.
 /// Mutates the vector in place, removing findings that don't pass the filters.
 fn apply_filters(vulns: &mut Vec<Vulnerability>, args: &Args, baseline_ids: &std::collections::HashSet<String>) {
+    // v0.8.0: Suppress [Threat Model] findings unless --show-threat-model is set
+    if !args.show_threat_model {
+        vulns.retain(|v| !v.title.starts_with("[Threat Model]"));
+    }
+
     // Filter by confidence threshold
     if let Some(threshold) = args.confidence_threshold {
         vulns.retain(|v| v.confidence_percent >= threshold);
@@ -451,7 +642,7 @@ fn make_finding_fingerprint(v: &Vulnerability) -> String {
 }
 
 /// Load baseline fingerprints from a JSON file exported by --export-baseline.
-fn load_baseline(path: &PathBuf) -> std::collections::HashSet<String> {
+fn load_baseline(path: &Path) -> std::collections::HashSet<String> {
     let mut set = std::collections::HashSet::new();
     if let Ok(content) = std::fs::read_to_string(path) {
         if let Ok(arr) = serde_json::from_str::<Vec<String>>(&content) {
@@ -468,7 +659,7 @@ fn load_baseline(path: &PathBuf) -> std::collections::HashSet<String> {
 }
 
 /// Export vulnerability fingerprints as baseline JSON for future --baseline comparison.
-fn export_baseline(vulns: &[(PathBuf, Vec<Vulnerability>)], path: &PathBuf) {
+fn export_baseline(vulns: &[(PathBuf, Vec<Vulnerability>)], path: &Path) {
     let fingerprints: Vec<String> = vulns.iter()
         .flat_map(|(_, vs)| vs.iter().map(make_finding_fingerprint))
         .collect();
@@ -512,7 +703,7 @@ fn compile_exclude_patterns(patterns: &[String]) -> Vec<Pattern> {
 /// Returns the path where the report was saved, or None if saving was skipped/failed.
 fn save_markdown_report(
     reporter: &VulnerabilityReporter,
-    target_path: &PathBuf,
+    target_path: &Path,
     output_override: &Option<PathBuf>,
     quiet: bool,
 ) -> Option<PathBuf> {
@@ -532,7 +723,7 @@ fn save_markdown_report(
             .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
             .collect();
         let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
-        PathBuf::from(format!("41swara_report_{}_{}.md", clean_name, timestamp))
+        PathBuf::from(format!("41swara_report_{clean_name}_{timestamp}.md"))
     };
 
     // Write the report
@@ -554,6 +745,72 @@ fn save_markdown_report(
             );
             None
         }
+    }
+}
+
+/// Merge Slither findings with 41Swara findings for correlation.
+/// Boosts confidence of findings confirmed by both tools; adds Slither-only findings.
+fn merge_slither_findings(vulnerabilities: &mut Vec<Vulnerability>, slither_path: &Path, quiet: bool) {
+    use integrations::slither::{SlitherIntegration, CorrelationType};
+
+    let mut slither = SlitherIntegration::new();
+    match slither.load_from_file(slither_path) {
+        Ok(count) => {
+            if !quiet {
+                eprintln!("{} Loaded {} Slither findings for correlation",
+                    "Slither:".cyan(), count);
+            }
+            let correlated = slither.correlate(vulnerabilities);
+
+            // Boost confidence for corroborated findings
+            let mut boosted = 0usize;
+            for cf in &correlated {
+                if cf.correlation == CorrelationType::BothFound {
+                    if let Some(ref swara_f) = cf.swara_finding {
+                        for v in vulnerabilities.iter_mut() {
+                            if v.line_number == swara_f.line_number && v.title == swara_f.title {
+                                v.confidence_percent = (v.confidence_percent + 15).min(100);
+                                boosted += 1;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Add Slither-only findings
+            let mut added = 0usize;
+            for cf in &correlated {
+                if cf.correlation == CorrelationType::SlitherOnly {
+                    if let Some(ref sf) = cf.slither_finding {
+                        vulnerabilities.push(slither.convert_to_vulnerability(sf));
+                        added += 1;
+                    }
+                }
+            }
+
+            if !quiet {
+                eprintln!("{} {} corroborated (boosted), {} Slither-only added",
+                    "Slither:".cyan(), boosted, added);
+            }
+        }
+        Err(e) => {
+            eprintln!("{} Failed to load Slither JSON: {}", "Warning:".yellow(), e);
+        }
+    }
+}
+
+/// Generate Foundry PoC test files for Critical/High findings.
+fn generate_foundry_pocs(vulnerabilities: &[Vulnerability], base_path: &Path, quiet: bool) {
+    use integrations::foundry::FoundryIntegration;
+
+    let foundry = FoundryIntegration::new(&base_path.to_string_lossy());
+    let generated_files = foundry.generate_poc_tests(vulnerabilities);
+
+    if !quiet && !generated_files.is_empty() {
+        eprintln!("{} Generated {} PoC test files", "Foundry:".cyan(), generated_files.len());
+        let index = foundry.generate_test_index(&generated_files);
+        eprintln!("{index}");
     }
 }
 
@@ -583,10 +840,20 @@ fn process_file(args: &Args, path: &PathBuf) -> i32 {
             // Scan once and reuse results for all output paths
             match scanner.scan_file(path) {
                 Ok(mut vulnerabilities) => {
+                    // Slither correlation: merge findings if --slither-json is provided
+                    if let Some(ref slither_path) = args.slither_json {
+                        merge_slither_findings(&mut vulnerabilities, slither_path, args.quiet);
+                    }
+
                     // Apply severity filter
                     vulnerabilities.retain(|v| args.min_severity.matches(&v.severity));
                     // Apply CLI filters (confidence, SWC, baseline)
                     apply_filters(&mut vulnerabilities, args, &baseline_ids);
+
+                    // Generate Foundry PoC tests if requested
+                    if args.generate_poc {
+                        generate_foundry_pocs(&vulnerabilities, path, args.quiet);
+                    }
 
                     // Export baseline if requested
                     if let Some(ref export_path) = args.export_baseline {
@@ -664,24 +931,24 @@ fn process_file(args: &Args, path: &PathBuf) -> i32 {
 /// Get list of modified .sol files from git diff
 fn get_git_modified_files(repo_path: &PathBuf, base_ref: &str) -> Result<Vec<PathBuf>, String> {
     let repo = Repository::open(repo_path)
-        .map_err(|e| format!("Failed to open git repository: {}", e))?;
+        .map_err(|e| format!("Failed to open git repository: {e}"))?;
 
     // Get the HEAD tree
     let head = repo.head()
-        .map_err(|e| format!("Failed to get HEAD: {}", e))?;
+        .map_err(|e| format!("Failed to get HEAD: {e}"))?;
     let head_tree = head.peel_to_tree()
-        .map_err(|e| format!("Failed to get HEAD tree: {}", e))?;
+        .map_err(|e| format!("Failed to get HEAD tree: {e}"))?;
 
     // Get the base reference tree
     let base_obj = repo.revparse_single(base_ref)
-        .map_err(|e| format!("Failed to resolve '{}': {}", base_ref, e))?;
+        .map_err(|e| format!("Failed to resolve '{base_ref}': {e}"))?;
     let base_tree = base_obj.peel_to_tree()
-        .map_err(|e| format!("Failed to get base tree: {}", e))?;
+        .map_err(|e| format!("Failed to get base tree: {e}"))?;
 
     // Create diff
     let mut diff_opts = DiffOptions::new();
     let diff = repo.diff_tree_to_tree(Some(&base_tree), Some(&head_tree), Some(&mut diff_opts))
-        .map_err(|e| format!("Failed to create diff: {}", e))?;
+        .map_err(|e| format!("Failed to create diff: {e}"))?;
 
     let mut modified_files = Vec::new();
     let workdir = repo.workdir()
@@ -708,12 +975,12 @@ fn get_git_modified_files(repo_path: &PathBuf, base_ref: &str) -> Result<Vec<Pat
             true
         },
         None, None, None,
-    ).map_err(|e| format!("Failed to process diff: {}", e))?;
+    ).map_err(|e| format!("Failed to process diff: {e}"))?;
 
     // Also check for unstaged changes
     let mut diff_opts_workdir = DiffOptions::new();
     let diff_workdir = repo.diff_tree_to_workdir_with_index(Some(&head_tree), Some(&mut diff_opts_workdir))
-        .map_err(|e| format!("Failed to create workdir diff: {}", e))?;
+        .map_err(|e| format!("Failed to create workdir diff: {e}"))?;
 
     diff_workdir.foreach(
         &mut |delta, _progress| {
@@ -735,7 +1002,7 @@ fn get_git_modified_files(repo_path: &PathBuf, base_ref: &str) -> Result<Vec<Pat
             true
         },
         None, None, None,
-    ).map_err(|e| format!("Failed to process workdir diff: {}", e))?;
+    ).map_err(|e| format!("Failed to process workdir diff: {e}"))?;
 
     Ok(modified_files)
 }
@@ -772,7 +1039,7 @@ fn run_watch_mode(dir: &PathBuf, args: &Args) -> i32 {
                     EventKind::Modify(_) | EventKind::Create(_) => {
                         // Check if any .sol files were modified
                         let sol_files: Vec<_> = event.paths.iter()
-                            .filter(|p| p.extension().map_or(false, |ext| ext == "sol"))
+                            .filter(|p| p.extension().is_some_and(|ext| ext == "sol"))
                             .collect();
 
                         if !sol_files.is_empty() {
@@ -813,7 +1080,7 @@ fn perform_quick_scan(scanner: &ContractScanner, dir: &PathBuf, args: &Args) {
         .into_iter()
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_file())
-        .filter(|e| e.path().extension().map_or(false, |ext| ext == "sol"))
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "sol"))
         .map(|e| e.path().to_path_buf())
         .collect();
 
@@ -821,11 +1088,15 @@ fn perform_quick_scan(scanner: &ContractScanner, dir: &PathBuf, args: &Args) {
         return;
     }
 
-    let all_results: Arc<Mutex<Vec<(PathBuf, Vec<Vulnerability>)>>> = Arc::new(Mutex::new(Vec::new()));
+    let all_results: SharedResults<(PathBuf, Vec<Vulnerability>)> = Arc::new(Mutex::new(Vec::new()));
 
     sol_files.par_iter().for_each(|file_path| {
         if let Ok(mut vulns) = scanner.scan_file(file_path) {
             vulns.retain(|v| args.min_severity.matches(&v.severity));
+            // Suppress threat model findings unless opted-in
+            if !args.show_threat_model {
+                vulns.retain(|v| !v.title.starts_with("[Threat Model]"));
+            }
             if !vulns.is_empty() {
                 all_results.lock().unwrap().push((file_path.clone(), vulns));
             }
@@ -935,7 +1206,7 @@ fn process_directory(args: &Args, dir: &PathBuf) -> i32 {
             .into_iter()
             .filter_map(|e| e.ok())
             .filter(|e| e.file_type().is_file())
-            .filter(|e| e.path().extension().map_or(false, |ext| ext == "sol"))
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "sol"))
             .filter(|e| !should_exclude_file(e.path(), &exclude_patterns))
             .map(|e| e.path().to_path_buf())
             .collect()
@@ -967,14 +1238,65 @@ fn process_directory(args: &Args, dir: &PathBuf) -> i32 {
 
     // PARALLEL SCANNING with rayon
     let scanner = create_scanner(args);
-    let all_results: Arc<Mutex<Vec<(PathBuf, Vec<Vulnerability>)>>> = Arc::new(Mutex::new(Vec::new()));
+    let all_results: SharedResults<(PathBuf, Vec<Vulnerability>)> = Arc::new(Mutex::new(Vec::new()));
     let error_count: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
     let min_severity = args.min_severity;
     let progress_ref = progress.as_ref();
 
+    // Initialize cache if --cache is enabled
+    let scan_cache = if args.cache {
+        let cache_dir = args.cache_dir.clone()
+            .unwrap_or_else(|| dir.join(".41swara_cache"));
+        let cache = cache::ScanCache::persistent(&cache_dir);
+        cache.prune_expired();
+        if !args.quiet && args.format == "text" {
+            let stats = cache.stats();
+            if stats.total_entries > 0 {
+                eprintln!("{} Loaded {} cached entries", "Cache:".cyan(), stats.total_entries);
+            }
+        }
+        Some(Arc::new(cache))
+    } else {
+        None
+    };
+    let cache_ref = scan_cache.clone();
+    let cache_hits = Arc::new(Mutex::new(0usize));
+    let cache_hits_ref = cache_hits.clone();
+
     sol_files.par_iter().for_each(|file_path| {
+        // Try cache hit first
+        if let Some(ref cache) = cache_ref {
+            if let Ok(content) = std::fs::read_to_string(file_path) {
+                let path_str = file_path.to_string_lossy().to_string();
+                if cache.is_cached(&path_str, &content) {
+                    if let Some(cached_vulns) = cache.get(&path_str) {
+                        let mut vulns: Vec<Vulnerability> = cached_vulns.into_iter()
+                            .filter_map(|cv| convert_cached_to_vulnerability(&cv))
+                            .collect();
+                        vulns.retain(|v| min_severity.matches(&v.severity));
+                        if !vulns.is_empty() {
+                            all_results.lock().unwrap().push((file_path.clone(), vulns));
+                        }
+                        *cache_hits_ref.lock().unwrap() += 1;
+                        if let Some(pb) = progress_ref {
+                            pb.inc(1);
+                        }
+                        return;
+                    }
+                }
+            }
+        }
+
         match scanner.scan_file(file_path) {
             Ok(mut vulns) => {
+                // Store in cache before filtering
+                if let Some(ref cache) = cache_ref {
+                    if let Ok(content) = std::fs::read_to_string(file_path) {
+                        let path_str = file_path.to_string_lossy().to_string();
+                        cache.put(&path_str, &content, &vulns);
+                    }
+                }
+
                 // Apply severity filter
                 vulns.retain(|v| min_severity.matches(&v.severity));
 
@@ -994,6 +1316,14 @@ fn process_directory(args: &Args, dir: &PathBuf) -> i32 {
         }
     });
 
+    // Show cache stats
+    if args.cache && !args.quiet && args.format == "text" {
+        let hits = *cache_hits.lock().unwrap();
+        if hits > 0 {
+            eprintln!("{} {} cache hits, {} files scanned", "Cache:".cyan(), hits, sol_files.len() - hits);
+        }
+    }
+
     if let Some(pb) = progress {
         pb.finish_and_clear();
     }
@@ -1003,11 +1333,29 @@ fn process_directory(args: &Args, dir: &PathBuf) -> i32 {
         Ok(mutex) => mutex.into_inner().unwrap(),
         Err(arc) => arc.lock().unwrap().clone(),
     };
+
+    // Slither correlation: merge findings if --slither-json is provided
+    if let Some(ref slither_path) = args.slither_json {
+        for (_, vulns) in &mut results {
+            merge_slither_findings(vulns, slither_path, args.quiet);
+        }
+    }
+
     for (_, vulns) in &mut results {
         apply_filters(vulns, args, &baseline_ids);
     }
     // Remove files that ended up with no findings after filtering
     results.retain(|(_, vulns)| !vulns.is_empty());
+
+    // Generate Foundry PoC tests if requested
+    if args.generate_poc {
+        let all_vulns: Vec<Vulnerability> = results.iter()
+            .flat_map(|(_, vs)| vs.clone())
+            .collect();
+        if !all_vulns.is_empty() {
+            generate_foundry_pocs(&all_vulns, dir, args.quiet);
+        }
+    }
 
     let total_vulns: usize = results.iter().map(|(_, v)| v.len()).sum();
 
@@ -1173,7 +1521,7 @@ fn scan_directory_professional_audit(dir: &PathBuf, args: &Args) {
         .into_iter()
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_file())
-        .filter(|e| e.path().extension().map_or(false, |ext| ext == "sol"))
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "sol"))
         .filter(|e| !should_exclude_file(e.path(), &exclude_patterns))
         .collect();
 
@@ -1198,7 +1546,7 @@ fn scan_directory_professional_audit(dir: &PathBuf, args: &Args) {
     };
 
     // Parallel scan: collect (relative_path_string, vulnerabilities) pairs
-    let audit_results: Arc<Mutex<Vec<(String, Vec<Vulnerability>)>>> = Arc::new(Mutex::new(Vec::new()));
+    let audit_results: SharedResults<(String, Vec<Vulnerability>)> = Arc::new(Mutex::new(Vec::new()));
     let progress_ref = progress.as_ref();
 
     sol_files.par_iter().for_each(|entry| {
@@ -1259,7 +1607,7 @@ fn scan_directory_clean_report(scanner: &ContractScanner, reporter: &Vulnerabili
         .into_iter()
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_file())
-        .filter(|e| e.path().extension().map_or(false, |ext| ext == "sol"))
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "sol"))
         .collect();
 
     if sol_files.is_empty() {

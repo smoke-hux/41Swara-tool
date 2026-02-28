@@ -1,6 +1,6 @@
 [package]
 name = "solidity_scanner"
-version = "0.7.0"
+version = "0.8.0"
 edition = "2021"
 description = "High-performance smart contract vulnerability scanner for Ethereum Foundation and blockchain security researchers"
 authors = ["41Swara Security Team"]
@@ -54,6 +54,9 @@ uuid = { version = "1.6", features = ["v4"] }
 
 # Glob pattern matching for file exclusion
 glob = "0.3"
+
+# TOML configuration for custom rules
+toml = "0.8"
 
 [profile.release]
 lto = true                    # Link-time optimization

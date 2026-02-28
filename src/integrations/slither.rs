@@ -496,6 +496,10 @@ impl SlitherIntegration {
             confidence,
             swc_id,
             fix_suggestion: None,
+            cvss_score: None,
+            cvss_vector: None,
+            exploit_references: Vec::new(),
+            attack_path: None,
         }
     }
 

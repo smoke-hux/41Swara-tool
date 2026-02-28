@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build
+        run: cargo build --release
+      - name: Run unit tests
+        run: cargo test --all
+      - name: Run clippy
+        run: cargo clippy -- -D warnings
+      - name: Smoke test - scan vulnerable contract
+        run: |
+          ./target/release/41swara tests/contracts/reentrancy/classic_reentrancy.sol --format json --min-severity info | \
+          python3 -c "
+          import json, sys
+          data = json.load(sys.stdin)
+          total = data.get('total_vulnerabilities', 0)
+          assert total > 0, f'Expected findings in classic_reentrancy.sol, got {total}'
+          print(f'Smoke test passed: {total} vulnerabilities found')
+          "
+      - name: Smoke test - no critical false positives
+        run: |
+          ./target/release/41swara tests/contracts/false_positives/safe_erc20_usage.sol --format json --min-severity critical | \
+          python3 -c "
+          import json, sys
+          data = json.load(sys.stdin)
+          total = data.get('total_vulnerabilities', 0)
+          assert total == 0, f'False positive: safe_erc20_usage.sol had {total} critical findings'
+          print('False positive test passed: 0 critical findings')
+          "

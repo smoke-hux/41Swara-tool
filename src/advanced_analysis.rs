@@ -89,7 +89,8 @@ impl AdvancedAnalyzer {
             return None;
         }
 
-        let external_call_pattern = Regex::new(r"\.call\{|\.transfer\(|\.send\(").unwrap();
+        // Only flag .call{} as dangerous — .transfer() and .send() use 2300 gas (safe from reentrancy)
+        let external_call_pattern = Regex::new(r"\.call\{").unwrap();
         let state_change_pattern = Regex::new(r"(\w+)\s*=\s*[^=]|\w+\[.*\]\s*=\s*|\+\+|--").unwrap();
 
         let lines: Vec<&str> = content.lines().collect();
@@ -106,10 +107,25 @@ impl AdvancedAnalyzer {
                     continue;
                 }
 
-                // Check if there are state changes after this external call
-                for future_idx in (idx + 1)..lines.len().min(idx + 10) {
-                    let future_line = lines[future_idx];
+                // Check if the enclosing function has access control (onlyOwner etc.)
+                let only_re = Regex::new(r"\bonly\w+|nonReentrant|whenNotPaused").unwrap();
+                // Scan backwards from current line to find function declaration
+                let mut func_sig = String::new();
+                for i in (0..=idx).rev() {
+                    if let Some(l) = lines.get(i) {
+                        func_sig.insert_str(0, l);
+                        func_sig.insert(0, ' ');
+                        if l.contains("function ") {
+                            break;
+                        }
+                    }
+                }
+                if only_re.is_match(&func_sig) {
+                    continue;
+                }
 
+                // Check if there are state changes after this external call
+                for future_line in &lines[(idx + 1)..lines.len().min(idx + 10)] {
                     // Skip closing braces and comments
                     if future_line.trim() == "}" || future_line.trim().starts_with("//") {
                         continue;
@@ -245,10 +261,10 @@ impl AdvancedAnalyzer {
                                 vulnerabilities.push(Vulnerability::new(
                                     VulnerabilitySeverity::Low,
                                     VulnerabilityCategory::ComplexityIssues,
-                                    format!("High Complexity in {}", function_name),
-                                    format!("Function has cyclomatic complexity of {}", complexity),
+                                    format!("High Complexity in {function_name}"),
+                                    format!("Function has cyclomatic complexity of {complexity}"),
                                     function_start,
-                                    format!("function {}", function_name),
+                                    format!("function {function_name}"),
                                     "Consider breaking down complex functions into smaller pieces".to_string(),
                                 ));
                             }
@@ -291,30 +307,71 @@ impl AdvancedAnalyzer {
             "setOwner", "changeOwner", "upgrade", "initialize", "destroy"
         ];
 
-        let function_pattern = Regex::new(r"function\s+(\w+)\s*\([^)]*\)\s*(\w+\s+)*\{").unwrap();
+        // Match the start of a function declaration (may span multiple lines)
+        let function_start_pattern = Regex::new(r"function\s+(\w+)\s*\(").unwrap();
 
-        for (idx, line) in content.lines().enumerate() {
-            if let Some(captures) = function_pattern.captures(line) {
+        let lines: Vec<&str> = content.lines().collect();
+        for (idx, line) in lines.iter().enumerate() {
+            if let Some(captures) = function_start_pattern.captures(line) {
                 let function_name = captures.get(1).map_or("", |m| m.as_str());
 
                 // Check if it's a critical function
-                for critical in &critical_functions {
-                    if function_name.to_lowercase().contains(critical) {
-                        // Check if it has any modifier
-                        let has_modifier = modifiers.iter().any(|m| line.contains(m));
+                let is_critical = critical_functions.iter()
+                    .any(|cf| function_name.to_lowercase().contains(cf));
+                if !is_critical {
+                    continue;
+                }
 
-                        if !has_modifier && !line.contains("private") && !line.contains("internal") {
-                            vulnerabilities.push(Vulnerability::high_confidence(
-                                VulnerabilitySeverity::Critical,
-                                VulnerabilityCategory::AccessControl,
-                                format!("Unprotected Critical Function: {}", function_name),
-                                "Critical function lacks access control modifiers".to_string(),
-                                idx + 1,
-                                line.to_string(),
-                                "Add appropriate access control modifiers (onlyOwner, onlyRole, etc.)".to_string(),
-                            ));
+                // Read the full function signature (from `function` keyword to opening `{`)
+                // This handles multi-line signatures with modifiers on separate lines
+                let full_sig = {
+                    let mut sig = String::new();
+                    for line_idx in idx..lines.len().min(idx + 10) {
+                        sig.push_str(lines[line_idx]);
+                        sig.push(' ');
+                        if lines[line_idx].contains('{') {
+                            break;
                         }
                     }
+                    sig
+                };
+
+                // Check if it has any custom modifier defined in this contract
+                let has_modifier = modifiers.iter().any(|m| full_sig.contains(m.as_str()));
+
+                // Check for well-known imported/inherited modifiers
+                let has_known_modifier = full_sig.contains("nonReentrant")
+                    || full_sig.contains("onlyOwner")
+                    || full_sig.contains("onlyRole")
+                    || full_sig.contains("onlyAdmin")
+                    || full_sig.contains("whenNotPaused")
+                    || full_sig.contains("initializer")
+                    || Regex::new(r"\bonly\w+").unwrap().is_match(&full_sig);
+
+                // Check visibility: skip private/internal functions
+                let is_private_or_internal = full_sig.contains("private") || full_sig.contains("internal");
+
+                // Check if the function body uses msg.sender balance (user withdrawal, not admin)
+                let is_user_facing = {
+                    let fn_body: String = lines.iter()
+                        .skip(idx)
+                        .take(20)
+                        .copied()
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    fn_body.contains("msg.sender") && (fn_body.contains("balances[") || fn_body.contains("balance["))
+                };
+
+                if !has_modifier && !has_known_modifier && !is_user_facing && !is_private_or_internal {
+                    vulnerabilities.push(Vulnerability::high_confidence(
+                        VulnerabilitySeverity::Critical,
+                        VulnerabilityCategory::AccessControl,
+                        format!("Unprotected Critical Function: {function_name}"),
+                        "Critical function lacks access control modifiers".to_string(),
+                        idx + 1,
+                        line.to_string(),
+                        "Add appropriate access control modifiers (onlyOwner, onlyRole, etc.)".to_string(),
+                    ));
                 }
             }
         }
@@ -392,15 +449,15 @@ impl AdvancedAnalyzer {
         for (idx, line) in lines.iter().enumerate() {
             if loop_pattern.is_match(line) {
                 // Check next few lines for storage reads
-                for check_idx in (idx + 1)..lines.len().min(idx + 5) {
-                    if storage_read_pattern.is_match(lines[check_idx]) {
+                for (offset, check_line) in lines[(idx + 1)..lines.len().min(idx + 5)].iter().enumerate() {
+                    if storage_read_pattern.is_match(check_line) {
                         vulnerabilities.push(Vulnerability::new(
                             VulnerabilitySeverity::Low,
                             VulnerabilityCategory::GasOptimization,
                             "Storage Read in Loop".to_string(),
                             "Reading from storage in loops is expensive".to_string(),
-                            check_idx + 1,
-                            lines[check_idx].to_string(),
+                            idx + 1 + offset + 1,
+                            check_line.to_string(),
                             "Cache storage values in memory variables before loops".to_string(),
                         ));
                         break;
@@ -425,7 +482,7 @@ impl AdvancedAnalyzer {
                     VulnerabilitySeverity::Info,
                     VulnerabilityCategory::GasOptimization,
                     "Multiple Storage Writes".to_string(),
-                    format!("Variable written {} times - consider batching", count),
+                    format!("Variable written {count} times - consider batching"),
                     1,
                     line.to_string(),
                     "Batch storage operations to save gas".to_string(),
@@ -507,7 +564,7 @@ impl AdvancedAnalyzer {
                             VulnerabilitySeverity::Critical,
                             VulnerabilityCategory::OracleManipulation,
                             "Price Oracle Manipulation Risk".to_string(),
-                            format!("{} - vulnerable to flash loan attacks", desc),
+                            format!("{desc} - vulnerable to flash loan attacks"),
                             idx + 1,
                             line.to_string(),
                             "Use Chainlink price feeds, TWAP oracles, or multiple oracle sources".to_string(),
@@ -1157,7 +1214,7 @@ impl AdvancedAnalyzer {
                     vulnerabilities.push(Vulnerability::high_confidence(
                         VulnerabilitySeverity::Critical,
                         VulnerabilityCategory::InputValidationFailure,
-                        format!("CRITICAL: Unchecked Calldata in {}", func_name),
+                        format!("CRITICAL: Unchecked Calldata in {func_name}"),
                         "Calldata parameter without validation - #1 exploit vector (34.6% of hacks)".to_string(),
                         idx + 1,
                         line.to_string(),
@@ -1179,14 +1236,14 @@ impl AdvancedAnalyzer {
 
                 let next_lines: Vec<&str> = content.lines().skip(idx).take(10).collect();
                 let has_length_check = next_lines.iter().any(|l|
-                    l.contains(&format!("{}.length", array_param)) && l.contains("require")
+                    l.contains(&format!("{array_param}.length")) && l.contains("require")
                 );
 
                 if !has_length_check {
                     vulnerabilities.push(Vulnerability::new(
                         VulnerabilitySeverity::High,
                         VulnerabilityCategory::InputValidationFailure,
-                        format!("Missing Array Length Validation in {}", func_name),
+                        format!("Missing Array Length Validation in {func_name}"),
                         "Array parameter without length validation - enables DoS and manipulation".to_string(),
                         idx + 1,
                         line.to_string(),
@@ -1519,11 +1576,16 @@ impl AdvancedAnalyzer {
         }
 
         // Incorrect state update order (CEI violation)
-        let transfer_pattern = Regex::new(r"\.call\{value:|\.transfer\(|safeTransfer").unwrap();
+        // Only flag .call{value:} — .transfer() and .send() use 2300 gas (safe from reentrancy)
+        let transfer_pattern = Regex::new(r"\.call\{value:|safeTransfer").unwrap();
         let state_update_pattern = Regex::new(r"\w+\s*=\s*[^=]|\w+\[.*\]\s*=").unwrap();
 
         let lines: Vec<&str> = content.lines().collect();
         for (idx, line) in lines.iter().enumerate() {
+            // Skip comments
+            if line.trim().starts_with("//") || line.trim().starts_with("*") || line.trim().starts_with("/*") || line.trim().starts_with("///") {
+                continue;
+            }
             if transfer_pattern.is_match(line) {
                 // Check if state updates happen AFTER this transfer
                 for future_idx in (idx + 1)..lines.len().min(idx + 10) {
@@ -2844,8 +2906,7 @@ impl AdvancedAnalyzer {
                                         VulnerabilityCategory::Push0Compatibility,
                                         "PUSH0 Opcode Compatibility Risk".to_string(),
                                         format!(
-                                            "Solidity {} uses PUSH0 opcode which is not supported on chains that haven't activated Shanghai (Arbitrum, older BSC, some L2s)",
-                                            version_str
+                                            "Solidity {version_str} uses PUSH0 opcode which is not supported on chains that haven't activated Shanghai (Arbitrum, older BSC, some L2s)"
                                         ),
                                         idx + 1,
                                         line.to_string(),
@@ -3479,7 +3540,7 @@ impl AdvancedAnalyzer {
                         vulnerabilities.push(Vulnerability::new(
                             VulnerabilitySeverity::High,
                             VulnerabilityCategory::MissingStorageGap,
-                            format!("Missing Storage Gap in {}", name),
+                            format!("Missing Storage Gap in {name}"),
                             "Upgradeable contract with state variables but no __gap. Adding new variables in future upgrades will shift storage slots of child contracts, corrupting their data.".to_string(),
                             idx + 1,
                             line.trim().to_string(),
@@ -3613,7 +3674,7 @@ impl AdvancedAnalyzer {
                         vulnerabilities.push(Vulnerability::new(
                             VulnerabilitySeverity::Low,
                             VulnerabilityCategory::MissingERC165,
-                            format!("Missing ERC-165 in NFT Contract {}", name),
+                            format!("Missing ERC-165 in NFT Contract {name}"),
                             "Token contract does not implement ERC-165 supportsInterface(). This breaks composability as other contracts cannot detect supported interfaces.".to_string(),
                             idx + 1,
                             line.trim().to_string(),
@@ -4429,10 +4490,9 @@ impl CrossContractAnalyzer {
             // Check if imported contracts import this contract back
             for import in &imports {
                 if let Some(imported_content) = self.contracts.get(*import) {
-                    if imported_content.contains(&format!("import.*{}", contract_name)) {
+                    if imported_content.contains(&format!("import.*{contract_name}")) {
                         issues.push(format!(
-                            "Circular dependency detected: {} <-> {}",
-                            contract_name, import
+                            "Circular dependency detected: {contract_name} <-> {import}"
                         ));
                     }
                 }
@@ -4455,8 +4515,7 @@ impl CrossContractAnalyzer {
                 if parents.len() > 1 {
                     // Check for diamond problem
                     issues.push(format!(
-                        "Multiple inheritance detected in {}: {:?} - verify no conflicts",
-                        contract_name, parents
+                        "Multiple inheritance detected in {contract_name}: {parents:?} - verify no conflicts"
                     ));
                 }
             }

@@ -44,7 +44,7 @@ pub enum ContractType {
     Proxy,
     Governor,
     Timelock,
-    DEX,
+    Dex,
     Lending,
     Bridge,
     FlashLoan,
@@ -54,7 +54,7 @@ pub enum ContractType {
 pub enum PatternType {
     FlashLoanCapable,
     OracleDependent,
-    DEXInteraction,
+    DexInteraction,
     AccessControlled,
     Pausable,
     Upgradeable,
@@ -75,7 +75,7 @@ impl ABIScanner {
 
     pub fn parse_abi(&self, content: &str) -> Result<ABIAnalysis, String> {
         let abi: Value = serde_json::from_str(content)
-            .map_err(|e| format!("Invalid JSON: {}", e))?;
+            .map_err(|e| format!("Invalid JSON: {e}"))?;
 
         let items = abi.as_array().ok_or("ABI must be an array")?;
 
@@ -114,7 +114,7 @@ impl ABIScanner {
     fn parse_function(&self, item: &Value) -> Option<ABIFunction> {
         let name = item.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string();
         let state_mutability = item.get("stateMutability").and_then(|s| s.as_str()).unwrap_or("nonpayable").to_string();
-        let inputs = self.parse_params(item.get("inputs"));
+        let inputs = ABIScanner::parse_params(item.get("inputs"));
         let selector = self.compute_selector(&name, &inputs);
 
         Some(ABIFunction { name, state_mutability, inputs, selector })
@@ -123,21 +123,21 @@ impl ABIScanner {
     fn parse_event(&self, item: &Value) -> Option<ABIEvent> {
         let name = item.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string();
         let anonymous = item.get("anonymous").and_then(|a| a.as_bool()).unwrap_or(false);
-        let inputs = self.parse_params(item.get("inputs"));
+        let inputs = ABIScanner::parse_params(item.get("inputs"));
 
         Some(ABIEvent { name, inputs, anonymous })
     }
 
-    fn parse_params(&self, params: Option<&Value>) -> Vec<ABIParameter> {
+    fn parse_params(params: Option<&Value>) -> Vec<ABIParameter> {
         let Some(arr) = params.and_then(|p| p.as_array()) else { return Vec::new() };
 
-        arr.iter().filter_map(|p| {
-            Some(ABIParameter {
+        arr.iter().map(|p| {
+            ABIParameter {
                 name: p.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string(),
                 param_type: p.get("type").and_then(|t| t.as_str()).unwrap_or("").to_string(),
                 indexed: p.get("indexed").and_then(|i| i.as_bool()),
-                components: p.get("components").map(|c| self.parse_params(Some(c))),
-            })
+                components: p.get("components").map(|c| Self::parse_params(Some(c))),
+            }
         }).collect()
     }
 
@@ -183,7 +183,7 @@ impl ABIScanner {
         if names.contains("schedule") && names.contains("execute") { return ContractType::Timelock }
 
         // DEX
-        if names.contains("swap") || names.contains("addLiquidity") { return ContractType::DEX }
+        if names.contains("swap") || names.contains("addLiquidity") { return ContractType::Dex }
 
         // Lending
         if names.contains("borrow") && names.contains("repay") { return ContractType::Lending }
@@ -208,7 +208,7 @@ impl ABIScanner {
         if oracle.iter().any(|f| names.contains(f)) { patterns.push(PatternType::OracleDependent) }
 
         let dex = ["swap", "addLiquidity", "removeLiquidity"];
-        if dex.iter().any(|f| names.contains(f)) { patterns.push(PatternType::DEXInteraction) }
+        if dex.iter().any(|f| names.contains(f)) { patterns.push(PatternType::DexInteraction) }
 
         if names.contains("owner") || names.contains("hasRole") { patterns.push(PatternType::AccessControlled) }
         if names.contains("pause") && names.contains("unpause") { patterns.push(PatternType::Pausable) }
@@ -554,7 +554,7 @@ impl ABIScanner {
         }
 
         // DEX risks
-        if patterns.contains(&PatternType::DEXInteraction) {
+        if patterns.contains(&PatternType::DexInteraction) {
             for func in functions.iter().filter(|f| f.name.contains("swap")) {
                 let has_slippage = func.inputs.iter().any(|p| p.name.contains("min") || p.name.contains("Max"));
                 let has_deadline = func.inputs.iter().any(|p| p.name.contains("deadline"));

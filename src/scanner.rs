@@ -83,6 +83,7 @@ pub struct ContractScanner {
     threat_model_generator: ThreatModelGenerator,   // Automatic threat model generation
     eip_analyzer: EIPAnalyzer,                     // ERC standard compliance checks
     false_positive_filter: FalsePositiveFilter,     // Multi-pass false positive reduction
+    ast_bridge: crate::ast::bridge::ASTAnalysisBridge, // AST/CFG/taint structural analysis
     config: ScannerConfig,                         // Feature toggle configuration
 }
 
@@ -193,16 +194,62 @@ impl ContractScanner {
             .collect()
     }
 
+    /// Get the full function signature spanning multiple lines (from `function` keyword to `{`).
+    /// Solidity function signatures can span many lines with parameters and modifiers.
+    fn get_full_function_signature(&self, lines: &[(usize, String)], func_line_idx: usize) -> String {
+        let mut sig = String::new();
+        let max_lines = (func_line_idx + 15).min(lines.len());
+        for i in func_line_idx..max_lines {
+            sig.push_str(&lines[i].1);
+            sig.push(' ');
+            if lines[i].1.contains('{') {
+                break;
+            }
+        }
+        sig
+    }
+
+    /// Resolve well-known modifiers from inherited contracts.
+    /// Maps common base contracts to the modifiers they provide.
+    fn resolve_known_modifiers(&self, content: &str) -> Vec<String> {
+        let mut modifiers = Vec::new();
+        // OpenZeppelin Ownable → onlyOwner
+        if content.contains("Ownable") || content.contains("is Ownable") {
+            modifiers.push("onlyOwner".to_string());
+        }
+        // ReentrancyGuard → nonReentrant
+        if content.contains("ReentrancyGuard") {
+            modifiers.push("nonReentrant".to_string());
+        }
+        // Pausable → whenNotPaused, whenPaused
+        if content.contains("Pausable") || content.contains("is Pausable") {
+            modifiers.push("whenNotPaused".to_string());
+            modifiers.push("whenPaused".to_string());
+        }
+        // AccessControl → onlyRole
+        if content.contains("AccessControl") {
+            modifiers.push("onlyRole".to_string());
+        }
+        // Initializable → initializer, reinitializer
+        if content.contains("Initializable") {
+            modifiers.push("initializer".to_string());
+            modifiers.push("reinitializer".to_string());
+        }
+        // Also include contract-defined modifiers
+        modifiers.extend(self.extract_modifiers(content));
+        modifiers
+    }
+
     /// Check if a function declaration line contains access control modifiers
     /// (standard keywords like onlyOwner, or custom modifiers from the contract).
     fn has_access_control_modifier(&self, function_line: &str, modifiers: &[String]) -> bool {
-        // Check for common access control patterns
+        // Check for common access control and protection modifiers
         let access_control_keywords = vec![
             "onlyOwner", "onlyAdmin", "onlyRole", "onlyMinter",
             "onlyGovernance", "authorized", "onlyController",
             "onlyOperator", "onlyProxy", "onlyDelegateCall",
             "private", "internal", "whenNotPaused", "whenPaused",
-            "initializer", "reinitializer"
+            "initializer", "reinitializer", "nonReentrant",
         ];
 
         for keyword in &access_control_keywords {
@@ -284,6 +331,7 @@ impl ContractScanner {
             threat_model_generator: ThreatModelGenerator::new(verbose),
             eip_analyzer: EIPAnalyzer::new(verbose),
             false_positive_filter: FalsePositiveFilter::new(FilterConfig::default()),
+            ast_bridge: crate::ast::bridge::ASTAnalysisBridge::new(),
             config: ScannerConfig::default(),
         }
     }
@@ -305,7 +353,44 @@ impl ContractScanner {
             threat_model_generator: ThreatModelGenerator::new(verbose),
             eip_analyzer: EIPAnalyzer::new(verbose),
             false_positive_filter: FalsePositiveFilter::new(filter_config),
+            ast_bridge: crate::ast::bridge::ASTAnalysisBridge::new(),
             config,
+        }
+    }
+
+    /// Add custom rules from TOML config to the scanner's rule set.
+    pub fn add_custom_rules(&mut self, rules: Vec<VulnerabilityRule>) {
+        self.rules.extend(rules);
+    }
+
+    /// Apply rule overrides from TOML config (disable rules, change severity).
+    pub fn apply_rule_overrides(&mut self, config: &crate::config::ScanConfig) {
+        let disabled = config.disabled_rule_ids();
+
+        // Remove disabled rules
+        if !disabled.is_empty() {
+            self.rules.retain(|rule| {
+                // Check if rule title or SWC/41S ID matches a disabled ID
+                !disabled.iter().any(|id| rule.title.contains(id))
+            });
+        }
+
+        // Apply severity overrides
+        for rule in &mut self.rules {
+            for id in &["SWC-", "41S-"] {
+                if rule.title.contains(id) {
+                    // Extract the ID from the title
+                    if let Some(start) = rule.title.find(id) {
+                        let id_str: String = rule.title[start..]
+                            .chars()
+                            .take_while(|c| c.is_alphanumeric() || *c == '-')
+                            .collect();
+                        if let Some(new_severity) = config.severity_override(&id_str) {
+                            rule.severity = new_severity;
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -439,27 +524,79 @@ impl ContractScanner {
             vulnerabilities.extend(self.advanced_analyzer.analyze_2025_exploit_patterns(content));
         }
 
+        // Run DeFi-specific protocol analysis (AMM, Lending, Oracle, MEV)
+        if !is_test && !is_library {
+            let defi_analyzer = crate::defi::DeFiAnalyzer::new();
+            let defi_findings = defi_analyzer.analyze(content);
+            // Deduplicate: skip DeFi findings within 3 lines of same-category existing findings
+            for df in defi_findings {
+                let is_dup = vulnerabilities.iter().any(|existing| {
+                    existing.category == df.category
+                        && (existing.line_number as i64 - df.line_number as i64).abs() <= 3
+                });
+                if !is_dup {
+                    vulnerabilities.push(df);
+                }
+            }
+        }
+
+        // Run AST-based structural analysis (CFG reentrancy + taint tracking)
+        if !is_test && !is_library {
+            let ast_findings = self.ast_bridge.analyze(content);
+            // Deduplicate AST findings against regex-based findings
+            for af in ast_findings {
+                let is_dup = vulnerabilities.iter().any(|existing| {
+                    existing.category == af.category
+                        && (existing.line_number as i64 - af.line_number as i64).abs() <= 3
+                });
+                if !is_dup {
+                    vulnerabilities.push(af);
+                }
+            }
+        }
+
         // Detect compiler version for version-specific checks
         let compiler_version = self.parser.get_compiler_version(content);
         
-        // Check for detailed version vulnerabilities
+        // Check for detailed version vulnerabilities — consolidate into a single finding
         if let Some(detailed_version) = self.parser.get_detailed_version(content) {
             let version_vulns = self.parser.is_version_vulnerable(&detailed_version);
-            for vuln_desc in version_vulns.iter() {
-                let severity = if vuln_desc.contains("CRITICAL") {
+            if !version_vulns.is_empty() {
+                // Determine highest severity across all CVEs
+                let severity = if version_vulns.iter().any(|v| v.contains("CRITICAL")) {
                     crate::vulnerabilities::VulnerabilitySeverity::Critical
-                } else if vuln_desc.contains("0.4.") || vuln_desc.contains("0.5.") {
+                } else if version_vulns.iter().any(|v| v.contains("0.4.") || v.contains("0.5.")) {
                     crate::vulnerabilities::VulnerabilitySeverity::High
                 } else {
                     crate::vulnerabilities::VulnerabilitySeverity::Medium
                 };
+
+                // Build a single consolidated description
+                let consolidated_desc = if version_vulns.len() == 1 {
+                    version_vulns[0].clone()
+                } else {
+                    let mut desc = format!("{} known compiler issues:\n", version_vulns.len());
+                    for (i, vuln_desc) in version_vulns.iter().enumerate() {
+                        desc.push_str(&format!("  {}. {}\n", i + 1, vuln_desc));
+                    }
+                    desc
+                };
+
+                let pragma_str = self.parser.get_pragma_version(content).unwrap_or_default();
+                let version_str = pragma_str.trim().replace("pragma solidity ", "").replace(';', "");
+                let title = format!("Compiler: {} Known Issue{} for {}",
+                    version_vulns.len(),
+                    if version_vulns.len() > 1 { "s" } else { "" },
+                    if version_str.is_empty() { "detected version".to_string() } else { version_str }
+                );
+
                 vulnerabilities.push(Vulnerability::high_confidence(
                     severity,
                     crate::vulnerabilities::VulnerabilityCategory::CompilerBug,
-                    "Compiler Version Vulnerability".to_string(),
-                    vuln_desc.clone(),
-                    1, // Pragma is usually on line 1 or 2
-                    self.parser.get_pragma_version(content).unwrap_or_default(),
+                    title,
+                    consolidated_desc,
+                    1,
+                    pragma_str,
                     "Upgrade to Solidity 0.8.28 or later for the latest security fixes".to_string(),
                 ));
             }
@@ -550,6 +687,11 @@ impl ContractScanner {
                 vulnerabilities = self.false_positive_filter.filter(vulnerabilities, content);
             }
         }
+
+        // Enrich all findings with CVSS scores, exploit references, and attack paths
+        crate::cvss::enrich_with_cvss(&mut vulnerabilities);
+        crate::exploit_db::enrich_with_exploits(&mut vulnerabilities);
+        crate::attack_path::enrich_with_attack_paths(&mut vulnerabilities, content);
 
         // Sort vulnerabilities by line number
         vulnerabilities.sort_by(|a, b| a.line_number.cmp(&b.line_number));
@@ -695,13 +837,14 @@ impl ContractScanner {
                 }
                 // Check if function already has modifiers or access control
                 if line.contains("function") {
-                    let modifiers = self.extract_modifiers(full_content);
-                    if self.has_access_control_modifier(line, &modifiers) {
+                    let modifiers = self.resolve_known_modifiers(full_content);
+                    // Use multi-line signature to catch modifiers on continuation lines
+                    let full_sig = self.get_full_function_signature(lines, line_idx);
+                    if self.has_access_control_modifier(&full_sig, &modifiers) {
                         return false;
                     }
                     // Check if there's an inline access control check within the function
-                    // Look for the function body
-                    let mut func_end = line_idx + 20; // Check next 20 lines
+                    let mut func_end = line_idx + 20;
                     if func_end > lines.len() {
                         func_end = lines.len();
                     }
@@ -717,13 +860,24 @@ impl ContractScanner {
                 if self.is_internal_or_private(line) {
                     return false;
                 }
-                // Don't report if using OpenZeppelin access control
-                if self.uses_openzeppelin(full_content) && full_content.contains("Ownable") {
-                    if line.contains("function") {
-                        let modifiers = self.extract_modifiers(full_content);
-                        if modifiers.iter().any(|m| m.starts_with("only")) {
-                            return false;
-                        }
+                // Don't report if using OpenZeppelin access control with any only* modifier
+                if self.uses_openzeppelin(full_content) && line.contains("function") {
+                    let modifiers = self.resolve_known_modifiers(full_content);
+                    let full_sig = self.get_full_function_signature(lines, line_idx);
+                    if modifiers.iter().any(|m| m.starts_with("only") && full_sig.contains(m.as_str())) {
+                        return false;
+                    }
+                }
+                // Don't flag user-facing withdrawals that check msg.sender balance
+                // (e.g., withdraw() with balances[msg.sender] is not an admin function)
+                if line.contains("withdraw") || line.contains("transfer") {
+                    let func_end = (line_idx + 15).min(lines.len());
+                    let func_body: String = lines[line_idx..func_end].iter()
+                        .map(|(_, l)| l.as_str())
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    if func_body.contains("msg.sender") && (func_body.contains("balances[") || func_body.contains("balance[")) {
+                        return false;
                     }
                 }
                 true
@@ -734,8 +888,26 @@ impl ContractScanner {
                 if self.has_reentrancy_guard(full_content) {
                     return false;
                 }
+                // .transfer() and .send() use 2300 gas — safe from reentrancy
+                if line.contains(".transfer(") || line.contains(".send(") {
+                    return false;
+                }
+                // Use multi-line signature to check for nonReentrant or access control modifier
+                // Find the enclosing function by scanning backwards
+                let enclosing_func_idx = (0..=line_idx).rev()
+                    .find(|&i| lines[i].1.contains("function "))
+                    .unwrap_or(line_idx);
+                let full_sig = self.get_full_function_signature(lines, enclosing_func_idx);
+                if full_sig.contains("nonReentrant") {
+                    return false;
+                }
+                // Don't report reentrancy inside onlyOwner functions (only owner can trigger)
+                let modifiers = self.resolve_known_modifiers(full_content);
+                if self.has_access_control_modifier(&full_sig, &modifiers) {
+                    return false;
+                }
                 // Don't report for view/pure functions
-                if self.is_view_or_pure_function(line) {
+                if self.is_view_or_pure_function(line) || full_sig.contains(" view ") || full_sig.contains(" pure ") {
                     return false;
                 }
                 true
@@ -1071,10 +1243,9 @@ impl ContractScanner {
 
             VulnerabilityCategory::TransientStorageGasReentrancy => {
                 // Only report if contract actually uses transient storage
-                let has_transient = full_content.contains("tstore") || full_content.contains("tload")
+                full_content.contains("tstore") || full_content.contains("tload")
                     || full_content.contains("TSTORE") || full_content.contains("TLOAD")
-                    || full_content.contains("transient");
-                has_transient
+                    || full_content.contains("transient")
             }
 
             VulnerabilityCategory::EIP7702TxOriginBypass => {
@@ -1179,7 +1350,12 @@ function withdraw() public {
     
     #[test]
     fn test_scan_floating_pragma() {
-        let scanner = ContractScanner::new(false);
+        // Use a scanner with strict filter disabled to test raw rule detection
+        let config = ScannerConfig {
+            enable_strict_filter: false,
+            ..ScannerConfig::default()
+        };
+        let scanner = ContractScanner::with_config(false, config);
         let content = "pragma solidity ^0.8.0;";
         let vulnerabilities = scanner.scan_content(content);
         let pragma_vulns: Vec<_> = vulnerabilities

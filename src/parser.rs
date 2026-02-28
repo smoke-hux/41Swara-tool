@@ -148,91 +148,93 @@ impl SolidityParser {
     
     pub fn is_version_vulnerable(&self, version: &DetailedVersion) -> Vec<String> {
         let mut vulnerabilities = Vec::new();
-        
-        // Check for known vulnerabilities in specific versions
-        match (version.major, version.minor, version.patch) {
-            // Solidity 0.8.x specific vulnerabilities
-            (0, 8, 0..=12) => {
-                vulnerabilities.push("Version < 0.8.13: Vulnerable to optimizer bug with inline assembly".to_string());
+
+        match (version.major, version.minor) {
+            // Solidity 0.8.x: cumulative CVE checks (each fires independently)
+            (0, 8) => {
+                let patch = version.patch;
+                if patch <= 12 {
+                    vulnerabilities.push("Version < 0.8.13: Vulnerable to optimizer bug with inline assembly".to_string());
+                }
+                if patch <= 14 {
+                    vulnerabilities.push("Version < 0.8.15: ABI coder v2 issues with tuples".to_string());
+                }
+                if patch <= 16 {
+                    vulnerabilities.push("Version < 0.8.17: Vulnerable to storage write reentrancy in libraries".to_string());
+                }
+                if patch <= 18 {
+                    vulnerabilities.push("Version < 0.8.19: Optimizer bug affecting constant expressions".to_string());
+                }
+                if patch <= 19 {
+                    vulnerabilities.push("Version < 0.8.20: Missing check in bytes.concat() with dynamic arrays".to_string());
+                }
+                if patch <= 20 {
+                    vulnerabilities.push("Version < 0.8.21: Potential issues with using for directive and libraries".to_string());
+                }
+                if patch <= 21 {
+                    vulnerabilities.push("Version < 0.8.22: Head overflow bug in calldata tuple decoder".to_string());
+                }
+                if patch == 22 {
+                    vulnerabilities.push("Version 0.8.22: Contains unchecked loop increment overflow bug".to_string());
+                }
+                if patch <= 23 {
+                    vulnerabilities.push("Version < 0.8.24: Missing check for extra data in CREATE2 deployments".to_string());
+                }
+                if patch <= 24 {
+                    vulnerabilities.push("Version < 0.8.25: Optimizer bug with multiple memory copies".to_string());
+                }
+                if patch <= 25 {
+                    vulnerabilities.push("Version < 0.8.26: Potential issues with transient storage (TSTORE/TLOAD)".to_string());
+                }
+                if patch == 27 {
+                    vulnerabilities.push("Version 0.8.27: Known issue with constructor visibility (deprecated but still compilable)".to_string());
+                }
+                if patch <= 27 {
+                    vulnerabilities.push("Version < 0.8.28: Vulnerable to specific edge cases in unchecked blocks".to_string());
+                }
+                if patch == 29 {
+                    vulnerabilities.push("Version 0.8.29: Memory expansion cost miscalculation in specific scenarios".to_string());
+                }
+                if patch == 30 {
+                    vulnerabilities.push("Version 0.8.30: Latest - Check Solidity blog for any recent security advisories".to_string());
+                }
             }
-            (0, 8, 0..=14) => {
-                vulnerabilities.push("Version < 0.8.15: ABI coder v2 issues with tuples".to_string());
-            }
-            (0, 8, 0..=16) => {
-                vulnerabilities.push("Version < 0.8.17: Vulnerable to storage write reentrancy in libraries".to_string());
-            }
-            (0, 8, 0..=18) => {
-                vulnerabilities.push("Version < 0.8.19: Optimizer bug affecting constant expressions".to_string());
-            }
-            (0, 8, 0..=19) => {
-                vulnerabilities.push("Version < 0.8.20: Missing check in bytes.concat() with dynamic arrays".to_string());
-            }
-            (0, 8, 0..=20) => {
-                vulnerabilities.push("Version < 0.8.21: Potential issues with using for directive and libraries".to_string());
-            }
-            (0, 8, 0..=21) => {
-                vulnerabilities.push("Version < 0.8.22: Head overflow bug in calldata tuple decoder".to_string());
-            }
-            (0, 8, 22) => {
-                vulnerabilities.push("Version 0.8.22: Contains unchecked loop increment overflow bug".to_string());
-            }
-            (0, 8, 0..=23) => {
-                vulnerabilities.push("Version < 0.8.24: Missing check for extra data in CREATE2 deployments".to_string());
-            }
-            (0, 8, 0..=24) => {
-                vulnerabilities.push("Version < 0.8.25: Optimizer bug with multiple memory copies".to_string());
-            }
-            (0, 8, 0..=25) => {
-                vulnerabilities.push("Version < 0.8.26: Potential issues with transient storage (TSTORE/TLOAD)".to_string());
-            }
-            (0, 8, 27) => {
-                vulnerabilities.push("Version 0.8.27: Known issue with constructor visibility (deprecated but still compilable)".to_string());
-            }
-            (0, 8, 0..=27) => {
-                vulnerabilities.push("Version < 0.8.28: Vulnerable to specific edge cases in unchecked blocks".to_string());
-            }
-            (0, 8, 29) => {
-                vulnerabilities.push("Version 0.8.29: Memory expansion cost miscalculation in specific scenarios".to_string());
-            }
-            (0, 8, 30) => {
-                vulnerabilities.push("Version 0.8.30: Latest - Check Solidity blog for any recent security advisories".to_string());
-            }
-            
+
             // Solidity 0.7.x vulnerabilities
-            (0, 7, _) => {
+            (0, 7) => {
                 vulnerabilities.push("Version 0.7.x: No automatic overflow/underflow protection - use SafeMath".to_string());
                 if version.patch < 6 {
                     vulnerabilities.push("Version < 0.7.6: Vulnerable to shift operation bugs".to_string());
                 }
             }
-            
+
             // Solidity 0.6.x vulnerabilities
-            (0, 6, _) => {
+            (0, 6) => {
                 vulnerabilities.push("Version 0.6.x: No automatic overflow/underflow protection".to_string());
                 if version.patch < 12 {
                     vulnerabilities.push("Version < 0.6.12: Array slice bug can cause data corruption".to_string());
                 }
             }
-            
+
             // Solidity 0.5.x vulnerabilities
-            (0, 5, _) => {
+            (0, 5) => {
                 vulnerabilities.push("Version 0.5.x: Outdated - many security improvements missing".to_string());
                 if version.patch < 17 {
                     vulnerabilities.push("Version < 0.5.17: ABIEncoderV2 bugs present".to_string());
                 }
             }
-            
+
             // Solidity 0.4.x vulnerabilities
-            (0, 4, _) => {
+            (0, 4) => {
                 vulnerabilities.push("Version 0.4.x: CRITICALLY OUTDATED - Multiple severe vulnerabilities".to_string());
                 vulnerabilities.push("No constructor keyword - using contract name is deprecated".to_string());
                 vulnerabilities.push("No automatic overflow protection".to_string());
                 vulnerabilities.push("Delegatecall return value not properly checked".to_string());
             }
-            
+
             _ => {}
         }
-        
+
         vulnerabilities
     }
     
@@ -240,39 +242,55 @@ impl SolidityParser {
     pub fn remove_comments(&self, content: &str) -> String {
         let mut result = String::new();
         let mut in_multiline_comment = false;
-        
+
         for line in content.lines() {
             let mut cleaned_line = String::new();
             let mut chars = line.chars().peekable();
-            
+            let mut in_string = false;
+            let mut string_char = ' ';
+
             while let Some(ch) = chars.next() {
                 if in_multiline_comment {
                     if ch == '*' && chars.peek() == Some(&'/') {
-                        chars.next(); // consume '/'
+                        chars.next();
                         in_multiline_comment = false;
                     }
+                } else if in_string {
+                    cleaned_line.push(ch);
+                    if ch == '\\' {
+                        // Escaped character: consume next without checking
+                        if let Some(escaped) = chars.next() {
+                            cleaned_line.push(escaped);
+                        }
+                    } else if ch == string_char {
+                        in_string = false;
+                    }
                 } else {
-                    if ch == '/' {
-                        match chars.peek() {
-                            Some('/') => break, // Single line comment, ignore rest of line
+                    match ch {
+                        '"' | '\'' => {
+                            in_string = true;
+                            string_char = ch;
+                            cleaned_line.push(ch);
+                        }
+                        '/' => match chars.peek() {
+                            Some('/') => break,
                             Some('*') => {
-                                chars.next(); // consume '*'
+                                chars.next();
                                 in_multiline_comment = true;
                             }
                             _ => cleaned_line.push(ch),
-                        }
-                    } else {
-                        cleaned_line.push(ch);
+                        },
+                        _ => cleaned_line.push(ch),
                     }
                 }
             }
-            
-            if !in_multiline_comment {
+
+            if !in_multiline_comment || !cleaned_line.trim().is_empty() {
                 result.push_str(&cleaned_line);
                 result.push('\n');
             }
         }
-        
+
         result
     }
 }
@@ -319,5 +337,37 @@ uint256 public value; // inline comment
         assert!(!cleaned.contains("This is a comment"));
         assert!(!cleaned.contains("multiline comment"));
         assert!(!cleaned.contains("inline comment"));
+    }
+
+    #[test]
+    fn test_remove_comments_preserves_strings() {
+        let parser = SolidityParser::new();
+        let content = r#"string url = "http://example.com"; // real comment"#;
+        let cleaned = parser.remove_comments(content);
+        assert!(cleaned.contains("http://example.com"), "URL inside string was incorrectly stripped");
+        assert!(!cleaned.contains("real comment"), "Comment after string was not stripped");
+    }
+
+    #[test]
+    fn test_version_vulnerable_cumulative() {
+        let parser = SolidityParser::new();
+        // Version 0.8.5 should fire ALL CVEs for patches <= 5
+        let version = DetailedVersion { major: 0, minor: 8, patch: 5 };
+        let vulns = parser.is_version_vulnerable(&version);
+        assert!(vulns.len() >= 5, "Expected at least 5 CVEs for 0.8.5, got {}: {:?}", vulns.len(), vulns);
+        assert!(vulns.iter().any(|v| v.contains("0.8.13")), "Missing optimizer bug CVE");
+        assert!(vulns.iter().any(|v| v.contains("0.8.15")), "Missing ABI coder CVE");
+        assert!(vulns.iter().any(|v| v.contains("0.8.17")), "Missing storage write CVE");
+    }
+
+    #[test]
+    fn test_version_vulnerable_latest_has_fewer() {
+        let parser = SolidityParser::new();
+        let old = DetailedVersion { major: 0, minor: 8, patch: 5 };
+        let new = DetailedVersion { major: 0, minor: 8, patch: 26 };
+        let old_vulns = parser.is_version_vulnerable(&old);
+        let new_vulns = parser.is_version_vulnerable(&new);
+        assert!(old_vulns.len() > new_vulns.len(),
+            "0.8.5 should have more CVEs than 0.8.26: {} vs {}", old_vulns.len(), new_vulns.len());
     }
 }

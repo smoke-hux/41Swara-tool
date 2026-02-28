@@ -80,6 +80,18 @@ pub struct Vulnerability {
     pub swc_id: Option<SwcId>,
     /// Optional inline code fix suggestion.
     pub fix_suggestion: Option<String>,
+    /// CVSS 3.1 base score (0.0 - 10.0).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cvss_score: Option<f64>,
+    /// CVSS 3.1 vector string (e.g., "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:N/I:H/A:H").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cvss_vector: Option<String>,
+    /// Real-world exploit references (e.g., "Cetus DEX ($223M, 2025)").
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub exploit_references: Vec<String>,
+    /// Attack path narrative describing how this vulnerability could be exploited.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attack_path: Option<String>,
 }
 
 /// Qualitative confidence that a detected finding is a true positive.
@@ -92,7 +104,7 @@ pub enum VulnerabilityConfidence {
     /// Likely a vulnerability but needs manual review (50--79%).
     Medium,
     /// Possible vulnerability; may be a false positive (0--49%).
-    Low,
+    Low, // Low confidence
 }
 
 impl VulnerabilityConfidence {
@@ -146,6 +158,10 @@ impl Vulnerability {
             confidence_percent: 65,
             swc_id,
             fix_suggestion: None,
+            cvss_score: None,
+            cvss_vector: None,
+            exploit_references: Vec::new(),
+            attack_path: None,
         }
     }
 

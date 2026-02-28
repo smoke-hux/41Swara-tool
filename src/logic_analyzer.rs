@@ -239,7 +239,7 @@ impl LogicAnalyzer {
                     .split(',')
                     .filter(|p| !p.trim().is_empty())
                     .filter_map(|p| {
-                        let parts: Vec<&str> = p.trim().split_whitespace().collect();
+                        let parts: Vec<&str> = p.split_whitespace().collect();
                         if parts.len() >= 2 {
                             Some((parts[0].to_string(), parts.last().unwrap().to_string()))
                         } else {
@@ -252,7 +252,7 @@ impl LogicAnalyzer {
                 let returns: Vec<String> = returns_str
                     .split(',')
                     .filter(|r| !r.trim().is_empty())
-                    .map(|r| r.trim().split_whitespace().next().unwrap_or("").to_string())
+                    .map(|r| r.split_whitespace().next().unwrap_or("").to_string())
                     .collect();
 
                 // Use brace-counting to extract the full function body
@@ -404,7 +404,7 @@ impl LogicAnalyzer {
                 if let (Some(from), Some(to)) = (caps.get(1), caps.get(2)) {
                     machine.transitions
                         .entry(from.as_str().to_string())
-                        .or_insert_with(Vec::new)
+                        .or_default()
                         .push(to.as_str().to_string());
                 }
             }
@@ -437,9 +437,9 @@ impl LogicAnalyzer {
         for func in functions {
             // Flag: function writes the state variable without first reading/checking it
             if func.state_writes.iter().any(|w| w == state_var) {
-                let has_state_check = func.body.contains(&format!("require({}", state_var)) ||
-                                      func.body.contains(&format!("if ({}", state_var)) ||
-                                      func.body.contains(&format!("== {}", state_var));
+                let has_state_check = func.body.contains(&format!("require({state_var}")) ||
+                                      func.body.contains(&format!("if ({state_var}")) ||
+                                      func.body.contains(&format!("== {state_var}"));
 
                 if !has_state_check && func.visibility == "external" || func.visibility == "public" {
                     vulnerabilities.push(Vulnerability::new(
@@ -461,10 +461,10 @@ impl LogicAnalyzer {
                 vulnerabilities.push(Vulnerability::new(
                     VulnerabilitySeverity::Medium,
                     VulnerabilityCategory::LogicError,
-                    format!("Dead State: {}", from_state),
+                    format!("Dead State: {from_state}"),
                     "State has no valid transitions - once entered, contract may be stuck".to_string(),
                     1,
-                    format!("State: {}", from_state),
+                    format!("State: {from_state}"),
                     "Add transition functions or mark as terminal state".to_string(),
                 ));
             }
@@ -657,7 +657,7 @@ impl LogicAnalyzer {
         for func in functions {
             for write_var in &func.state_writes {
                 write_map.entry(write_var.clone())
-                    .or_insert_with(Vec::new)
+                    .or_default()
                     .push(func);
             }
         }
@@ -681,7 +681,7 @@ impl LogicAnalyzer {
                             VulnerabilitySeverity::Medium,
                             VulnerabilityCategory::LogicError,
                             format!("Inconsistent State Write in {}", func.name),
-                            format!("Variable '{}' written without validation here, but validated in other functions", var_name),
+                            format!("Variable '{var_name}' written without validation here, but validated in other functions"),
                             func.line_start,
                             format!("function {} writes to {}", func.name, var_name),
                             "Add consistent validation when writing state variables".to_string(),
@@ -723,7 +723,7 @@ impl LogicAnalyzer {
                             VulnerabilitySeverity::Low,
                             VulnerabilityCategory::LogicError,
                             format!("Partial State Update in {}", func.name),
-                            format!("Function updates '{}' related variable but not '{}' - verify this is intentional", var1, var2),
+                            format!("Function updates '{var1}' related variable but not '{var2}' - verify this is intentional"),
                             func.line_start,
                             format!("function {}", func.name),
                             "Ensure related state variables are updated consistently".to_string(),
@@ -744,10 +744,12 @@ impl LogicAnalyzer {
     ) -> Vec<Vulnerability> {
         let mut vulnerabilities = Vec::new();
 
+        let divisor_pattern = Regex::new(r"/\s*(\w+)").unwrap();
+        let array_access_pattern = Regex::new(r"(\w+)\[(\w+)\]").unwrap();
+
         for func in functions {
             // Check for division without zero check
             if func.body.contains(" / ") || func.body.contains("/=") {
-                let divisor_pattern = Regex::new(r"/\s*(\w+)").unwrap();
                 for caps in divisor_pattern.captures_iter(&func.body) {
                     if let Some(divisor) = caps.get(1) {
                         let divisor_name = divisor.as_str();
@@ -756,20 +758,20 @@ impl LogicAnalyzer {
                             continue;
                         }
 
-                        let has_zero_check = func.body.contains(&format!("require({} > 0", divisor_name)) ||
-                                            func.body.contains(&format!("require({} != 0", divisor_name)) ||
-                                            func.body.contains(&format!("if ({} == 0", divisor_name)) ||
-                                            func.body.contains(&format!("{} > 0", divisor_name));
+                        let has_zero_check = func.body.contains(&format!("require({divisor_name} > 0")) ||
+                                            func.body.contains(&format!("require({divisor_name} != 0")) ||
+                                            func.body.contains(&format!("if ({divisor_name} == 0")) ||
+                                            func.body.contains(&format!("{divisor_name} > 0"));
 
                         if !has_zero_check {
                             vulnerabilities.push(Vulnerability::new(
                                 VulnerabilitySeverity::High,
                                 VulnerabilityCategory::LogicError,
                                 format!("Division Without Zero Check in {}", func.name),
-                                format!("Division by '{}' without explicit zero validation", divisor_name),
+                                format!("Division by '{divisor_name}' without explicit zero validation"),
                                 func.line_start,
-                                format!("function {} divides by {}", func.name, divisor_name),
-                                format!("Add require({} > 0, \"Division by zero\") before division", divisor_name),
+                                format!("function {} divides by {divisor_name}", func.name),
+                                format!("Add require({divisor_name} > 0, \"Division by zero\") before division"),
                             ));
                             break; // One warning per function
                         }
@@ -778,30 +780,29 @@ impl LogicAnalyzer {
             }
 
             // Check for array access without bounds check
-            if func.body.contains("[") && func.body.contains("]") {
-                let array_access_pattern = Regex::new(r"(\w+)\[(\w+)\]").unwrap();
+            if func.body.contains('[') && func.body.contains(']') {
                 for caps in array_access_pattern.captures_iter(&func.body) {
                     if let (Some(array_name), Some(index)) = (caps.get(1), caps.get(2)) {
                         let index_name = index.as_str();
                         let array_name_str = array_name.as_str();
 
                         // Skip mappings (they don't have length)
-                        if content.contains(&format!("mapping")) && content.contains(array_name_str) {
+                        if content.contains("mapping") && content.contains(array_name_str) {
                             continue;
                         }
 
-                        let has_bounds_check = func.body.contains(&format!("{} < {}.length", index_name, array_name_str)) ||
-                                              func.body.contains(&format!("require({}.length >", array_name_str));
+                        let has_bounds_check = func.body.contains(&format!("{index_name} < {array_name_str}.length")) ||
+                                              func.body.contains(&format!("require({array_name_str}.length >"));
 
                         if !has_bounds_check && !index_name.chars().next().map(|c| c.is_numeric()).unwrap_or(false) {
                             vulnerabilities.push(Vulnerability::new(
                                 VulnerabilitySeverity::Medium,
                                 VulnerabilityCategory::LogicError,
                                 format!("Array Access Without Bounds Check in {}", func.name),
-                                format!("Array '{}' accessed with index '{}' without explicit bounds validation", array_name_str, index_name),
+                                format!("Array '{array_name_str}' accessed with index '{index_name}' without explicit bounds validation"),
                                 func.line_start,
-                                format!("{}[{}]", array_name_str, index_name),
-                                format!("Add require({} < {}.length) before access", index_name, array_name_str),
+                                format!("{array_name_str}[{index_name}]"),
+                                format!("Add require({index_name} < {array_name_str}.length) before access"),
                             ));
                             break;
                         }
@@ -844,7 +845,7 @@ impl LogicAnalyzer {
                 if !overlap.is_empty() {
                     // Check if user function has validation for these variables
                     let has_validation = overlap.iter().any(|var|
-                        user_func.body.contains(&format!("require({}", var))
+                        user_func.body.contains(&format!("require({var}"))
                     );
 
                     if !has_validation {
@@ -855,7 +856,7 @@ impl LogicAnalyzer {
                             format!("Admin function '{}' modifies variables that '{}' depends on without user protection",
                                    admin_func.name, user_func.name),
                             user_func.line_start,
-                            format!("Shared state: {:?}", overlap),
+                            format!("Shared state: {overlap:?}"),
                             "Add validation in user functions or add time-lock to admin functions".to_string(),
                         ));
                     }
@@ -918,7 +919,7 @@ impl LogicAnalyzer {
                                     format!("State Check After External Call in {}", func.name),
                                     "State-dependent check after external call creates race condition window".to_string(),
                                     func.line_start,
-                                    format!("Reads '{}' after external call", read_var),
+                                    format!("Reads '{read_var}' after external call"),
                                     "Move all state checks before external calls".to_string(),
                                 ));
                                 break;

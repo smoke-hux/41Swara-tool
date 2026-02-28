@@ -460,11 +460,11 @@ pub struct InterproceduralAnalyzer {
 }
 
 #[derive(Debug, Clone)]
-struct FunctionSummary {
-    taint_sources: HashSet<TaintSource>,
-    taint_sinks: HashSet<TaintSink>,
-    tainted_params: Vec<usize>,
-    tainted_returns: bool,
+pub struct FunctionSummary {
+    pub taint_sources: HashSet<TaintSource>,
+    pub taint_sinks: HashSet<TaintSink>,
+    pub tainted_params: Vec<usize>,
+    pub tainted_returns: bool,
 }
 
 impl InterproceduralAnalyzer {
@@ -475,13 +475,128 @@ impl InterproceduralAnalyzer {
         }
     }
 
-    /// Build call graph from AST
+    /// Build call graph from AST and compute function summaries with fixed-point taint propagation.
+    /// Propagates taint across internal function calls (max 10 iterations).
     pub fn build_call_graph(&mut self, ast: &SolidityAST) {
         for contract in &ast.contracts {
             for function in &contract.functions {
                 let caller = format!("{}::{}", contract.name, function.name);
                 let callees = self.extract_callees(function);
-                self.call_graph.insert(caller, callees);
+                self.call_graph.insert(caller.clone(), callees);
+
+                // Build initial function summary
+                let summary = self.summarize_function(function);
+                self.function_summaries.insert(caller, summary);
+            }
+        }
+
+        // Fixed-point iteration: propagate taint through call graph (max 10 rounds)
+        for _ in 0..10 {
+            let mut changed = false;
+            let keys: Vec<String> = self.function_summaries.keys().cloned().collect();
+            for caller_key in &keys {
+                if let Some(callees) = self.call_graph.get(caller_key).cloned() {
+                    for callee in &callees {
+                        // Try to find the callee summary (internal call within same contract)
+                        let callee_key = if callee.contains("::") {
+                            callee.clone()
+                        } else {
+                            // Resolve within same contract
+                            let contract_prefix = caller_key.split("::").next().unwrap_or("");
+                            format!("{}::{}", contract_prefix, callee)
+                        };
+
+                        if let Some(callee_summary) = self.function_summaries.get(&callee_key).cloned() {
+                            if let Some(caller_summary) = self.function_summaries.get_mut(caller_key) {
+                                // Propagate: if callee returns tainted data, mark caller's summary
+                                if callee_summary.tainted_returns {
+                                    let old_len = caller_summary.taint_sources.len();
+                                    caller_summary.taint_sources.extend(callee_summary.taint_sources.iter().cloned());
+                                    if caller_summary.taint_sources.len() > old_len {
+                                        changed = true;
+                                    }
+                                }
+                                // Propagate: if callee has dangerous sinks, caller inherits them
+                                let old_sink_len = caller_summary.taint_sinks.len();
+                                caller_summary.taint_sinks.extend(callee_summary.taint_sinks.iter().cloned());
+                                if caller_summary.taint_sinks.len() > old_sink_len {
+                                    changed = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+    }
+
+    /// Build a summary of a function's taint characteristics.
+    fn summarize_function(&self, function: &FunctionDefinition) -> FunctionSummary {
+        let mut sources = HashSet::new();
+        let mut sinks = HashSet::new();
+        let mut tainted_params = Vec::new();
+
+        // All external/public function parameters are tainted from calldata
+        for (i, _param) in function.parameters.iter().enumerate() {
+            if matches!(function.visibility, Visibility::External | Visibility::Public) {
+                tainted_params.push(i);
+                sources.insert(TaintSource::Calldata);
+            }
+        }
+
+        // Scan body for sinks
+        if let Some(body) = &function.body {
+            self.scan_statements_for_sinks(&body.statements, &mut sources, &mut sinks);
+        }
+
+        let tainted_returns = !sources.is_empty();
+
+        FunctionSummary {
+            taint_sources: sources,
+            taint_sinks: sinks,
+            tainted_params,
+            tainted_returns,
+        }
+    }
+
+    /// Scan statements for taint sources and sinks.
+    fn scan_statements_for_sinks(
+        &self,
+        statements: &[Statement],
+        sources: &mut HashSet<TaintSource>,
+        sinks: &mut HashSet<TaintSink>,
+    ) {
+        for stmt in statements {
+            match stmt {
+                Statement::ExternalCall { function, .. } => {
+                    if function == "delegatecall" {
+                        sinks.insert(TaintSink::DelegateCall);
+                    } else {
+                        sinks.insert(TaintSink::ExternalCall);
+                    }
+                }
+                Statement::Assignment { value, .. } => {
+                    if value.contains("msg.sender") { sources.insert(TaintSource::MsgSender); }
+                    if value.contains("msg.value") { sources.insert(TaintSource::MsgValue); }
+                    if value.contains("tx.origin") { sources.insert(TaintSource::TxOrigin); }
+                }
+                Statement::If { then_block, else_block, .. } => {
+                    self.scan_statements_for_sinks(then_block, sources, sinks);
+                    if let Some(else_stmts) = else_block {
+                        self.scan_statements_for_sinks(else_stmts, sources, sinks);
+                    }
+                }
+                Statement::For { body, .. } | Statement::While { body, .. } => {
+                    self.scan_statements_for_sinks(body, sources, sinks);
+                }
+                Statement::Assembly { content, .. } => {
+                    if content.contains("selfdestruct") { sinks.insert(TaintSink::Selfdestruct); }
+                    if content.contains("sstore") { sinks.insert(TaintSink::StateWrite); }
+                }
+                _ => {}
             }
         }
     }
@@ -536,6 +651,24 @@ impl InterproceduralAnalyzer {
     pub fn can_reach(&self, source: &str, target: &str) -> bool {
         let mut visited = HashSet::new();
         self.dfs_reach(source, target, &mut visited)
+    }
+
+    /// Check if a function has any dangerous taint flows based on summaries.
+    pub fn has_dangerous_flow_in(&self, function_key: &str) -> bool {
+        if let Some(summary) = self.function_summaries.get(function_key) {
+            summary.taint_sinks.iter().any(|s| matches!(s,
+                TaintSink::ExternalCall |
+                TaintSink::DelegateCall |
+                TaintSink::Selfdestruct
+            ))
+        } else {
+            false
+        }
+    }
+
+    /// Get function summaries for external consumption.
+    pub fn get_summary(&self, function_key: &str) -> Option<&FunctionSummary> {
+        self.function_summaries.get(function_key)
     }
 
     fn dfs_reach(&self, current: &str, target: &str, visited: &mut HashSet<String>) -> bool {

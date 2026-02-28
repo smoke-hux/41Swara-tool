@@ -1138,10 +1138,12 @@ impl ThreatModelGenerator {
             // Skip threats that are already mitigated (Unlikely likelihood)
             .filter(|t| t.likelihood != ThreatLikelihood::Unlikely)
             .map(|t| {
-                // Map ThreatImpact to the scanner's VulnerabilitySeverity scale
+                // Map ThreatImpact to VulnerabilitySeverity, capped at Medium.
+                // Threat model findings are theoretical (STRIDE-based), not confirmed
+                // vulnerabilities, so they should never be Critical/High to avoid
+                // inflating false positive counts.
                 let severity = match t.impact {
-                    ThreatImpact::Critical => VulnerabilitySeverity::Critical,
-                    ThreatImpact::High => VulnerabilitySeverity::High,
+                    ThreatImpact::Critical | ThreatImpact::High => VulnerabilitySeverity::Medium,
                     ThreatImpact::Medium => VulnerabilitySeverity::Medium,
                     ThreatImpact::Low => VulnerabilitySeverity::Low,
                 };
