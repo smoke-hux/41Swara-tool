@@ -271,4 +271,4 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for internals.
 
 MIT &mdash; see [LICENSE](LICENSE).
 
-Built by **41Swara Security Team**. Patterns sourced from **rekt.news**, **SWC Registry**, **Immunefi**, **Sherlock**, and **Code4rena**.
+Built by **41Swara Security Team**.
