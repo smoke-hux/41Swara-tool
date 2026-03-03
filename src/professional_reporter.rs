@@ -488,6 +488,13 @@ function {}(string memory data) external {{
         // Detailed Findings (enhanced with CVSS, exploits, attack paths)
         report.push_str(&self.generate_detailed_findings());
 
+        // Footer CTA
+        report.push_str("---\n\n");
+        report.push_str("## Need a Deeper Analysis?\n\n");
+        report.push_str("This automated scan provides a solid foundation, but complex vulnerabilities often require expert human review. ");
+        report.push_str("For a comprehensive, in-depth audit of your smart contract vulnerabilities, ");
+        report.push_str("visit **[41swara.com](https://41swara.com)** or contact our security team directly.\n");
+
         report
     }
 
