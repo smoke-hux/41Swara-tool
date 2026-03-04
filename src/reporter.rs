@@ -3,10 +3,12 @@ use std::collections::HashMap;
 use colored::*;
 
 use crate::vulnerabilities::{Vulnerability, VulnerabilitySeverity, VulnerabilityConfidence};
+use crate::parser::CompilerInfo;
 
 pub struct VulnerabilityReporter {
     format: String,
     results: HashMap<PathBuf, Vec<Vulnerability>>,
+    compiler_infos: HashMap<PathBuf, CompilerInfo>,
 }
 
 impl VulnerabilityReporter {
@@ -14,7 +16,13 @@ impl VulnerabilityReporter {
         Self {
             format: format.to_string(),
             results: HashMap::new(),
+            compiler_infos: HashMap::new(),
         }
+    }
+
+    /// Store compiler info for a file (call before or after add_file_results).
+    pub fn set_compiler_info(&mut self, file_path: &Path, info: CompilerInfo) {
+        self.compiler_infos.insert(file_path.to_path_buf(), info);
     }
     
     pub fn generate_clean_report(&self, file_path: &Path, vulnerabilities: &[Vulnerability]) {
@@ -398,6 +406,41 @@ impl VulnerabilityReporter {
         report.push_str(&format!("**Analysis Date**: {now}\n"));
         report.push_str(&format!("**Files Scanned**: {total_files}\n"));
         report.push_str(&format!("**Total Vulnerabilities**: {total_vulnerabilities}\n\n"));
+
+        // Compiler Version Analysis section
+        if !self.compiler_infos.is_empty() {
+            report.push_str("## Compiler Version Analysis\n\n");
+            report.push_str("| File | Solidity Version | Constraint | Status | Known Issues | Recommendation |\n");
+            report.push_str("|------|-----------------|------------|--------|-------------|----------------|\n");
+            let mut sorted_infos: Vec<_> = self.compiler_infos.iter().collect();
+            sorted_infos.sort_by_key(|(path, _)| (*path).clone());
+            for (file_path, info) in &sorted_infos {
+                let file_display = file_path.file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("unknown");
+                let status_icon = match info.age {
+                    crate::parser::VersionAge::Current => "✅ Current",
+                    crate::parser::VersionAge::Recent => "🟢 Recent",
+                    crate::parser::VersionAge::Aging => "🟡 Aging",
+                    crate::parser::VersionAge::Outdated => "🟠 Outdated",
+                    crate::parser::VersionAge::Critical => "🔴 Critical",
+                };
+                let recommendation = if info.upgrade_recommended {
+                    format!("Upgrade to {}", info.latest_recommended)
+                } else {
+                    "Up to date".to_string()
+                };
+                report.push_str(&format!("| `{}` | {} | {} | {} | {} | {} |\n",
+                    file_display,
+                    info.version_string,
+                    info.constraint,
+                    status_icon,
+                    info.known_cves,
+                    recommendation,
+                ));
+            }
+            report.push('\n');
+        }
 
         if total_vulnerabilities == 0 {
             report.push_str("No vulnerabilities detected. The scanned contracts passed all checks.\n\n");

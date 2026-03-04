@@ -839,7 +839,15 @@ fn process_file(args: &Args, path: &PathBuf) -> i32 {
 
             // Scan once and reuse results for all output paths
             match scanner.scan_file(path) {
-                Ok(mut vulnerabilities) => {
+                Ok(scan_result) => {
+                    let compiler_info = scan_result.compiler_info;
+                    let mut vulnerabilities = scan_result.vulnerabilities;
+
+                    // Print compiler version info (text mode, non-quiet)
+                    if !args.quiet && args.format == "text" {
+                        print_compiler_info(&compiler_info);
+                    }
+
                     // Slither correlation: merge findings if --slither-json is provided
                     if let Some(ref slither_path) = args.slither_json {
                         merge_slither_findings(&mut vulnerabilities, slither_path, args.quiet);
@@ -862,6 +870,9 @@ fn process_file(args: &Args, path: &PathBuf) -> i32 {
 
                     // Build a reporter for both terminal output and report saving
                     let mut reporter = VulnerabilityReporter::new(&args.format);
+                    if let Some(ref info) = compiler_info {
+                        reporter.set_compiler_info(path, info.clone());
+                    }
 
                     // Output results based on format (single scan, no double-scan)
                     if args.format == "json" {
@@ -869,6 +880,7 @@ fn process_file(args: &Args, path: &PathBuf) -> i32 {
                             "version": env!("CARGO_PKG_VERSION"),
                             "files_scanned": 1,
                             "total_vulnerabilities": vulnerabilities.len(),
+                            "compiler_info": compiler_info_to_json(&compiler_info),
                             "min_severity_filter": format!("{:?}", args.min_severity),
                             "results": [{
                                 "file": path.to_string_lossy(),
@@ -887,7 +899,7 @@ fn process_file(args: &Args, path: &PathBuf) -> i32 {
                         reporter.print_summary();
                     }
 
-                    // Auto-save markdown report
+                    // Auto-save markdown report with compiler info
                     save_markdown_report(&reporter, path, &args.output, args.quiet);
 
                     // Calculate exit code
@@ -1091,7 +1103,8 @@ fn perform_quick_scan(scanner: &ContractScanner, dir: &PathBuf, args: &Args) {
     let all_results: SharedResults<(PathBuf, Vec<Vulnerability>)> = Arc::new(Mutex::new(Vec::new()));
 
     sol_files.par_iter().for_each(|file_path| {
-        if let Ok(mut vulns) = scanner.scan_file(file_path) {
+        if let Ok(scan_result) = scanner.scan_file(file_path) {
+            let mut vulns = scan_result.vulnerabilities;
             vulns.retain(|v| args.min_severity.matches(&v.severity));
             // Suppress threat model findings unless opted-in
             if !args.show_threat_model {
@@ -1288,7 +1301,9 @@ fn process_directory(args: &Args, dir: &PathBuf) -> i32 {
         }
 
         match scanner.scan_file(file_path) {
-            Ok(mut vulns) => {
+            Ok(scan_result) => {
+                let mut vulns = scan_result.vulnerabilities;
+
                 // Store in cache before filtering
                 if let Some(ref cache) = cache_ref {
                     if let Ok(content) = std::fs::read_to_string(file_path) {
@@ -1440,6 +1455,146 @@ fn severity_to_exit_code(severity: &VulnerabilitySeverity) -> i32 {
     }
 }
 
+/// Print compiler version information to the terminal.
+fn print_compiler_info(compiler_info: &Option<parser::CompilerInfo>) {
+    use parser::VersionAge;
+
+    match compiler_info {
+        Some(info) => {
+            let version_color = match info.age {
+                VersionAge::Current => "green",
+                VersionAge::Recent => "cyan",
+                VersionAge::Aging => "yellow",
+                VersionAge::Outdated => "red",
+                VersionAge::Critical => "bright red",
+            };
+
+            let age_icon = match info.age {
+                VersionAge::Current => "✅",
+                VersionAge::Recent => "🟢",
+                VersionAge::Aging => "🟡",
+                VersionAge::Outdated => "🟠",
+                VersionAge::Critical => "🔴",
+            };
+
+            println!("\n{}", "📋 COMPILER VERSION ANALYSIS".bright_cyan().bold());
+            println!("{}", "━".repeat(55).bright_cyan());
+
+            println!("  {} {}: {}",
+                "📄".bright_white(),
+                "Pragma".bright_white().bold(),
+                info.pragma_raw.bright_white()
+            );
+
+            let version_display = format!("Solidity {}", info.version_string);
+            let colored_version = match version_color {
+                "green" => version_display.bright_green().bold(),
+                "cyan" => version_display.bright_cyan().bold(),
+                "yellow" => version_display.bright_yellow().bold(),
+                "red" => version_display.bright_red().bold(),
+                _ => version_display.bright_red().bold(),
+            };
+            println!("  {} {}: {}",
+                "🔧".bright_white(),
+                "Version".bright_white().bold(),
+                colored_version
+            );
+
+            println!("  {} {}: {}",
+                "📌".bright_white(),
+                "Constraint".bright_white().bold(),
+                format!("{}", info.constraint).bright_white()
+            );
+
+            println!("  {} {}: {} {}",
+                age_icon,
+                "Status".bright_white().bold(),
+                format!("{}", info.age).color(version_color).bold(),
+                if info.known_cves > 0 {
+                    format!("({} known compiler issue{})",
+                        info.known_cves,
+                        if info.known_cves > 1 { "s" } else { "" }
+                    ).bright_yellow().to_string()
+                } else {
+                    "".to_string()
+                }
+            );
+
+            if info.is_floating {
+                println!("  {} {}: {}",
+                    "⚠️ ".bright_yellow(),
+                    "Warning".bright_yellow().bold(),
+                    "Floating pragma - different compiler versions may produce different bytecode".bright_yellow()
+                );
+            }
+
+            // EVM features summary
+            let mut features = Vec::new();
+            if info.evm_features.overflow_protection { features.push("overflow-safe"); }
+            if info.evm_features.custom_errors { features.push("custom-errors"); }
+            if info.evm_features.push0_opcode { features.push("PUSH0"); }
+            if info.evm_features.transient_storage { features.push("transient-storage"); }
+            if !info.evm_features.overflow_protection { features.push("NO-overflow-protection"); }
+
+            println!("  {} {}: {}",
+                "⚡".bright_white(),
+                "EVM Features".bright_white().bold(),
+                features.join(", ").bright_white()
+            );
+
+            if info.upgrade_recommended {
+                println!("  {} {}: Upgrade to Solidity {} for latest security fixes",
+                    "💡".bright_green(),
+                    "Recommendation".bright_green().bold(),
+                    info.latest_recommended.bright_green().bold()
+                );
+            }
+
+            println!("{}", "━".repeat(55).bright_cyan());
+        }
+        None => {
+            println!("\n{}", "📋 COMPILER VERSION ANALYSIS".bright_cyan().bold());
+            println!("{}", "━".repeat(55).bright_cyan());
+            println!("  {} No pragma solidity statement found",
+                "⚠️ ".bright_yellow()
+            );
+            println!("  {} Add a pragma statement to enable version-specific analysis",
+                "💡".bright_green()
+            );
+            println!("{}", "━".repeat(55).bright_cyan());
+        }
+    }
+}
+
+/// Convert CompilerInfo to a JSON value for structured output.
+fn compiler_info_to_json(compiler_info: &Option<parser::CompilerInfo>) -> serde_json::Value {
+    match compiler_info {
+        Some(info) => serde_json::json!({
+            "pragma": info.pragma_raw,
+            "version": info.version_string,
+            "major": info.major,
+            "minor": info.minor,
+            "patch": info.patch,
+            "constraint": format!("{}", info.constraint),
+            "is_floating": info.is_floating,
+            "age": format!("{}", info.age),
+            "latest_recommended": info.latest_recommended,
+            "upgrade_recommended": info.upgrade_recommended,
+            "known_cves": info.known_cves,
+            "security_note": info.security_note,
+            "evm_features": {
+                "overflow_protection": info.evm_features.overflow_protection,
+                "try_catch": info.evm_features.try_catch,
+                "custom_errors": info.evm_features.custom_errors,
+                "push0_opcode": info.evm_features.push0_opcode,
+                "transient_storage": info.evm_features.transient_storage,
+                "immutable_vars": info.evm_features.immutable_vars,
+            }
+        }),
+        None => serde_json::json!(null),
+    }
+}
+
 /// Run cross-file project-wide analysis for inter-contract vulnerabilities.
 fn run_project_analysis(dir: &PathBuf, args: &Args) -> i32 {
     use crate::project_scanner::ProjectScanner;
@@ -1461,8 +1616,8 @@ fn run_project_analysis(dir: &PathBuf, args: &Args) -> i32 {
 /// Generate a clean markdown-style report for a single file.
 fn scan_file_clean_report(scanner: &ContractScanner, reporter: &VulnerabilityReporter, path: &PathBuf) {
     match scanner.scan_file(path) {
-        Ok(vulnerabilities) => {
-            reporter.generate_clean_report(path, &vulnerabilities);
+        Ok(scan_result) => {
+            reporter.generate_clean_report(path, &scan_result.vulnerabilities);
         }
         Err(e) => {
             eprintln!("Error scanning {}: {}", path.display(), e);
@@ -1493,9 +1648,9 @@ fn scan_file_professional_audit(path: &PathBuf, args: &Args) {
     let mut professional_reporter = ProfessionalReporter::new(audit_info);
 
     match scanner.scan_file(path) {
-        Ok(vulnerabilities) => {
+        Ok(scan_result) => {
             let file_path_str = path.to_string_lossy();
-            professional_reporter.add_vulnerabilities(vulnerabilities, &file_path_str);
+            professional_reporter.add_vulnerabilities(scan_result.vulnerabilities, &file_path_str);
             let report = professional_reporter.generate_professional_report();
             println!("{}", report);
         }
@@ -1555,8 +1710,8 @@ fn scan_directory_professional_audit(dir: &PathBuf, args: &Args) {
         let file_path_str = relative_path.to_string_lossy().to_string();
 
         match scanner.scan_file(&path) {
-            Ok(vulnerabilities) => {
-                audit_results.lock().unwrap().push((file_path_str, vulnerabilities));
+            Ok(scan_result) => {
+                audit_results.lock().unwrap().push((file_path_str, scan_result.vulnerabilities));
             }
             Err(e) => {
                 eprintln!("  Error scanning {}: {}", relative_path.display(), e);
@@ -1619,8 +1774,8 @@ fn scan_directory_clean_report(scanner: &ContractScanner, reporter: &Vulnerabili
 
     for entry in &sol_files {
         let path = entry.path().to_path_buf();
-        if let Ok(vulnerabilities) = scanner.scan_file(&path) {
-            all_vulnerabilities.insert(path.clone(), vulnerabilities);
+        if let Ok(scan_result) = scanner.scan_file(&path) {
+            all_vulnerabilities.insert(path.clone(), scan_result.vulnerabilities);
         }
     }
 

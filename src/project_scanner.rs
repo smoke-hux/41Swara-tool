@@ -163,8 +163,9 @@ impl ProjectScanner {
         let state_variables = self.extract_state_variables(&content);
         
         // Scan for vulnerabilities
-        let vulnerabilities = self.scanner.scan_file(file_path)?;
-        
+        let scan_result = self.scanner.scan_file(file_path)?;
+        let vulnerabilities = scan_result.vulnerabilities;
+
         // Store contract information
         let contract_info = ContractInfo {
             path: file_path.to_path_buf(),
@@ -175,7 +176,7 @@ impl ProjectScanner {
             state_variables,
             vulnerabilities: vulnerabilities.clone(),
         };
-        
+
         // Add vulnerabilities to project list
         for vuln in vulnerabilities {
             self.total_vulnerabilities.push(ProjectVulnerability {

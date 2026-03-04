@@ -1,6 +1,7 @@
 use std::fs;
 use std::io::Result;
 use std::path::Path;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum CompilerVersion {
@@ -16,6 +17,119 @@ pub struct DetailedVersion {
     pub major: u32,
     pub minor: u32,
     pub patch: u32,
+}
+
+impl std::fmt::Display for DetailedVersion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}.{}.{}", self.major, self.minor, self.patch)
+    }
+}
+
+/// How the pragma constrains the compiler version.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum PragmaConstraint {
+    /// `^0.8.19` — allows patches but not minor bumps
+    Caret,
+    /// `>=0.8.0` — allows any version at or above
+    GreaterEqual,
+    /// `>=0.8.0 <0.9.0` — bounded range
+    Range,
+    /// `0.8.19` — exact pinned version (no operator)
+    Exact,
+    /// `>0.8.0` — strictly greater
+    Greater,
+    /// Other or unparseable constraint
+    Other,
+}
+
+impl std::fmt::Display for PragmaConstraint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PragmaConstraint::Caret => write!(f, "Floating (^)"),
+            PragmaConstraint::GreaterEqual => write!(f, "Floating (>=)"),
+            PragmaConstraint::Range => write!(f, "Range"),
+            PragmaConstraint::Greater => write!(f, "Floating (>)"),
+            PragmaConstraint::Exact => write!(f, "Pinned"),
+            PragmaConstraint::Other => write!(f, "Unknown"),
+        }
+    }
+}
+
+/// How outdated the compiler version is.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum VersionAge {
+    /// Latest stable (0.8.28+)
+    Current,
+    /// Recent but not latest (0.8.20-0.8.27)
+    Recent,
+    /// Getting old (0.8.0-0.8.19)
+    Aging,
+    /// Pre-0.8 without overflow protection (0.6-0.7)
+    Outdated,
+    /// Critically old (0.4-0.5)
+    Critical,
+}
+
+impl std::fmt::Display for VersionAge {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            VersionAge::Current => write!(f, "Current"),
+            VersionAge::Recent => write!(f, "Recent"),
+            VersionAge::Aging => write!(f, "Aging"),
+            VersionAge::Outdated => write!(f, "Outdated"),
+            VersionAge::Critical => write!(f, "Critically Outdated"),
+        }
+    }
+}
+
+/// EVM features available at a given compiler version.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvmFeatures {
+    /// Built-in overflow/underflow protection (0.8+)
+    pub overflow_protection: bool,
+    /// try/catch for external calls (0.6+)
+    pub try_catch: bool,
+    /// Custom errors with `error` keyword (0.8.4+)
+    pub custom_errors: bool,
+    /// User-defined value types (0.8.8+)
+    pub user_defined_value_types: bool,
+    /// PUSH0 opcode / Shanghai EVM target (0.8.20+)
+    pub push0_opcode: bool,
+    /// Transient storage TSTORE/TLOAD (0.8.24+)
+    pub transient_storage: bool,
+    /// Immutable variables (0.6.5+)
+    pub immutable_vars: bool,
+    /// ABI coder v2 by default (0.8.0+)
+    pub abi_coder_v2_default: bool,
+}
+
+/// Comprehensive compiler version information extracted from a Solidity source file.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompilerInfo {
+    /// The raw pragma line (e.g., "pragma solidity ^0.8.19;")
+    pub pragma_raw: String,
+    /// Parsed version string (e.g., "0.8.19")
+    pub version_string: String,
+    /// Major.minor.patch components
+    pub major: u32,
+    pub minor: u32,
+    pub patch: u32,
+    /// How the pragma constrains the version
+    pub constraint: PragmaConstraint,
+    /// Whether the pragma is floating (allows different versions to compile)
+    pub is_floating: bool,
+    /// How old this version is
+    pub age: VersionAge,
+    /// The latest recommended Solidity version
+    pub latest_recommended: String,
+    /// Whether an upgrade is recommended
+    pub upgrade_recommended: bool,
+    /// EVM features available at this version
+    pub evm_features: EvmFeatures,
+    /// Number of known compiler CVEs for this version
+    pub known_cves: usize,
+    /// Security recommendation based on version analysis
+    pub security_note: String,
 }
 
 pub struct SolidityParser;
@@ -146,6 +260,122 @@ impl SolidityParser {
         None
     }
     
+    /// Extract comprehensive compiler information from contract source.
+    /// Returns None if no pragma solidity statement is found.
+    pub fn extract_compiler_info(&self, content: &str) -> Option<CompilerInfo> {
+        let pragma_raw = self.get_pragma_version(content)?;
+        let detailed = self.get_detailed_version(content)?;
+
+        let version_string = format!("{}.{}.{}", detailed.major, detailed.minor, detailed.patch);
+
+        // Determine pragma constraint type
+        let constraint = {
+            let after_solidity = pragma_raw
+                .trim()
+                .strip_prefix("pragma solidity")
+                .unwrap_or("")
+                .trim();
+            if after_solidity.contains(">=") && after_solidity.contains('<') {
+                PragmaConstraint::Range
+            } else if after_solidity.starts_with('^') || after_solidity.contains('^') {
+                PragmaConstraint::Caret
+            } else if after_solidity.starts_with(">=") || after_solidity.contains(">=") {
+                PragmaConstraint::GreaterEqual
+            } else if after_solidity.starts_with('>') || after_solidity.contains('>') {
+                PragmaConstraint::Greater
+            } else if after_solidity.chars().next().map_or(false, |c| c.is_ascii_digit()) {
+                PragmaConstraint::Exact
+            } else {
+                PragmaConstraint::Other
+            }
+        };
+
+        let is_floating = matches!(
+            constraint,
+            PragmaConstraint::Caret | PragmaConstraint::GreaterEqual | PragmaConstraint::Greater
+        );
+
+        // Determine version age
+        let age = match (detailed.major, detailed.minor) {
+            (0, 4) | (0, 5) => VersionAge::Critical,
+            (0, 6) | (0, 7) => VersionAge::Outdated,
+            (0, 8) if detailed.patch < 20 => VersionAge::Aging,
+            (0, 8) if detailed.patch < 28 => VersionAge::Recent,
+            (0, 8) => VersionAge::Current,
+            _ => VersionAge::Current,
+        };
+
+        let latest_recommended = "0.8.28".to_string();
+        let upgrade_recommended = !(detailed.major == 0 && detailed.minor == 8 && detailed.patch >= 28);
+
+        // Determine EVM features
+        let evm_features = EvmFeatures {
+            overflow_protection: detailed.minor >= 8 || detailed.major > 0,
+            try_catch: (detailed.minor >= 6 || detailed.major > 0),
+            custom_errors: (detailed.minor > 8 || (detailed.minor == 8 && detailed.patch >= 4)) || detailed.major > 0,
+            user_defined_value_types: (detailed.minor > 8 || (detailed.minor == 8 && detailed.patch >= 8)) || detailed.major > 0,
+            push0_opcode: (detailed.minor > 8 || (detailed.minor == 8 && detailed.patch >= 20)) || detailed.major > 0,
+            transient_storage: (detailed.minor > 8 || (detailed.minor == 8 && detailed.patch >= 24)) || detailed.major > 0,
+            immutable_vars: (detailed.minor > 6 || (detailed.minor == 6 && detailed.patch >= 5)) || detailed.major > 0,
+            abi_coder_v2_default: detailed.minor >= 8 || detailed.major > 0,
+        };
+
+        // Count known CVEs
+        let cves = self.is_version_vulnerable(&detailed);
+        let known_cves = cves.len();
+
+        // Build security note
+        let security_note = match &age {
+            VersionAge::Critical => format!(
+                "CRITICAL: Solidity {} is severely outdated with {} known issues. \
+                 Missing overflow protection, modern error handling, and years of security fixes. \
+                 Upgrade to {} immediately.",
+                version_string, known_cves, latest_recommended
+            ),
+            VersionAge::Outdated => format!(
+                "WARNING: Solidity {} lacks built-in overflow protection and has {} known issues. \
+                 Requires SafeMath for arithmetic safety. Upgrade to {} strongly recommended.",
+                version_string, known_cves, latest_recommended
+            ),
+            VersionAge::Aging => format!(
+                "Solidity {} has {} known compiler issues. \
+                 Consider upgrading to {} for latest security patches and gas optimizations.",
+                version_string, known_cves, latest_recommended
+            ),
+            VersionAge::Recent if known_cves > 0 => format!(
+                "Solidity {} has {} minor known issue{}. \
+                 Upgrading to {} is recommended for the latest fixes.",
+                version_string, known_cves,
+                if known_cves > 1 { "s" } else { "" },
+                latest_recommended
+            ),
+            VersionAge::Recent => format!(
+                "Solidity {} is a recent version with no critical known issues.",
+                version_string
+            ),
+            VersionAge::Current => format!(
+                "Solidity {} is a current version. No upgrade needed.",
+                version_string
+            ),
+        };
+
+        Some(CompilerInfo {
+            pragma_raw,
+            version_string,
+            major: detailed.major,
+            minor: detailed.minor,
+            patch: detailed.patch,
+            constraint,
+            is_floating,
+            age,
+            latest_recommended,
+            upgrade_recommended,
+            evm_features,
+            known_cves,
+            security_note,
+        })
+    }
+
     pub fn is_version_vulnerable(&self, version: &DetailedVersion) -> Vec<String> {
         let mut vulnerabilities = Vec::new();
 

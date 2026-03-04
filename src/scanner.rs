@@ -17,7 +17,7 @@ use std::path::Path;
 use std::io;
 use once_cell::sync::Lazy;
 use regex::Regex;
-use crate::parser::SolidityParser;
+use crate::parser::{SolidityParser, CompilerInfo};
 use crate::vulnerabilities::{Vulnerability, VulnerabilityRule, create_vulnerability_rules, create_version_specific_rules};
 use crate::advanced_analysis::AdvancedAnalyzer;
 use crate::logic_analyzer::LogicAnalyzer;
@@ -26,6 +26,18 @@ use crate::dependency_analyzer::DependencyAnalyzer;
 use crate::threat_model::ThreatModelGenerator;
 use crate::eip_analyzer::EIPAnalyzer;
 use crate::false_positive_filter::{FalsePositiveFilter, FilterConfig};
+
+/// The result of scanning a single Solidity file.
+/// Bundles detected vulnerabilities together with compiler version information
+/// so callers get both analysis results and contract metadata in one return value.
+#[derive(Debug, Clone)]
+pub struct ScanResult {
+    /// All detected vulnerabilities (sorted by line number).
+    pub vulnerabilities: Vec<Vulnerability>,
+    /// Compiler version information extracted from the pragma statement.
+    /// `None` if no `pragma solidity` line was found.
+    pub compiler_info: Option<CompilerInfo>,
+}
 
 // =============================================================================
 // Pre-compiled regex patterns (compiled once, reused across all scans)
@@ -406,10 +418,10 @@ impl ContractScanner {
         self
     }
     
-    /// Scan a single Solidity file and return all detected vulnerabilities.
+    /// Scan a single Solidity file and return detected vulnerabilities plus compiler info.
     /// Reads the file, runs the full analysis pipeline, and returns sorted results.
     /// Files exceeding MAX_FILE_SIZE_BYTES are skipped to prevent DoS.
-    pub fn scan_file<P: AsRef<Path>>(&self, file_path: P) -> io::Result<Vec<Vulnerability>> {
+    pub fn scan_file<P: AsRef<Path>>(&self, file_path: P) -> io::Result<ScanResult> {
         // Security: enforce file size limit to prevent DoS from excessively large inputs
         let metadata = std::fs::metadata(file_path.as_ref())?;
         if metadata.len() > MAX_FILE_SIZE_BYTES {
@@ -419,41 +431,47 @@ impl ContractScanner {
                     metadata.len() / (1024 * 1024),
                     MAX_FILE_SIZE_BYTES / (1024 * 1024));
             }
-            return Ok(Vec::new());
+            return Ok(ScanResult { vulnerabilities: Vec::new(), compiler_info: None });
         }
 
         let content = self.parser.read_file(&file_path)?;
         let file_name = file_path.as_ref().file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("unknown");
-        
+
         if self.verbose {
             println!("🔍 Analyzing {} ({} lines)", file_name, content.lines().count());
         }
-        
-        let vulnerabilities = self.scan_content(&content);
-        
+
+        let result = self.scan_content(&content);
+
         if self.verbose {
-            println!("✅ Found {} potential issues in {}", vulnerabilities.len(), file_name);
+            if let Some(ref info) = result.compiler_info {
+                println!("  📋 Compiler: Solidity {} ({})", info.version_string, info.constraint);
+            }
+            println!("✅ Found {} potential issues in {}", result.vulnerabilities.len(), file_name);
         }
-        
-        Ok(vulnerabilities)
+
+        Ok(result)
     }
     
     /// Run the full analysis pipeline on raw Solidity source code.
     /// This is the core method that coordinates all analysis phases:
     /// regex rules, advanced analyzers, logic/reachability/dependency analysis,
     /// threat modeling, EIP checks, and false positive filtering.
-    pub fn scan_content(&self, content: &str) -> Vec<Vulnerability> {
+    pub fn scan_content(&self, content: &str) -> ScanResult {
         let mut vulnerabilities = Vec::new();
         let lines: Vec<(usize, String)> = self.parser.parse_lines(content);
+
+        // Extract compiler info early — used for version-aware analysis and returned in ScanResult
+        let compiler_info = self.parser.extract_compiler_info(content);
 
         // Skip interface contracts - they define signatures only, no implementation vulnerabilities
         if self.is_interface_contract(content) {
             if self.verbose {
                 println!("  ℹ️  Skipping interface contract (no implementation to analyze)");
             }
-            return vulnerabilities;
+            return ScanResult { vulnerabilities, compiler_info };
         }
 
         // Skip pure library contracts for many vulnerability types
@@ -696,7 +714,7 @@ impl ContractScanner {
         // Sort vulnerabilities by line number
         vulnerabilities.sort_by(|a, b| a.line_number.cmp(&b.line_number));
 
-        vulnerabilities
+        ScanResult { vulnerabilities, compiler_info }
     }
 
     /// Apply a single-line regex rule against all lines in the file.
@@ -1340,14 +1358,14 @@ function withdraw() public {
     balance = 0;
 }
 "#;
-        let vulnerabilities = scanner.scan_content(content);
-        let reentrancy_vulns: Vec<_> = vulnerabilities
+        let result = scanner.scan_content(content);
+        let reentrancy_vulns: Vec<_> = result.vulnerabilities
             .iter()
             .filter(|v| matches!(v.category, crate::vulnerabilities::VulnerabilityCategory::Reentrancy))
             .collect();
         assert!(!reentrancy_vulns.is_empty());
     }
-    
+
     #[test]
     fn test_scan_floating_pragma() {
         // Use a scanner with strict filter disabled to test raw rule detection
@@ -1357,11 +1375,33 @@ function withdraw() public {
         };
         let scanner = ContractScanner::with_config(false, config);
         let content = "pragma solidity ^0.8.0;";
-        let vulnerabilities = scanner.scan_content(content);
-        let pragma_vulns: Vec<_> = vulnerabilities
+        let result = scanner.scan_content(content);
+        let pragma_vulns: Vec<_> = result.vulnerabilities
             .iter()
             .filter(|v| matches!(v.category, crate::vulnerabilities::VulnerabilityCategory::PragmaIssues))
             .collect();
         assert!(!pragma_vulns.is_empty());
+    }
+
+    #[test]
+    fn test_scan_result_includes_compiler_info() {
+        let scanner = ContractScanner::new(false);
+        let content = "pragma solidity ^0.8.19;\ncontract Test {}";
+        let result = scanner.scan_content(content);
+        assert!(result.compiler_info.is_some());
+        let info = result.compiler_info.unwrap();
+        assert_eq!(info.version_string, "0.8.19");
+        assert!(info.is_floating);
+        assert!(info.evm_features.overflow_protection);
+        assert!(info.evm_features.custom_errors);
+        assert!(!info.evm_features.push0_opcode); // 0.8.19 < 0.8.20
+    }
+
+    #[test]
+    fn test_scan_result_no_pragma() {
+        let scanner = ContractScanner::new(false);
+        let content = "contract Test { function foo() public {} }";
+        let result = scanner.scan_content(content);
+        assert!(result.compiler_info.is_none());
     }
 }
