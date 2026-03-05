@@ -307,6 +307,16 @@ impl AdvancedAnalyzer {
             "setOwner", "changeOwner", "upgrade", "initialize", "destroy"
         ];
 
+        // Standard ERC-20/ERC-4626 functions that are SUPPOSED to be public and
+        // operate on the caller's own tokens — these don't need access control.
+        let is_erc20_or_erc4626 = content.contains("ERC20") || content.contains("ERC4626")
+            || content.contains("IERC20") || content.contains("allowance")
+            || (content.contains("balanceOf") && content.contains("totalSupply"));
+        let erc_standard_functions = vec![
+            "transfer", "transferfrom", "approve", "mint", "burn",
+            "deposit", "withdraw", "redeem",
+        ];
+
         // Match the start of a function declaration (may span multiple lines)
         let function_start_pattern = Regex::new(r"function\s+(\w+)\s*\(").unwrap();
 
@@ -319,6 +329,29 @@ impl AdvancedAnalyzer {
                 let is_critical = critical_functions.iter()
                     .any(|cf| function_name.to_lowercase().contains(cf));
                 if !is_critical {
+                    continue;
+                }
+
+                // Skip standard ERC-20/ERC-4626 interface functions — these are
+                // public by design and operate on the caller's own tokens.
+                if is_erc20_or_erc4626 {
+                    let fn_lower = function_name.to_lowercase();
+                    if erc_standard_functions.iter().any(|ef| fn_lower == *ef) {
+                        continue;
+                    }
+                }
+
+                // Skip if function body uses msg.sender balance deduction or
+                // safeTransferFrom from the caller (ERC-4626 deposit pattern)
+                let fn_body: String = lines.iter()
+                    .skip(idx)
+                    .take(20)
+                    .copied()
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if fn_body.contains("balanceOf[msg.sender]") || fn_body.contains("balances[msg.sender]")
+                    || fn_body.contains("safeTransferFrom(msg.sender")
+                    || fn_body.contains("transferFrom(msg.sender") {
                     continue;
                 }
 
@@ -1289,10 +1322,11 @@ impl AdvancedAnalyzer {
                     ));
                 }
 
-                // Missing chain ID
+                // Missing chain ID — check both local context AND the whole file
+                // (DOMAIN_SEPARATOR with chainid may be defined elsewhere in the contract)
                 let uses_chainid = func_body.iter().any(|l|
                     l.contains("chainid") || l.contains("chainId") || l.contains("block.chainid")
-                );
+                ) || content.contains("block.chainid") || content.contains("DOMAIN_SEPARATOR");
 
                 if !uses_chainid {
                     vulnerabilities.push(Vulnerability::high_confidence(
@@ -1549,11 +1583,21 @@ impl AdvancedAnalyzer {
         if content.contains("ERC4626") || content.contains("Vault") {
             let has_virtual_shares = content.contains("INITIAL_SHARES") ||
                                      content.contains("_decimalsOffset") ||
+                                     content.contains("MIN_SHARES") ||
+                                     content.contains("MIN_ASSETS") ||
+                                     content.contains("MIN_DEPOSIT") ||
+                                     content.contains("INITIAL_DEPOSIT") ||
                                      content.contains("10 **");
 
             let mint_pattern = Regex::new(r"function\s+deposit\s*\(").unwrap();
 
             for (idx, line) in content.lines().enumerate() {
+                // Skip import statements and comments
+                let trimmed = line.trim();
+                if trimmed.starts_with("import") || trimmed.starts_with("//") || trimmed.starts_with("*") {
+                    continue;
+                }
+
                 if mint_pattern.is_match(line) {
                     let func_body: Vec<&str> = content.lines().skip(idx).take(20).collect();
                     let has_zero_check = func_body.iter().any(|l|
@@ -1938,9 +1982,12 @@ impl AdvancedAnalyzer {
                                  content.contains("VIRTUAL_OFFSET") ||
                                  content.contains("10 ** _decimalsOffset()");
 
-        // Check for minimum deposit requirement
+        // Check for minimum deposit/shares requirement (including jDola-style MIN_SHARES/MIN_ASSETS)
         let has_min_deposit = content.contains("MIN_DEPOSIT") ||
                              content.contains("minDeposit") ||
+                             content.contains("MIN_SHARES") ||
+                             content.contains("MIN_ASSETS") ||
+                             content.contains("INITIAL_DEPOSIT") ||
                              (content.contains("require(assets") && content.contains(">="));
 
         // Look for share calculation without protection
@@ -3438,11 +3485,17 @@ impl AdvancedAnalyzer {
         // Check ecrecover usage specifically
         for (idx, line) in content.lines().enumerate() {
             if line.contains("ecrecover(") {
-                let next_lines: Vec<&str> = content.lines().skip(idx).take(5).collect();
+                // Check wider context (15 lines before and after) for address(0) validation
+                let start = idx.saturating_sub(15);
+                let surrounding: Vec<&str> = content.lines().skip(start).take(30).collect();
 
-                // Check if result is validated
-                let has_zero_check = next_lines.iter().any(|l|
-                    l.contains("address(0)") || l.contains("!= 0") || l.contains("> 0")
+                // Check if result is validated (recoveredAddress != address(0), etc.)
+                let has_zero_check = surrounding.iter().any(|l|
+                    (l.contains("address(0)") && (l.contains("!=") || l.contains("require") || l.contains("if")))
+                    || l.contains("!= 0") || l.contains("> 0")
+                    || l.contains("recoveredAddress != address(0)")
+                    || l.contains("recovered != address(0)")
+                    || l.contains("signer != address(0)")
                 );
 
                 if !has_zero_check {
@@ -3651,10 +3704,11 @@ impl AdvancedAnalyzer {
     fn detect_missing_erc165(&self, content: &str) -> Vec<Vulnerability> {
         let mut vulnerabilities = Vec::new();
 
-        // Check if contract implements token interfaces
+        // Check if contract implements NFT interfaces (NOT ERC-20 — ERC-20 doesn't need ERC-165)
+        // _mint( was removed because ERC-20 also uses _mint(). tokenURI is NFT-specific.
         let is_nft = content.contains("ERC721") || content.contains("ERC1155")
             || content.contains("onERC721Received") || content.contains("onERC1155Received")
-            || content.contains("tokenURI") || content.contains("_mint(");
+            || content.contains("tokenURI") || content.contains("safeTransferFrom(address,address,uint256,bytes");
 
         if !is_nft {
             return vulnerabilities;
@@ -3699,12 +3753,38 @@ impl AdvancedAnalyzer {
             r"function\s+initialize\s*\([^)]*\)\s+(?:external|public)"
         ).unwrap();
 
-        for (idx, line) in content.lines().enumerate() {
+        let lines: Vec<&str> = content.lines().collect();
+        for (idx, line) in lines.iter().enumerate() {
             if init_pattern.is_match(line) {
                 // Check if initializer modifier is present
                 if !line.contains("initializer") && !line.contains("reinitializer") {
                     // Check if _disableInitializers is in constructor
                     if !content.contains("_disableInitializers") {
+                        // Check the full function signature (may span multiple lines)
+                        let full_sig: String = lines[idx..(idx + 5).min(lines.len())]
+                            .iter()
+                            .take_while(|l| !l.contains('{') || l == &line)
+                            .copied()
+                            .chain(std::iter::once(*line))
+                            .collect::<Vec<_>>()
+                            .join(" ");
+
+                        // Skip if function has access control modifier AND re-init guards
+                        let has_access_control = full_sig.contains("onlyOwner")
+                            || full_sig.contains("onlyGov") || full_sig.contains("onlyAdmin")
+                            || full_sig.contains("onlyRole") || full_sig.contains("auth")
+                            || Regex::new(r"\bonly\w+").unwrap().is_match(&full_sig);
+
+                        // Check function body for re-init guard (require(x == 0))
+                        let func_end = (idx + 15).min(lines.len());
+                        let func_body: String = lines[idx..func_end].join("\n");
+                        let has_reinit_guard = func_body.contains("require(") && func_body.contains("== 0")
+                            || func_body.contains("initialized");
+
+                        if has_access_control && has_reinit_guard {
+                            continue; // Protected by access control + re-init guard
+                        }
+
                         vulnerabilities.push(Vulnerability::high_confidence(
                             VulnerabilitySeverity::Critical,
                             VulnerabilityCategory::DoubleInitialization,

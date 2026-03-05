@@ -343,17 +343,10 @@ impl EIPAnalyzer {
                 cwe_id: Some("CWE-252".to_string()),
                 real_world_exploit: Some("Multiple protocols, including early Uniswap issues".to_string()),
             },
-            EIPVulnerability {
-                eip_number: 20,
-                vulnerability_id: "EIP20-003".to_string(),
-                title: "ERC-20 Double-Spend via transferFrom".to_string(),
-                description: "If allowance and transfer logic are not properly synchronized, double-spending may be possible.".to_string(),
-                severity: VulnerabilitySeverity::Critical,
-                pattern: Regex::new(r"function\s+transferFrom[^{]+\{").unwrap(),
-                recommendation: "Ensure allowance is decremented before the transfer is executed (checks-effects-interactions pattern).".to_string(),
-                cwe_id: Some("CWE-672".to_string()),
-                real_world_exploit: None,
-            },
+            // NOTE: ERC-20 Double-Spend removed as a standalone finding.
+            // In Solidity 0.8+, underflow protection on allowance decrement prevents
+            // double-spending. The allowance check (allowed - amount) reverts on underflow.
+            // The approval race condition (EIP20-001) covers the residual front-running risk.
 
             // ============================================
             // ERC-721 Vulnerabilities
@@ -431,7 +424,7 @@ impl EIPAnalyzer {
                 title: "ERC-4626 First Depositor Inflation Attack".to_string(),
                 description: "The first depositor can inflate the share price by depositing 1 wei, then directly transferring a large amount to the vault. Subsequent depositors receive 0 shares due to rounding.".to_string(),
                 severity: VulnerabilitySeverity::Critical,
-                pattern: Regex::new(r"(?i)(ERC4626|function\s+deposit\s*\(\s*uint256[^,]*,\s*address|function\s+convertToShares)").unwrap(),
+                pattern: Regex::new(r"function\s+(deposit\s*\(\s*uint256[^,]*,\s*address|convertToShares\s*\()").unwrap(),
                 recommendation: "Implement virtual offset/dead shares: In constructor, mint a small amount of shares to address(0) or use virtual assets/shares. See OpenZeppelin ERC4626 for reference implementation.".to_string(),
                 cwe_id: Some("CWE-682".to_string()),
                 real_world_exploit: Some("Multiple vault protocols in 2023-2024".to_string()),
@@ -692,6 +685,41 @@ impl EIPAnalyzer {
                     for mat in vuln.pattern.find_iter(content) {
                         let match_start = mat.start();
                         let line_number = content[..match_start].matches('\n').count() + 1;
+
+                        // Skip matches on import statements or comment lines
+                        if line_number > 0 && line_number <= lines.len() {
+                            let matched_line = lines[line_number - 1].trim();
+                            if matched_line.starts_with("import") || matched_line.starts_with("//")
+                                || matched_line.starts_with("*") || matched_line.starts_with("/*") {
+                                continue;
+                            }
+                        }
+
+                        // Suppress cross-chain / chainid findings if block.chainid is used anywhere
+                        if (vuln.title.contains("Chain ID") || vuln.title.contains("Replay"))
+                            && (content.contains("block.chainid") || content.contains("chainId()")) {
+                            continue;
+                        }
+
+                        // Suppress ERC-4626 inflation findings if mitigation exists
+                        if vuln.title.contains("First Depositor") || vuln.title.contains("Inflation") {
+                            if content.contains("MIN_SHARES") || content.contains("MIN_ASSETS")
+                                || content.contains("MIN_DEPOSIT") || content.contains("INITIAL_DEPOSIT")
+                                || content.contains("_decimalsOffset") || content.contains("VIRTUAL_OFFSET")
+                                || content.contains("INITIAL_SHARES") {
+                                continue;
+                            }
+                        }
+
+                        // Suppress ecrecover validation findings if address(0) check exists nearby
+                        if vuln.title.contains("ecrecover") || vuln.vulnerability_id.contains("712") {
+                            let start_line = line_number.saturating_sub(10);
+                            let end_line = (line_number + 10).min(lines.len());
+                            let context: String = lines[start_line..end_line].join("\n");
+                            if context.contains("address(0)") && (context.contains("!=") || context.contains("require")) {
+                                continue;
+                            }
+                        }
 
                         // Get the matching line content
                         let code_snippet = if line_number > 0 && line_number <= lines.len() {

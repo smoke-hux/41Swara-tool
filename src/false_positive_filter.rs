@@ -460,12 +460,26 @@ impl FalsePositiveFilter {
             return false;
         }
 
-        // Skip library-only findings for certain categories
+        // Skip library-only findings for certain categories.
+        // Libraries have no state of their own — state change, reentrancy, CEI,
+        // missing events, and access control findings are the caller's responsibility.
         if ctx.is_library {
             match vuln.category {
                 VulnerabilityCategory::AccessControl
-                | VulnerabilityCategory::RoleBasedAccessControl => return false,
-                _ => {}
+                | VulnerabilityCategory::RoleBasedAccessControl
+                | VulnerabilityCategory::Reentrancy
+                | VulnerabilityCategory::CallbackReentrancy
+                | VulnerabilityCategory::ERC777CallbackReentrancy
+                | VulnerabilityCategory::ReadOnlyReentrancy
+                | VulnerabilityCategory::MissingEvents
+                | VulnerabilityCategory::MissingEmergencyStop
+                | VulnerabilityCategory::IsContractPostPectra => return false,
+                _ => {
+                    // Also suppress CEI/state-after-call findings in libraries
+                    if vuln.title.contains("State Change After") || vuln.title.contains("CEI") {
+                        return false;
+                    }
+                }
             }
         }
 
@@ -1149,6 +1163,17 @@ impl FalsePositiveFilter {
                 | VulnerabilityCategory::CLMMMathOverflow
                 | VulnerabilityCategory::UnsafeDowncast => 6,
 
+                // Group 7: ERC-4626 vault inflation / donation
+                VulnerabilityCategory::ERC4626Inflation => 7,
+
+                // Group 8: Cross-chain replay
+                VulnerabilityCategory::CrossChainReplay
+                | VulnerabilityCategory::CrossChainMessageReplay => 8,
+
+                // Group 9: Approval race condition (reported by eip_analyzer as FrontRunning
+                // and by advanced_analysis/logic_analyzer as LogicError)
+                VulnerabilityCategory::FrontRunning => 9,
+
                 _ => 0,  // group 0 = no grouping
             }
         };
@@ -1163,7 +1188,9 @@ impl FalsePositiveFilter {
             }
         };
 
-        // Also treat LogicError with CEI/State After title as reentrancy group
+        // Also treat LogicError with CEI/State After title as reentrancy group,
+        // and LogicError with First Depositor/Inflation as ERC-4626 group,
+        // and LogicError with Approve Race as its own group to dedup
         let effective_group = |v: &Vulnerability| -> u8 {
             let g = category_group(&v.category);
             if g != 0 {
@@ -1172,6 +1199,13 @@ impl FalsePositiveFilter {
             if matches!(v.category, VulnerabilityCategory::LogicError) {
                 if v.title.contains("CEI") || v.title.contains("State After") {
                     return 1; // reentrancy group
+                }
+                if v.title.contains("First Depositor") || v.title.contains("Inflation")
+                    || v.title.contains("ERC4626") || v.title.contains("LP Inflation") {
+                    return 7; // ERC-4626 inflation group
+                }
+                if v.title.contains("Approve Race") {
+                    return 9; // approval race group
                 }
             }
             0

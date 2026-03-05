@@ -1287,6 +1287,42 @@ impl ContractScanner {
                 true
             }
 
+            VulnerabilityCategory::RandomnessVulnerabilities => {
+                // Suppress block.timestamp % N when used for time period calculations.
+                // "block.timestamp % 7 days" is computing elapsed time in a week, not randomness.
+                let time_units = ["days", "hours", "minutes", "seconds", "weeks"];
+                if time_units.iter().any(|u| line.contains(u)) {
+                    return false;
+                }
+                // Also suppress if the context shows time calculation patterns
+                if line.contains("elapsed") || line.contains("period") || line.contains("duration")
+                    || line.contains("interval") || line.contains("revenue") || line.contains("reward") {
+                    return false;
+                }
+                true
+            }
+
+            VulnerabilityCategory::MissingReturnValue => {
+                // Suppress "Conditional Without Return" for functions with named return variables.
+                // Solidity auto-returns named return vars, so `returns (uint256 shares)` doesn't
+                // need explicit `return` statements — the variable is returned automatically.
+                // Check if the returns clause has named parameters (type + name, not just type).
+                let named_return_re = Regex::new(r"returns\s*\([^)]*\b\w+\s+\w+[^)]*\)").unwrap();
+                if named_return_re.is_match(line) || named_return_re.is_match(full_content) {
+                    // Check within 5 lines of match start for named returns
+                    let start = if line_idx >= 5 { line_idx - 5 } else { 0 };
+                    let end = (line_idx + 5).min(lines.len());
+                    let context: String = lines[start..end].iter()
+                        .map(|(_, l)| l.as_str())
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    if named_return_re.is_match(&context) {
+                        return false;
+                    }
+                }
+                true
+            }
+
             _ => true // Report all other categories by default
         }
     }

@@ -761,7 +761,14 @@ impl LogicAnalyzer {
                         let has_zero_check = func.body.contains(&format!("require({divisor_name} > 0")) ||
                                             func.body.contains(&format!("require({divisor_name} != 0")) ||
                                             func.body.contains(&format!("if ({divisor_name} == 0")) ||
-                                            func.body.contains(&format!("{divisor_name} > 0"));
+                                            func.body.contains(&format!("if ({divisor_name} != 0")) ||
+                                            func.body.contains(&format!("if ({divisor_name} > 0")) ||
+                                            func.body.contains(&format!("{divisor_name} != 0")) ||
+                                            func.body.contains(&format!("{divisor_name} > 0")) ||
+                                            // Branch guard patterns: division inside else { } of if (x == 0)
+                                            func.body.contains(&format!("{divisor_name} == 0")) ||
+                                            // Named return variable assigned in both branches
+                                            func.body.contains("} else {");
 
                         if !has_zero_check {
                             vulnerabilities.push(Vulnerability::new(
@@ -786,8 +793,17 @@ impl LogicAnalyzer {
                         let index_name = index.as_str();
                         let array_name_str = array_name.as_str();
 
-                        // Skip mappings (they don't have length)
-                        if content.contains("mapping") && content.contains(array_name_str) {
+                        // Skip mappings (they don't have length and return 0 for any key)
+                        // Check if the variable is declared as a mapping anywhere in the file
+                        let is_mapping = content.contains(&format!("mapping(")) &&
+                            (content.contains(&format!("{array_name_str}"))
+                             || content.contains(&format!(" {array_name_str};"))
+                             || content.contains(&format!(" {array_name_str} ")));
+                        // Also skip common mapping patterns: balanceOf, allowance, balances, etc.
+                        let known_mappings = ["balanceOf", "allowance", "allowances", "balances",
+                            "nonces", "delegates", "owners", "tokenApprovals", "_balances",
+                            "_allowances", "_owners"];
+                        if is_mapping || known_mappings.contains(&array_name_str) {
                             continue;
                         }
 
@@ -940,6 +956,7 @@ impl LogicAnalyzer {
         functions: &[FunctionInfo],
     ) -> Vec<Vulnerability> {
         let mut vulnerabilities = Vec::new();
+        let lines: Vec<&str> = _content.lines().collect();
 
         let pairs = vec![
             ("deposit", "withdraw"),
@@ -956,36 +973,49 @@ impl LogicAnalyzer {
                 .find(|f| f.name.to_lowercase().contains(action2) && !f.name.to_lowercase().contains(action1));
 
             if let (Some(f1), Some(f2)) = (func1, func2) {
-                // Check for asymmetric validation
-                let f1_requires = f1.body.matches("require(").count();
-                let f2_requires = f2.body.matches("require(").count();
+                // Skip view/pure functions — they can't modify state or emit events.
+                // Check the function signature line for view/pure keywords.
+                let f2_sig_line = if f2.line_start > 0 && f2.line_start <= lines.len() {
+                    lines[f2.line_start - 1]
+                } else { "" };
+                let f2_is_view = f2_sig_line.contains(" view ") || f2_sig_line.contains(" view)")
+                    || f2_sig_line.contains(" pure ") || f2_sig_line.contains(" pure)")
+                    || f2.body.is_empty();
 
-                if f1_requires > 0 && f2_requires == 0 {
-                    vulnerabilities.push(Vulnerability::new(
-                        VulnerabilitySeverity::Medium,
-                        VulnerabilityCategory::LogicError,
-                        format!("Asymmetric Validation: {} has checks, {} does not", f1.name, f2.name),
-                        "Paired operations have asymmetric validation - potential logic bug".to_string(),
-                        f2.line_start,
-                        format!("{} lacks require() while {} has {}", f2.name, f1.name, f1_requires),
-                        format!("Add appropriate validation to {}", f2.name),
-                    ));
+                // Check for asymmetric validation (skip if f2 is view/pure)
+                if !f2_is_view {
+                    let f1_requires = f1.body.matches("require(").count();
+                    let f2_requires = f2.body.matches("require(").count();
+
+                    if f1_requires > 0 && f2_requires == 0 {
+                        vulnerabilities.push(Vulnerability::new(
+                            VulnerabilitySeverity::Medium,
+                            VulnerabilityCategory::LogicError,
+                            format!("Asymmetric Validation: {} has checks, {} does not", f1.name, f2.name),
+                            "Paired operations have asymmetric validation - potential logic bug".to_string(),
+                            f2.line_start,
+                            format!("{} lacks require() while {} has {}", f2.name, f1.name, f1_requires),
+                            format!("Add appropriate validation to {}", f2.name),
+                        ));
+                    }
                 }
 
-                // Check for asymmetric event emission
-                let f1_events = f1.body.matches("emit ").count();
-                let f2_events = f2.body.matches("emit ").count();
+                // Check for asymmetric event emission (skip if f2 is view/pure — can't emit events)
+                if !f2_is_view {
+                    let f1_events = f1.body.matches("emit ").count();
+                    let f2_events = f2.body.matches("emit ").count();
 
-                if f1_events > 0 && f2_events == 0 {
-                    vulnerabilities.push(Vulnerability::new(
-                        VulnerabilitySeverity::Low,
-                        VulnerabilityCategory::MissingEvents,
-                        format!("Missing Event in {}", f2.name),
-                        format!("'{}' emits events but paired '{}' does not", f1.name, f2.name),
-                        f2.line_start,
-                        format!("function {}", f2.name),
-                        "Add event emission for tracking paired operations".to_string(),
-                    ));
+                    if f1_events > 0 && f2_events == 0 {
+                        vulnerabilities.push(Vulnerability::new(
+                            VulnerabilitySeverity::Low,
+                            VulnerabilityCategory::MissingEvents,
+                            format!("Missing Event in {}", f2.name),
+                            format!("'{}' emits events but paired '{}' does not", f1.name, f2.name),
+                            f2.line_start,
+                            format!("function {}", f2.name),
+                            "Add event emission for tracking paired operations".to_string(),
+                        ));
+                    }
                 }
             }
         }
@@ -1119,7 +1149,12 @@ impl LogicAnalyzer {
             if func.name.to_lowercase() == "deposit" {
                 let has_minimum_shares = func.body.contains("minShares") ||
                                         func.body.contains("MIN_DEPOSIT") ||
-                                        content.contains("_initialConvertToShares");
+                                        content.contains("_initialConvertToShares") ||
+                                        content.contains("MIN_SHARES") ||
+                                        content.contains("MIN_ASSETS") ||
+                                        content.contains("INITIAL_DEPOSIT") ||
+                                        content.contains("_decimalsOffset") ||
+                                        content.contains("VIRTUAL_OFFSET");
 
                 if !has_minimum_shares {
                     vulnerabilities.push(Vulnerability::high_confidence(
