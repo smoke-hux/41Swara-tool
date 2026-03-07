@@ -369,8 +369,8 @@ fn test_json_output_version_0_8() {
     let parsed: serde_json::Value = serde_json::from_str(&output).unwrap_or_default();
     let version = parsed["version"].as_str().unwrap_or("");
     assert_eq!(
-        version, "0.8.0",
-        "Scanner version in JSON should be 0.8.0, got '{}'",
+        version, "0.8.1",
+        "Scanner version in JSON should be 0.8.1, got '{}'",
         version
     );
 }

@@ -6,7 +6,7 @@
 <p align="center">
   <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
   <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/rust-1.70%2B-orange.svg" alt="Rust"></a>
-  <img src="https://img.shields.io/badge/version-0.8.0-blue.svg" alt="Version">
+  <img src="https://img.shields.io/badge/version-0.8.1-blue.svg" alt="Version">
   <img src="https://img.shields.io/badge/offline-100%25-green.svg" alt="Offline">
   <img src="https://img.shields.io/badge/CVSS_3.1-scoring-blueviolet.svg" alt="CVSS 3.1">
 </p>
@@ -70,6 +70,28 @@ git pull origin main && cargo install --path . --force
 # CI gate: fail if high/critical found
 41 . --fail-on high -q
 ```
+
+---
+
+## What's New in v0.8.1
+
+### False Positive Reduction
+
+29 false positives removed across 7 distinct patterns (207 &rarr; 178 findings on test suite, &minus;14%):
+
+| FP Pattern | Root Cause | Fix |
+|-----------|------------|-----|
+| **"Calldata Parameter Detected"** (Critical) | Flagged every `calldata` param | Removed &mdash; standard param location, not a vuln |
+| **"DeFi Function Without Pause Check"** (&times;15) | Regex rule fired per-function | Removed duplicate &mdash; advanced analyzer already reports once per contract |
+| **"Missing Slippage on deposit()"** | `deposit`/`stake` matched swap pattern | Restricted to `swap`, `addLiquidity`, `removeLiquidity`, `zap` |
+| **"Insufficient Balance Validation"** on `withdraw` | Flagged all withdraw functions | Restricted to `removeLiquidity` &mdash; Solidity 0.8+ underflow protects |
+| **CFG reentrancy at wrong lines** | `parse_statements` hardcoded `base_line=0` | Pass actual file-level line offset |
+| **"State Check After External Call"** | Included safe `.transfer()`/`.send()`, never reset | Only `.call()`; skip `require(success`; break after first |
+| **Calldata in advanced analyzer** | Flagged any `calldata` without validation | Only flag `bytes calldata` (arbitrary raw data) |
+
+### Reports Directory
+
+Scan reports are now saved to `reports/` by default (gitignored). Previously they accumulated in the project root.
 
 ---
 
@@ -170,7 +192,7 @@ Run `41 --help` for the full CLI reference.
 
 ```json
 {
-  "version": "0.8.0",
+  "version": "0.8.1",
   "results": [{
     "vulnerabilities": [{
       "severity": "Critical",

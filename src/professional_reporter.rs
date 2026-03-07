@@ -136,7 +136,7 @@ impl ProfessionalReporter {
             impact,
             proof_of_concept,
             recommended_mitigation,
-            tools_used: "41Swara Smart Contract Scanner v0.8.0".to_string(),
+            tools_used: "41Swara Smart Contract Scanner v0.8.1".to_string(),
             line_number,
             code_snippet,
             category,
