@@ -912,23 +912,35 @@ impl LogicAnalyzer {
             }
         }
 
-        // Check for check-effect-interact pattern violations that create windows
+        // Check for check-effect-interact pattern violations that create windows.
+        // Only flag .call() — .transfer()/.send() are safe (2300 gas, no reentrancy).
+        // Skip "require(success" which just checks the call return value, not state.
         for func in functions {
             if !func.external_calls.is_empty() {
-                // Find if there are state reads after external calls
                 let lines: Vec<&str> = func.body.lines().collect();
                 let mut after_call = false;
+                let mut found = false;
 
                 for line in &lines {
-                    if line.contains(".call(") || line.contains(".transfer(") || line.contains(".send(") {
+                    // Only .call() is dangerous; .transfer()/.send() have 2300 gas limit
+                    if line.contains(".call(") || line.contains(".call{") {
                         after_call = true;
+                        continue;
                     }
 
-                    if after_call {
-                        // Check for state-dependent operations after call
+                    // Reset on function boundary (closing brace at depth 0 won't happen
+                    // in body, but a new function-like block resets context)
+                    if after_call && !found {
+                        // Skip lines that just check the call's return value
+                        if line.contains("require(success") || line.contains("if (!success")
+                            || line.contains("if (success") {
+                            continue;
+                        }
+
                         for read_var in &func.state_reads {
                             if line.contains(read_var) &&
-                               (line.contains("if") || line.contains("require") || line.contains("assert")) {
+                               (line.contains("if ") || line.contains("if(")
+                                || line.contains("require(") || line.contains("assert(")) {
                                 vulnerabilities.push(Vulnerability::new(
                                     VulnerabilitySeverity::High,
                                     VulnerabilityCategory::LogicError,
@@ -938,6 +950,7 @@ impl LogicAnalyzer {
                                     format!("Reads '{read_var}' after external call"),
                                     "Move all state checks before external calls".to_string(),
                                 ));
+                                found = true;
                                 break;
                             }
                         }

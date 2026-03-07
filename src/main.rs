@@ -723,7 +723,11 @@ fn save_markdown_report(
             .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
             .collect();
         let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
-        PathBuf::from(format!("41swara_report_{clean_name}_{timestamp}.md"))
+        let reports_dir = PathBuf::from("reports");
+        if !reports_dir.exists() {
+            let _ = std::fs::create_dir_all(&reports_dir);
+        }
+        reports_dir.join(format!("41swara_report_{clean_name}_{timestamp}.md"))
     };
 
     // Write the report

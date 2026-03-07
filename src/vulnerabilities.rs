@@ -1579,16 +1579,10 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
     // Address parameters - validated in advanced analyzer for zero-address checks
     // Removed negative lookahead - handled by context-aware analysis
 
-    // Calldata parameters - validated in advanced analyzer
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::InputValidationFailure,
-        VulnerabilitySeverity::Critical,
-        r"calldata\s+\w+\s*\).*external",
-        "Calldata Parameter Detected".to_string(),
-        "Function uses calldata - verify validation (#1 exploit vector: 34.6% of hacks)".to_string(),
-        "Decode and validate ALL calldata inputs before processing".to_string(),
-        false,
-    ).unwrap());
+    // REMOVED: "Calldata Parameter Detected" - flagged every function with a calldata param
+    // as Critical. Calldata is a standard Solidity parameter location, not a vulnerability.
+    // The advanced_analysis.rs detect_input_validation_patterns() handles the dangerous case
+    // (bytes calldata without validation) with proper context checking.
 
     // 5. DECIMAL/PRECISION MISMATCH (Aevo/Ribbon - precision mismatch exploited)
     // Mixing different decimal precisions
@@ -2194,17 +2188,10 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
     // contract risk. Checking if a withdraw mechanism exists requires cross-function analysis
     // that single-line regex cannot do. This generated noise for all payable contracts.
 
-    // Missing Emergency Stop - Table I from paper ("Missing Interrupter")
-    // DeFi contracts need circuit breakers for incident response
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::MissingEmergencyStop,
-        VulnerabilitySeverity::Medium,
-        r"function\s+(swap|deposit|withdraw|stake|unstake)\w*\s*\([^)]*\)\s+(external|public)",
-        "DeFi Function Without Pause Check".to_string(),
-        "Critical DeFi function lacks emergency pause mechanism for incident response".to_string(),
-        "Implement Pausable pattern with whenNotPaused modifier for critical operations".to_string(),
-        false,
-    ).unwrap());
+    // REMOVED: "DeFi Function Without Pause Check" regex rule.
+    // Duplicated the detect_missing_emergency_stop() in advanced_analysis.rs which
+    // already reports once per contract (with break) and checks for Pausable pattern.
+    // The regex version fired per-function, generating 15+ findings on a single contract.
 
     // ERC-777 Callback Reentrancy (dForce $24M attack) - Section IV.3 of paper
     // tokensReceived/tokensToSend hooks enable reentrancy

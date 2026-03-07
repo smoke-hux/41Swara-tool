@@ -637,21 +637,24 @@ impl AdvancedAnalyzer {
         vulnerabilities
     }
 
-    // Check removeLiquidity/withdraw functions for proper balance validation
-    // in the first 15 lines of their body. Absence of require(amount...) or
-    // require(balance...) triggers a medium-severity finding.
+    // Check removeLiquidity functions for proper balance validation.
+    // Generic withdraw() is excluded: Solidity 0.8+ has built-in underflow protection
+    // and most withdraw patterns safely read balances[msg.sender] (reverts on underflow).
     fn detect_liquidity_vulnerabilities(&self, content: &str) -> Vec<Vulnerability> {
         let mut vulnerabilities = Vec::new();
 
-        // Check for liquidity removal without checks
-        let remove_liquidity_pattern = Regex::new(r"removeLiquidity|withdraw").unwrap();
+        // Only flag explicit liquidity removal, not generic withdraw
+        let remove_liquidity_pattern = Regex::new(r"removeLiquidity").unwrap();
 
         for (idx, line) in content.lines().enumerate() {
             if remove_liquidity_pattern.is_match(line) && line.contains("function") {
-                // Look ahead for balance checks
+                // Look ahead for balance/amount checks
                 let next_lines: Vec<&str> = content.lines().skip(idx).take(15).collect();
                 let has_balance_check = next_lines.iter().any(|l|
-                    l.contains("require(amount") || l.contains("require(balance") || l.contains("if (amount")
+                    l.contains("require(amount") || l.contains("require(balance")
+                    || l.contains("if (amount") || l.contains("if (balance")
+                    || l.contains("balances[") || l.contains("_balances[")
+                    || l.contains("SafeERC20") || l.contains("safeTransfer")
                 );
 
                 if !has_balance_check {
@@ -1227,9 +1230,11 @@ impl AdvancedAnalyzer {
     fn detect_input_validation_patterns(&self, content: &str) -> Vec<Vulnerability> {
         let mut vulnerabilities = Vec::new();
 
-        // Critical: Functions with calldata parameters (most dangerous)
+        // Only flag `bytes calldata` (arbitrary raw data) without validation.
+        // Typed calldata params (uint256 calldata, address[] calldata) are standard
+        // and safe - the ABI decoder validates their structure automatically.
         let calldata_pattern = Regex::new(
-            r"function\s+(\w+)\s*\([^)]*calldata[^)]*\)\s+(external|public)"
+            r"function\s+(\w+)\s*\([^)]*bytes\s+calldata[^)]*\)\s+(external|public)"
         ).unwrap();
 
         for (idx, line) in content.lines().enumerate() {
@@ -1237,21 +1242,22 @@ impl AdvancedAnalyzer {
                 let func_name = captures.get(1).map_or("", |m| m.as_str());
 
                 // Check if there's validation in next 10 lines
-                let next_lines: Vec<&str> = content.lines().skip(idx).take(10).collect();
+                let next_lines: Vec<&str> = content.lines().skip(idx + 1).take(10).collect();
                 let has_validation = next_lines.iter().any(|l|
-                    l.contains("require(") || l.contains("if (") ||
-                    l.contains("revert") || l.contains("assert(")
+                    l.contains("require(") || l.contains("if (") || l.contains("if(")
+                    || l.contains("revert") || l.contains("assert(")
+                    || l.contains("abi.decode")
                 );
 
                 if !has_validation {
                     vulnerabilities.push(Vulnerability::high_confidence(
                         VulnerabilitySeverity::Critical,
                         VulnerabilityCategory::InputValidationFailure,
-                        format!("CRITICAL: Unchecked Calldata in {func_name}"),
-                        "Calldata parameter without validation - #1 exploit vector (34.6% of hacks)".to_string(),
+                        format!("Unchecked Raw Calldata in {func_name}"),
+                        "Raw bytes calldata without validation or decoding - potential exploit vector".to_string(),
                         idx + 1,
                         line.to_string(),
-                        "Decode and validate ALL calldata inputs before processing".to_string(),
+                        "Decode and validate raw calldata bytes before processing".to_string(),
                     ));
                 }
             }
@@ -4392,8 +4398,10 @@ impl AdvancedAnalyzer {
 
     fn detect_missing_slippage(&self, content: &str) -> Vec<Vulnerability> {
         let mut vulns = Vec::new();
+        // Only flag swap/liquidity operations that actually involve price-sensitive exchanges.
+        // Plain deposit() and stake() functions just transfer tokens at 1:1, no slippage risk.
         let swap_fn_re = Regex::new(
-            r"function\s+(swap|deposit|addLiquidity|removeLiquidity|zap|stake)\s*\(([^)]*)\)"
+            r"function\s+(swap|addLiquidity|removeLiquidity|zap)\s*\(([^)]*)\)"
         ).unwrap();
 
         for (idx, line) in content.lines().enumerate() {

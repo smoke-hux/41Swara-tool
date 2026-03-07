@@ -505,7 +505,7 @@ impl ASTParser {
                     .map(|m| self.extract_modifiers(m.as_str()))
                     .unwrap_or_default();
 
-                let body = self.extract_function_body(content, match_start);
+                let body = self.extract_function_body(content, match_start, base_line);
 
                 functions.push(FunctionDefinition {
                     name: if is_constructor { "constructor".to_string() }
@@ -540,7 +540,7 @@ impl ASTParser {
             let modifiers = self.extract_modifiers(modifiers_str);
             let (visibility, state_mutability, return_params) = self.parse_function_modifiers(modifiers_str);
 
-            let body = self.extract_function_body(content, match_start);
+            let body = self.extract_function_body(content, match_start, base_line);
 
             functions.push(FunctionDefinition {
                 name,
@@ -655,7 +655,7 @@ impl ASTParser {
         (visibility, state_mutability, return_params)
     }
 
-    fn extract_function_body(&self, content: &str, start: usize) -> Option<FunctionBody> {
+    fn extract_function_body(&self, content: &str, start: usize, base_line: usize) -> Option<FunctionBody> {
         // Find opening brace
         let brace_start = content[start..].find('{')?;
         let body_start = start + brace_start + 1;
@@ -679,7 +679,11 @@ impl ASTParser {
         }
 
         let raw_content = content[body_start..body_end].to_string();
-        let statements = self.parse_statements(&raw_content, 0);
+        // Compute file-level line number for the body start:
+        // base_line is the contract's start line (1-based), plus newlines from
+        // the contract start to the body opening brace.
+        let body_base_line = base_line + content[..body_start].matches('\n').count();
+        let statements = self.parse_statements(&raw_content, body_base_line);
 
         Some(FunctionBody {
             statements,
@@ -807,7 +811,7 @@ impl ASTParser {
             let end_line = self.find_matching_brace(content, match_start);
 
             let parameters = self.parse_parameters(params_str);
-            let body = self.extract_function_body(content, match_start);
+            let body = self.extract_function_body(content, match_start, base_line);
 
             modifiers.push(ModifierDefinition {
                 name,
