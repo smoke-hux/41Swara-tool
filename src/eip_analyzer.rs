@@ -13,10 +13,8 @@
 
 #![allow(dead_code)]
 
+use crate::vulnerabilities::{SwcId, Vulnerability, VulnerabilityCategory, VulnerabilitySeverity};
 use regex::Regex;
-use crate::vulnerabilities::{
-    Vulnerability, VulnerabilityCategory, VulnerabilitySeverity, SwcId,
-};
 
 /// Represents a detected EIP in the contract
 #[derive(Debug, Clone)]
@@ -624,7 +622,10 @@ impl EIPAnalyzer {
                 for pattern in &eip_pattern.detection_patterns {
                     if pattern.is_match(line) {
                         // Check for duplicates
-                        if !detected.iter().any(|d: &DetectedEIP| d.eip_number == eip_pattern.eip_number) {
+                        if !detected
+                            .iter()
+                            .any(|d: &DetectedEIP| d.eip_number == eip_pattern.eip_number)
+                        {
                             let method = if line.contains("import") {
                                 EIPDetectionMethod::ImportStatement
                             } else if line.contains("interface") || line.contains(" is ") {
@@ -654,9 +655,14 @@ impl EIPAnalyzer {
         }
 
         if self.verbose && !detected.is_empty() {
-            println!("  {} Detected EIPs: {}",
+            println!(
+                "  {} Detected EIPs: {}",
                 "📋".to_string(),
-                detected.iter().map(|e| format!("EIP-{}", e.eip_number)).collect::<Vec<_>>().join(", ")
+                detected
+                    .iter()
+                    .map(|e| format!("EIP-{}", e.eip_number))
+                    .collect::<Vec<_>>()
+                    .join(", ")
             );
         }
 
@@ -674,7 +680,10 @@ impl EIPAnalyzer {
         }
 
         if self.verbose {
-            println!("  {} Scanning for EIP-specific vulnerabilities...", "🔒".to_string());
+            println!(
+                "  {} Scanning for EIP-specific vulnerabilities...",
+                "🔒".to_string()
+            );
         }
 
         // Check each detected EIP for known vulnerabilities
@@ -689,34 +698,47 @@ impl EIPAnalyzer {
                         // Skip matches on import statements or comment lines
                         if line_number > 0 && line_number <= lines.len() {
                             let matched_line = lines[line_number - 1].trim();
-                            if matched_line.starts_with("import") || matched_line.starts_with("//")
-                                || matched_line.starts_with("*") || matched_line.starts_with("/*") {
+                            if matched_line.starts_with("import")
+                                || matched_line.starts_with("//")
+                                || matched_line.starts_with("*")
+                                || matched_line.starts_with("/*")
+                            {
                                 continue;
                             }
                         }
 
                         // Suppress cross-chain / chainid findings if block.chainid is used anywhere
                         if (vuln.title.contains("Chain ID") || vuln.title.contains("Replay"))
-                            && (content.contains("block.chainid") || content.contains("chainId()")) {
+                            && (content.contains("block.chainid") || content.contains("chainId()"))
+                        {
                             continue;
                         }
 
                         // Suppress ERC-4626 inflation findings if mitigation exists
-                        if vuln.title.contains("First Depositor") || vuln.title.contains("Inflation") {
-                            if content.contains("MIN_SHARES") || content.contains("MIN_ASSETS")
-                                || content.contains("MIN_DEPOSIT") || content.contains("INITIAL_DEPOSIT")
-                                || content.contains("_decimalsOffset") || content.contains("VIRTUAL_OFFSET")
-                                || content.contains("INITIAL_SHARES") {
+                        if vuln.title.contains("First Depositor")
+                            || vuln.title.contains("Inflation")
+                        {
+                            if content.contains("MIN_SHARES")
+                                || content.contains("MIN_ASSETS")
+                                || content.contains("MIN_DEPOSIT")
+                                || content.contains("INITIAL_DEPOSIT")
+                                || content.contains("_decimalsOffset")
+                                || content.contains("VIRTUAL_OFFSET")
+                                || content.contains("INITIAL_SHARES")
+                            {
                                 continue;
                             }
                         }
 
                         // Suppress ecrecover validation findings if address(0) check exists nearby
-                        if vuln.title.contains("ecrecover") || vuln.vulnerability_id.contains("712") {
+                        if vuln.title.contains("ecrecover") || vuln.vulnerability_id.contains("712")
+                        {
                             let start_line = line_number.saturating_sub(10);
                             let end_line = (line_number + 10).min(lines.len());
                             let context: String = lines[start_line..end_line].join("\n");
-                            if context.contains("address(0)") && (context.contains("!=") || context.contains("require")) {
+                            if context.contains("address(0)")
+                                && (context.contains("!=") || context.contains("require"))
+                            {
                                 continue;
                             }
                         }
@@ -734,7 +756,8 @@ impl EIPAnalyzer {
                             description.push_str(&format!(" Real-world exploit: {}", exploit));
                         }
 
-                        let category = self.map_eip_to_category(vuln.eip_number, &vuln.vulnerability_id);
+                        let category =
+                            self.map_eip_to_category(vuln.eip_number, &vuln.vulnerability_id);
 
                         let mut vulnerability = Vulnerability::high_confidence(
                             vuln.severity.clone(),
@@ -748,15 +771,13 @@ impl EIPAnalyzer {
 
                         // Add SWC/CWE mapping
                         if let Some(ref cwe) = vuln.cwe_id {
-                            vulnerability.swc_id = Some(SwcId::new(
-                                &vuln.vulnerability_id,
-                                &vuln.title,
-                                Some(cwe),
-                            ));
+                            vulnerability.swc_id =
+                                Some(SwcId::new(&vuln.vulnerability_id, &vuln.title, Some(cwe)));
                         }
 
                         // Extract context
-                        let (before, after) = Vulnerability::extract_context(content, line_number, 3);
+                        let (before, after) =
+                            Vulnerability::extract_context(content, line_number, 3);
                         vulnerability = vulnerability.with_context(before, after);
 
                         vulnerabilities.push(vulnerability);
@@ -767,12 +788,11 @@ impl EIPAnalyzer {
 
         // Remove duplicates based on line number and vulnerability ID
         vulnerabilities.sort_by(|a, b| a.line_number.cmp(&b.line_number));
-        vulnerabilities.dedup_by(|a, b| {
-            a.line_number == b.line_number && a.title == b.title
-        });
+        vulnerabilities.dedup_by(|a, b| a.line_number == b.line_number && a.title == b.title);
 
         if self.verbose && !vulnerabilities.is_empty() {
-            println!("  {} Found {} EIP-specific vulnerabilities",
+            println!(
+                "  {} Found {} EIP-specific vulnerabilities",
                 "⚠️".to_string(),
                 vulnerabilities.len()
             );

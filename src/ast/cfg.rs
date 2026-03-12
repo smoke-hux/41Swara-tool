@@ -7,10 +7,10 @@
 #![allow(unused_imports)]
 #![allow(unused_variables)]
 
+use super::parser::{FunctionDefinition, Statement};
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::Direction;
 use std::collections::{HashMap, HashSet};
-use super::parser::{FunctionDefinition, Statement};
 
 /// Control Flow Graph for a function
 #[derive(Debug, Clone)]
@@ -86,12 +86,12 @@ pub struct CFGEdge {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum CFGEdgeType {
-    Sequential,        // Normal flow
-    ConditionalTrue,   // If condition true
-    ConditionalFalse,  // If condition false
-    LoopBack,          // Back edge in loops
-    LoopExit,          // Exit from loop
-    Throw,             // Revert/require failure
+    Sequential,       // Normal flow
+    ConditionalTrue,  // If condition true
+    ConditionalFalse, // If condition false
+    LoopBack,         // Back edge in loops
+    LoopExit,         // Exit from loop
+    Throw,            // Revert/require failure
 }
 
 /// CFG Builder
@@ -101,9 +101,7 @@ pub struct CFGBuilder {
 
 impl CFGBuilder {
     pub fn new() -> Self {
-        Self {
-            current_node: None,
-        }
+        Self { current_node: None }
     }
 
     /// Build CFG from a function definition
@@ -124,7 +122,13 @@ impl CFGBuilder {
 
         // Process function body
         if let Some(body) = &function.body {
-            current = self.process_statements(&mut graph, &mut node_map, &body.statements, current, &mut exits);
+            current = self.process_statements(
+                &mut graph,
+                &mut node_map,
+                &body.statements,
+                current,
+                &mut exits,
+            );
         }
 
         // Create exit node if needed
@@ -134,10 +138,14 @@ impl CFGBuilder {
                 statements: vec![],
                 line: function.end_line,
             });
-            graph.add_edge(current, exit, CFGEdge {
-                edge_type: CFGEdgeType::Sequential,
-                condition: None,
-            });
+            graph.add_edge(
+                current,
+                exit,
+                CFGEdge {
+                    edge_type: CFGEdgeType::Sequential,
+                    condition: None,
+                },
+            );
             exits.push(exit);
         }
 
@@ -163,7 +171,12 @@ impl CFGBuilder {
             let stmt_info = self.analyze_statement(stmt);
 
             match stmt {
-                Statement::If { condition, then_block, else_block, line } => {
+                Statement::If {
+                    condition,
+                    then_block,
+                    else_block,
+                    line,
+                } => {
                     // Flush current block
                     if !current_block_stmts.is_empty() {
                         let block_node = graph.add_node(CFGNode {
@@ -171,10 +184,14 @@ impl CFGBuilder {
                             statements: current_block_stmts.clone(),
                             line: current_block_stmts[0].line,
                         });
-                        graph.add_edge(current, block_node, CFGEdge {
-                            edge_type: CFGEdgeType::Sequential,
-                            condition: None,
-                        });
+                        graph.add_edge(
+                            current,
+                            block_node,
+                            CFGEdge {
+                                edge_type: CFGEdgeType::Sequential,
+                                condition: None,
+                            },
+                        );
                         current = block_node;
                         current_block_stmts.clear();
                     }
@@ -186,10 +203,14 @@ impl CFGBuilder {
                         line: *line,
                     });
                     node_map.insert(*line, cond_node);
-                    graph.add_edge(current, cond_node, CFGEdge {
-                        edge_type: CFGEdgeType::Sequential,
-                        condition: None,
-                    });
+                    graph.add_edge(
+                        current,
+                        cond_node,
+                        CFGEdge {
+                            edge_type: CFGEdgeType::Sequential,
+                            condition: None,
+                        },
+                    );
 
                     // Process then block
                     let then_entry = graph.add_node(CFGNode {
@@ -197,11 +218,16 @@ impl CFGBuilder {
                         statements: vec![],
                         line: *line,
                     });
-                    graph.add_edge(cond_node, then_entry, CFGEdge {
-                        edge_type: CFGEdgeType::ConditionalTrue,
-                        condition: Some(condition.clone()),
-                    });
-                    let then_exit = self.process_statements(graph, node_map, then_block, then_entry, exits);
+                    graph.add_edge(
+                        cond_node,
+                        then_entry,
+                        CFGEdge {
+                            edge_type: CFGEdgeType::ConditionalTrue,
+                            condition: Some(condition.clone()),
+                        },
+                    );
+                    let then_exit =
+                        self.process_statements(graph, node_map, then_block, then_entry, exits);
 
                     // Process else block
                     let else_exit = if let Some(else_stmts) = else_block {
@@ -210,11 +236,17 @@ impl CFGBuilder {
                             statements: vec![],
                             line: *line,
                         });
-                        graph.add_edge(cond_node, else_entry, CFGEdge {
-                            edge_type: CFGEdgeType::ConditionalFalse,
-                            condition: Some(format!("!{}", condition)),
-                        });
-                        Some(self.process_statements(graph, node_map, else_stmts, else_entry, exits))
+                        graph.add_edge(
+                            cond_node,
+                            else_entry,
+                            CFGEdge {
+                                edge_type: CFGEdgeType::ConditionalFalse,
+                                condition: Some(format!("!{}", condition)),
+                            },
+                        );
+                        Some(
+                            self.process_statements(graph, node_map, else_stmts, else_entry, exits),
+                        )
                     } else {
                         None
                     };
@@ -225,25 +257,43 @@ impl CFGBuilder {
                         statements: vec![],
                         line: *line,
                     });
-                    graph.add_edge(then_exit, merge, CFGEdge {
-                        edge_type: CFGEdgeType::Sequential,
-                        condition: None,
-                    });
-                    if let Some(else_ex) = else_exit {
-                        graph.add_edge(else_ex, merge, CFGEdge {
+                    graph.add_edge(
+                        then_exit,
+                        merge,
+                        CFGEdge {
                             edge_type: CFGEdgeType::Sequential,
                             condition: None,
-                        });
+                        },
+                    );
+                    if let Some(else_ex) = else_exit {
+                        graph.add_edge(
+                            else_ex,
+                            merge,
+                            CFGEdge {
+                                edge_type: CFGEdgeType::Sequential,
+                                condition: None,
+                            },
+                        );
                     } else {
-                        graph.add_edge(cond_node, merge, CFGEdge {
-                            edge_type: CFGEdgeType::ConditionalFalse,
-                            condition: Some(format!("!{}", condition)),
-                        });
+                        graph.add_edge(
+                            cond_node,
+                            merge,
+                            CFGEdge {
+                                edge_type: CFGEdgeType::ConditionalFalse,
+                                condition: Some(format!("!{}", condition)),
+                            },
+                        );
                     }
                     current = merge;
                 }
 
-                Statement::For { init: _, condition, post: _, body, line } => {
+                Statement::For {
+                    init: _,
+                    condition,
+                    post: _,
+                    body,
+                    line,
+                } => {
                     // Flush current block
                     if !current_block_stmts.is_empty() {
                         let block_node = graph.add_node(CFGNode {
@@ -251,10 +301,14 @@ impl CFGBuilder {
                             statements: current_block_stmts.clone(),
                             line: current_block_stmts[0].line,
                         });
-                        graph.add_edge(current, block_node, CFGEdge {
-                            edge_type: CFGEdgeType::Sequential,
-                            condition: None,
-                        });
+                        graph.add_edge(
+                            current,
+                            block_node,
+                            CFGEdge {
+                                edge_type: CFGEdgeType::Sequential,
+                                condition: None,
+                            },
+                        );
                         current = block_node;
                         current_block_stmts.clear();
                     }
@@ -266,10 +320,14 @@ impl CFGBuilder {
                         line: *line,
                     });
                     node_map.insert(*line, loop_cond);
-                    graph.add_edge(current, loop_cond, CFGEdge {
-                        edge_type: CFGEdgeType::Sequential,
-                        condition: None,
-                    });
+                    graph.add_edge(
+                        current,
+                        loop_cond,
+                        CFGEdge {
+                            edge_type: CFGEdgeType::Sequential,
+                            condition: None,
+                        },
+                    );
 
                     // Process loop body
                     let body_entry = graph.add_node(CFGNode {
@@ -277,17 +335,26 @@ impl CFGBuilder {
                         statements: vec![],
                         line: *line,
                     });
-                    graph.add_edge(loop_cond, body_entry, CFGEdge {
-                        edge_type: CFGEdgeType::ConditionalTrue,
-                        condition: condition.clone(),
-                    });
-                    let body_exit = self.process_statements(graph, node_map, body, body_entry, exits);
+                    graph.add_edge(
+                        loop_cond,
+                        body_entry,
+                        CFGEdge {
+                            edge_type: CFGEdgeType::ConditionalTrue,
+                            condition: condition.clone(),
+                        },
+                    );
+                    let body_exit =
+                        self.process_statements(graph, node_map, body, body_entry, exits);
 
                     // Back edge
-                    graph.add_edge(body_exit, loop_cond, CFGEdge {
-                        edge_type: CFGEdgeType::LoopBack,
-                        condition: None,
-                    });
+                    graph.add_edge(
+                        body_exit,
+                        loop_cond,
+                        CFGEdge {
+                            edge_type: CFGEdgeType::LoopBack,
+                            condition: None,
+                        },
+                    );
 
                     // Loop exit
                     let loop_exit = graph.add_node(CFGNode {
@@ -295,14 +362,22 @@ impl CFGBuilder {
                         statements: vec![],
                         line: *line,
                     });
-                    graph.add_edge(loop_cond, loop_exit, CFGEdge {
-                        edge_type: CFGEdgeType::LoopExit,
-                        condition: condition.as_ref().map(|c| format!("!{}", c)),
-                    });
+                    graph.add_edge(
+                        loop_cond,
+                        loop_exit,
+                        CFGEdge {
+                            edge_type: CFGEdgeType::LoopExit,
+                            condition: condition.as_ref().map(|c| format!("!{}", c)),
+                        },
+                    );
                     current = loop_exit;
                 }
 
-                Statement::While { condition, body, line } => {
+                Statement::While {
+                    condition,
+                    body,
+                    line,
+                } => {
                     // Similar to for loop
                     if !current_block_stmts.is_empty() {
                         let block_node = graph.add_node(CFGNode {
@@ -310,10 +385,14 @@ impl CFGBuilder {
                             statements: current_block_stmts.clone(),
                             line: current_block_stmts[0].line,
                         });
-                        graph.add_edge(current, block_node, CFGEdge {
-                            edge_type: CFGEdgeType::Sequential,
-                            condition: None,
-                        });
+                        graph.add_edge(
+                            current,
+                            block_node,
+                            CFGEdge {
+                                edge_type: CFGEdgeType::Sequential,
+                                condition: None,
+                            },
+                        );
                         current = block_node;
                         current_block_stmts.clear();
                     }
@@ -324,36 +403,53 @@ impl CFGBuilder {
                         line: *line,
                     });
                     node_map.insert(*line, loop_cond);
-                    graph.add_edge(current, loop_cond, CFGEdge {
-                        edge_type: CFGEdgeType::Sequential,
-                        condition: None,
-                    });
+                    graph.add_edge(
+                        current,
+                        loop_cond,
+                        CFGEdge {
+                            edge_type: CFGEdgeType::Sequential,
+                            condition: None,
+                        },
+                    );
 
                     let body_entry = graph.add_node(CFGNode {
                         node_type: CFGNodeType::LoopBody,
                         statements: vec![],
                         line: *line,
                     });
-                    graph.add_edge(loop_cond, body_entry, CFGEdge {
-                        edge_type: CFGEdgeType::ConditionalTrue,
-                        condition: Some(condition.clone()),
-                    });
-                    let body_exit = self.process_statements(graph, node_map, body, body_entry, exits);
+                    graph.add_edge(
+                        loop_cond,
+                        body_entry,
+                        CFGEdge {
+                            edge_type: CFGEdgeType::ConditionalTrue,
+                            condition: Some(condition.clone()),
+                        },
+                    );
+                    let body_exit =
+                        self.process_statements(graph, node_map, body, body_entry, exits);
 
-                    graph.add_edge(body_exit, loop_cond, CFGEdge {
-                        edge_type: CFGEdgeType::LoopBack,
-                        condition: None,
-                    });
+                    graph.add_edge(
+                        body_exit,
+                        loop_cond,
+                        CFGEdge {
+                            edge_type: CFGEdgeType::LoopBack,
+                            condition: None,
+                        },
+                    );
 
                     let loop_exit = graph.add_node(CFGNode {
                         node_type: CFGNodeType::BasicBlock,
                         statements: vec![],
                         line: *line,
                     });
-                    graph.add_edge(loop_cond, loop_exit, CFGEdge {
-                        edge_type: CFGEdgeType::LoopExit,
-                        condition: Some(format!("!{}", condition)),
-                    });
+                    graph.add_edge(
+                        loop_cond,
+                        loop_exit,
+                        CFGEdge {
+                            edge_type: CFGEdgeType::LoopExit,
+                            condition: Some(format!("!{}", condition)),
+                        },
+                    );
                     current = loop_exit;
                 }
 
@@ -367,10 +463,14 @@ impl CFGBuilder {
                         line: *line,
                     });
                     node_map.insert(*line, exit_node);
-                    graph.add_edge(current, exit_node, CFGEdge {
-                        edge_type: CFGEdgeType::Sequential,
-                        condition: None,
-                    });
+                    graph.add_edge(
+                        current,
+                        exit_node,
+                        CFGEdge {
+                            edge_type: CFGEdgeType::Sequential,
+                            condition: None,
+                        },
+                    );
                     exits.push(exit_node);
                     current_block_stmts.clear();
                     current = exit_node;
@@ -390,21 +490,30 @@ impl CFGBuilder {
                     if !current_block_stmts.is_empty() {
                         let block_node = graph.add_node(CFGNode {
                             node_type: CFGNodeType::BasicBlock,
-                            statements: current_block_stmts[..current_block_stmts.len()-1].to_vec(),
+                            statements: current_block_stmts[..current_block_stmts.len() - 1]
+                                .to_vec(),
                             line: current_block_stmts[0].line,
                         });
-                        graph.add_edge(current, block_node, CFGEdge {
-                            edge_type: CFGEdgeType::Sequential,
-                            condition: None,
-                        });
+                        graph.add_edge(
+                            current,
+                            block_node,
+                            CFGEdge {
+                                edge_type: CFGEdgeType::Sequential,
+                                condition: None,
+                            },
+                        );
                         current = block_node;
                         current_block_stmts.clear();
                     }
 
-                    graph.add_edge(current, req_node, CFGEdge {
-                        edge_type: CFGEdgeType::Sequential,
-                        condition: None,
-                    });
+                    graph.add_edge(
+                        current,
+                        req_node,
+                        CFGEdge {
+                            edge_type: CFGEdgeType::Sequential,
+                            condition: None,
+                        },
+                    );
                     current = req_node;
                 }
 
@@ -422,18 +531,26 @@ impl CFGBuilder {
                             statements: current_block_stmts.clone(),
                             line: current_block_stmts[0].line,
                         });
-                        graph.add_edge(current, block_node, CFGEdge {
-                            edge_type: CFGEdgeType::Sequential,
-                            condition: None,
-                        });
+                        graph.add_edge(
+                            current,
+                            block_node,
+                            CFGEdge {
+                                edge_type: CFGEdgeType::Sequential,
+                                condition: None,
+                            },
+                        );
                         current = block_node;
                         current_block_stmts.clear();
                     }
 
-                    graph.add_edge(current, revert_node, CFGEdge {
-                        edge_type: CFGEdgeType::Throw,
-                        condition: None,
-                    });
+                    graph.add_edge(
+                        current,
+                        revert_node,
+                        CFGEdge {
+                            edge_type: CFGEdgeType::Throw,
+                            condition: None,
+                        },
+                    );
                     exits.push(revert_node);
                 }
 
@@ -450,21 +567,30 @@ impl CFGBuilder {
                     if current_block_stmts.len() > 1 {
                         let block_node = graph.add_node(CFGNode {
                             node_type: CFGNodeType::BasicBlock,
-                            statements: current_block_stmts[..current_block_stmts.len()-1].to_vec(),
+                            statements: current_block_stmts[..current_block_stmts.len() - 1]
+                                .to_vec(),
                             line: current_block_stmts[0].line,
                         });
-                        graph.add_edge(current, block_node, CFGEdge {
-                            edge_type: CFGEdgeType::Sequential,
-                            condition: None,
-                        });
+                        graph.add_edge(
+                            current,
+                            block_node,
+                            CFGEdge {
+                                edge_type: CFGEdgeType::Sequential,
+                                condition: None,
+                            },
+                        );
                         current = block_node;
                     }
                     current_block_stmts.clear();
 
-                    graph.add_edge(current, call_node, CFGEdge {
-                        edge_type: CFGEdgeType::Sequential,
-                        condition: None,
-                    });
+                    graph.add_edge(
+                        current,
+                        call_node,
+                        CFGEdge {
+                            edge_type: CFGEdgeType::Sequential,
+                            condition: None,
+                        },
+                    );
                     current = call_node;
                 }
 
@@ -482,18 +608,26 @@ impl CFGBuilder {
                             statements: current_block_stmts.clone(),
                             line: current_block_stmts[0].line,
                         });
-                        graph.add_edge(current, block_node, CFGEdge {
-                            edge_type: CFGEdgeType::Sequential,
-                            condition: None,
-                        });
+                        graph.add_edge(
+                            current,
+                            block_node,
+                            CFGEdge {
+                                edge_type: CFGEdgeType::Sequential,
+                                condition: None,
+                            },
+                        );
                         current = block_node;
                         current_block_stmts.clear();
                     }
 
-                    graph.add_edge(current, asm_node, CFGEdge {
-                        edge_type: CFGEdgeType::Sequential,
-                        condition: None,
-                    });
+                    graph.add_edge(
+                        current,
+                        asm_node,
+                        CFGEdge {
+                            edge_type: CFGEdgeType::Sequential,
+                            condition: None,
+                        },
+                    );
                     current = asm_node;
                 }
 
@@ -511,18 +645,26 @@ impl CFGBuilder {
                             statements: current_block_stmts.clone(),
                             line: current_block_stmts[0].line,
                         });
-                        graph.add_edge(current, block_node, CFGEdge {
-                            edge_type: CFGEdgeType::Sequential,
-                            condition: None,
-                        });
+                        graph.add_edge(
+                            current,
+                            block_node,
+                            CFGEdge {
+                                edge_type: CFGEdgeType::Sequential,
+                                condition: None,
+                            },
+                        );
                         current = block_node;
                         current_block_stmts.clear();
                     }
 
-                    graph.add_edge(current, unchecked_node, CFGEdge {
-                        edge_type: CFGEdgeType::Sequential,
-                        condition: None,
-                    });
+                    graph.add_edge(
+                        current,
+                        unchecked_node,
+                        CFGEdge {
+                            edge_type: CFGEdgeType::Sequential,
+                            condition: None,
+                        },
+                    );
                     current = unchecked_node;
                 }
 
@@ -539,10 +681,14 @@ impl CFGBuilder {
                 statements: current_block_stmts,
                 line: 0,
             });
-            graph.add_edge(current, block_node, CFGEdge {
-                edge_type: CFGEdgeType::Sequential,
-                condition: None,
-            });
+            graph.add_edge(
+                current,
+                block_node,
+                CFGEdge {
+                    edge_type: CFGEdgeType::Sequential,
+                    condition: None,
+                },
+            );
             current = block_node;
         }
 
@@ -551,108 +697,124 @@ impl CFGBuilder {
 
     fn analyze_statement(&self, stmt: &Statement) -> StatementInfo {
         match stmt {
-            Statement::VariableDeclaration { name, var_type, value, line } => {
-                StatementInfo {
-                    stmt_type: StatementType::Declaration,
+            Statement::VariableDeclaration {
+                name,
+                var_type,
+                value,
+                line,
+            } => StatementInfo {
+                stmt_type: StatementType::Declaration,
+                line: *line,
+                content: format!("{} {}", var_type, name),
+                reads: value
+                    .as_ref()
+                    .map(|v| self.extract_variables(v))
+                    .unwrap_or_default(),
+                writes: vec![name.clone()],
+                calls: vec![],
+            },
+            Statement::Assignment {
+                target,
+                value,
+                line,
+            } => StatementInfo {
+                stmt_type: StatementType::Assignment,
+                line: *line,
+                content: format!("{} = {}", target, value),
+                reads: self.extract_variables(value),
+                writes: vec![target.clone()],
+                calls: vec![],
+            },
+            Statement::ExternalCall {
+                target,
+                function,
+                value_transfer,
+                line,
+            } => StatementInfo {
+                stmt_type: StatementType::ExternalCall,
+                line: *line,
+                content: format!("{}.{}", target, function),
+                reads: vec![target.clone()],
+                writes: vec![],
+                calls: vec![CallInfo {
+                    target: target.clone(),
+                    function: function.clone(),
+                    is_external: true,
+                    transfers_value: *value_transfer,
                     line: *line,
-                    content: format!("{} {}", var_type, name),
-                    reads: value.as_ref().map(|v| self.extract_variables(v)).unwrap_or_default(),
-                    writes: vec![name.clone()],
-                    calls: vec![],
-                }
-            }
-            Statement::Assignment { target, value, line } => {
-                StatementInfo {
-                    stmt_type: StatementType::Assignment,
+                }],
+            },
+            Statement::InternalCall {
+                function,
+                args,
+                line,
+            } => StatementInfo {
+                stmt_type: StatementType::InternalCall,
+                line: *line,
+                content: format!("{}({})", function, args.join(", ")),
+                reads: args
+                    .iter()
+                    .flat_map(|a| self.extract_variables(a))
+                    .collect(),
+                writes: vec![],
+                calls: vec![CallInfo {
+                    target: String::new(),
+                    function: function.clone(),
+                    is_external: false,
+                    transfers_value: false,
                     line: *line,
-                    content: format!("{} = {}", target, value),
-                    reads: self.extract_variables(value),
-                    writes: vec![target.clone()],
-                    calls: vec![],
-                }
-            }
-            Statement::ExternalCall { target, function, value_transfer, line } => {
-                StatementInfo {
-                    stmt_type: StatementType::ExternalCall,
-                    line: *line,
-                    content: format!("{}.{}", target, function),
-                    reads: vec![target.clone()],
-                    writes: vec![],
-                    calls: vec![CallInfo {
-                        target: target.clone(),
-                        function: function.clone(),
-                        is_external: true,
-                        transfers_value: *value_transfer,
-                        line: *line,
-                    }],
-                }
-            }
-            Statement::InternalCall { function, args, line } => {
-                StatementInfo {
-                    stmt_type: StatementType::InternalCall,
-                    line: *line,
-                    content: format!("{}({})", function, args.join(", ")),
-                    reads: args.iter().flat_map(|a| self.extract_variables(a)).collect(),
-                    writes: vec![],
-                    calls: vec![CallInfo {
-                        target: String::new(),
-                        function: function.clone(),
-                        is_external: false,
-                        transfers_value: false,
-                        line: *line,
-                    }],
-                }
-            }
-            Statement::Return { value, line } => {
-                StatementInfo {
-                    stmt_type: StatementType::Return,
-                    line: *line,
-                    content: value.clone().unwrap_or_else(|| "return".to_string()),
-                    reads: value.as_ref().map(|v| self.extract_variables(v)).unwrap_or_default(),
-                    writes: vec![],
-                    calls: vec![],
-                }
-            }
-            Statement::Require { condition, message, line } => {
-                StatementInfo {
-                    stmt_type: StatementType::Require,
-                    line: *line,
-                    content: format!("require({})", condition),
-                    reads: self.extract_variables(condition),
-                    writes: vec![],
-                    calls: vec![],
-                }
-            }
-            Statement::Revert { error, line } => {
-                StatementInfo {
-                    stmt_type: StatementType::Revert,
-                    line: *line,
-                    content: error.clone().unwrap_or_else(|| "revert".to_string()),
-                    reads: vec![],
-                    writes: vec![],
-                    calls: vec![],
-                }
-            }
-            Statement::Emit { event, args, line } => {
-                StatementInfo {
-                    stmt_type: StatementType::Emit,
-                    line: *line,
-                    content: format!("emit {}({})", event, args.join(", ")),
-                    reads: args.iter().flat_map(|a| self.extract_variables(a)).collect(),
-                    writes: vec![],
-                    calls: vec![],
-                }
-            }
-            Statement::Assembly { content, line } => {
-                StatementInfo {
-                    stmt_type: StatementType::Assembly,
-                    line: *line,
-                    content: content.clone(),
-                    reads: vec![],
-                    writes: vec![],
-                    calls: vec![],
-                }
-            }
+                }],
+            },
+            Statement::Return { value, line } => StatementInfo {
+                stmt_type: StatementType::Return,
+                line: *line,
+                content: value.clone().unwrap_or_else(|| "return".to_string()),
+                reads: value
+                    .as_ref()
+                    .map(|v| self.extract_variables(v))
+                    .unwrap_or_default(),
+                writes: vec![],
+                calls: vec![],
+            },
+            Statement::Require {
+                condition,
+                message,
+                line,
+            } => StatementInfo {
+                stmt_type: StatementType::Require,
+                line: *line,
+                content: format!("require({})", condition),
+                reads: self.extract_variables(condition),
+                writes: vec![],
+                calls: vec![],
+            },
+            Statement::Revert { error, line } => StatementInfo {
+                stmt_type: StatementType::Revert,
+                line: *line,
+                content: error.clone().unwrap_or_else(|| "revert".to_string()),
+                reads: vec![],
+                writes: vec![],
+                calls: vec![],
+            },
+            Statement::Emit { event, args, line } => StatementInfo {
+                stmt_type: StatementType::Emit,
+                line: *line,
+                content: format!("emit {}({})", event, args.join(", ")),
+                reads: args
+                    .iter()
+                    .flat_map(|a| self.extract_variables(a))
+                    .collect(),
+                writes: vec![],
+                calls: vec![],
+            },
+            Statement::Assembly { content, line } => StatementInfo {
+                stmt_type: StatementType::Assembly,
+                line: *line,
+                content: content.clone(),
+                reads: vec![],
+                writes: vec![],
+                calls: vec![],
+            },
             _ => {
                 let line = match stmt {
                     Statement::If { line, .. } => *line,
@@ -677,9 +839,13 @@ impl CFGBuilder {
 
     fn extract_variables(&self, expr: &str) -> Vec<String> {
         let var_pattern = regex::Regex::new(r"\b([a-zA-Z_][a-zA-Z0-9_]*)\b").unwrap();
-        let keywords = ["if", "else", "for", "while", "return", "require", "revert", "true", "false", "msg", "block", "tx"];
+        let keywords = [
+            "if", "else", "for", "while", "return", "require", "revert", "true", "false", "msg",
+            "block", "tx",
+        ];
 
-        var_pattern.captures_iter(expr)
+        var_pattern
+            .captures_iter(expr)
             .filter_map(|cap| cap.get(1).map(|m| m.as_str().to_string()))
             .filter(|v| !keywords.contains(&v.as_str()))
             .collect()
@@ -691,7 +857,12 @@ impl ControlFlowGraph {
     pub fn get_all_paths(&self) -> Vec<Vec<NodeIndex>> {
         let mut paths = Vec::new();
         let mut current_path = vec![self.entry];
-        self.dfs_paths(self.entry, &mut current_path, &mut paths, &mut HashSet::new());
+        self.dfs_paths(
+            self.entry,
+            &mut current_path,
+            &mut paths,
+            &mut HashSet::new(),
+        );
         paths
     }
 
@@ -757,7 +928,12 @@ impl ControlFlowGraph {
         self.dfs_reachable(from, to, &mut visited)
     }
 
-    fn dfs_reachable(&self, current: NodeIndex, target: NodeIndex, visited: &mut HashSet<NodeIndex>) -> bool {
+    fn dfs_reachable(
+        &self,
+        current: NodeIndex,
+        target: NodeIndex,
+        visited: &mut HashSet<NodeIndex>,
+    ) -> bool {
         if current == target {
             return true;
         }
@@ -779,7 +955,8 @@ impl ControlFlowGraph {
 
     /// Get nodes of a specific type
     pub fn get_nodes_by_type(&self, node_type: CFGNodeType) -> Vec<NodeIndex> {
-        self.graph.node_indices()
+        self.graph
+            .node_indices()
             .filter(|&idx| self.graph[idx].node_type == node_type)
             .collect()
     }

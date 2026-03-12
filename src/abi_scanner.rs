@@ -1,6 +1,6 @@
+use crate::vulnerabilities::{Vulnerability, VulnerabilityCategory, VulnerabilitySeverity};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
-use crate::vulnerabilities::{Vulnerability, VulnerabilitySeverity, VulnerabilityCategory};
 
 #[derive(Debug, Clone)]
 pub struct ABIFunction {
@@ -74,8 +74,7 @@ impl ABIScanner {
     }
 
     pub fn parse_abi(&self, content: &str) -> Result<ABIAnalysis, String> {
-        let abi: Value = serde_json::from_str(content)
-            .map_err(|e| format!("Invalid JSON: {e}"))?;
+        let abi: Value = serde_json::from_str(content).map_err(|e| format!("Invalid JSON: {e}"))?;
 
         let items = abi.as_array().ok_or("ABI must be an array")?;
 
@@ -83,7 +82,11 @@ impl ABIScanner {
         let mut events = Vec::new();
 
         for item in items {
-            match item.get("type").and_then(|t| t.as_str()).unwrap_or("function") {
+            match item
+                .get("type")
+                .and_then(|t| t.as_str())
+                .unwrap_or("function")
+            {
                 "function" | "constructor" | "fallback" | "receive" => {
                     if let Some(func) = self.parse_function(item) {
                         functions.push(func);
@@ -112,46 +115,102 @@ impl ABIScanner {
     }
 
     fn parse_function(&self, item: &Value) -> Option<ABIFunction> {
-        let name = item.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string();
-        let state_mutability = item.get("stateMutability").and_then(|s| s.as_str()).unwrap_or("nonpayable").to_string();
+        let name = item
+            .get("name")
+            .and_then(|n| n.as_str())
+            .unwrap_or("")
+            .to_string();
+        let state_mutability = item
+            .get("stateMutability")
+            .and_then(|s| s.as_str())
+            .unwrap_or("nonpayable")
+            .to_string();
         let inputs = ABIScanner::parse_params(item.get("inputs"));
         let selector = self.compute_selector(&name, &inputs);
 
-        Some(ABIFunction { name, state_mutability, inputs, selector })
+        Some(ABIFunction {
+            name,
+            state_mutability,
+            inputs,
+            selector,
+        })
     }
 
     fn parse_event(&self, item: &Value) -> Option<ABIEvent> {
-        let name = item.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string();
-        let anonymous = item.get("anonymous").and_then(|a| a.as_bool()).unwrap_or(false);
+        let name = item
+            .get("name")
+            .and_then(|n| n.as_str())
+            .unwrap_or("")
+            .to_string();
+        let anonymous = item
+            .get("anonymous")
+            .and_then(|a| a.as_bool())
+            .unwrap_or(false);
         let inputs = ABIScanner::parse_params(item.get("inputs"));
 
-        Some(ABIEvent { name, inputs, anonymous })
+        Some(ABIEvent {
+            name,
+            inputs,
+            anonymous,
+        })
     }
 
     fn parse_params(params: Option<&Value>) -> Vec<ABIParameter> {
-        let Some(arr) = params.and_then(|p| p.as_array()) else { return Vec::new() };
+        let Some(arr) = params.and_then(|p| p.as_array()) else {
+            return Vec::new();
+        };
 
-        arr.iter().map(|p| {
-            ABIParameter {
-                name: p.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string(),
-                param_type: p.get("type").and_then(|t| t.as_str()).unwrap_or("").to_string(),
+        arr.iter()
+            .map(|p| ABIParameter {
+                name: p
+                    .get("name")
+                    .and_then(|n| n.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                param_type: p
+                    .get("type")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("")
+                    .to_string(),
                 indexed: p.get("indexed").and_then(|i| i.as_bool()),
                 components: p.get("components").map(|c| Self::parse_params(Some(c))),
-            }
-        }).collect()
+            })
+            .collect()
     }
 
     fn compute_selector(&self, name: &str, inputs: &[ABIParameter]) -> String {
-        if name.is_empty() { return String::new() }
-        let sig = format!("{}({})", name, inputs.iter().map(|p| self.canonical_type(&p.param_type, &p.components)).collect::<Vec<_>>().join(","));
-        format!("0x{:08x}", sig.bytes().fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(b as u32)))
+        if name.is_empty() {
+            return String::new();
+        }
+        let sig = format!(
+            "{}({})",
+            name,
+            inputs
+                .iter()
+                .map(|p| self.canonical_type(&p.param_type, &p.components))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        format!(
+            "0x{:08x}",
+            sig.bytes()
+                .fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(b as u32))
+        )
     }
 
     fn canonical_type(&self, t: &str, components: &Option<Vec<ABIParameter>>) -> String {
         if t == "tuple" || t.starts_with("tuple[") {
             if let Some(c) = components {
-                let inner = c.iter().map(|p| self.canonical_type(&p.param_type, &p.components)).collect::<Vec<_>>().join(",");
-                return if t.contains('[') { format!("({}){}", inner, &t[5..]) } else { format!("({})", inner) };
+                let inner = c
+                    .iter()
+                    .map(|p| self.canonical_type(&p.param_type, &p.components))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                return if t.contains('[') {
+                    format!("({}){}", inner, &t[5..])
+                } else {
+                    format!("({})", inner)
+                };
             }
         }
         t.to_string()
@@ -161,38 +220,69 @@ impl ABIScanner {
         let names: HashSet<_> = functions.iter().map(|f| f.name.as_str()).collect();
 
         // ERC-4626 Vault
-        let erc4626 = ["asset", "totalAssets", "deposit", "withdraw", "redeem", "mint", "convertToShares", "convertToAssets"];
-        if erc4626.iter().filter(|f| names.contains(*f)).count() >= 6 { return ContractType::ERC4626 }
+        let erc4626 = [
+            "asset",
+            "totalAssets",
+            "deposit",
+            "withdraw",
+            "redeem",
+            "mint",
+            "convertToShares",
+            "convertToAssets",
+        ];
+        if erc4626.iter().filter(|f| names.contains(*f)).count() >= 6 {
+            return ContractType::ERC4626;
+        }
 
         // ERC-1155
-        if names.contains("balanceOfBatch") && names.contains("safeBatchTransferFrom") { return ContractType::ERC1155 }
+        if names.contains("balanceOfBatch") && names.contains("safeBatchTransferFrom") {
+            return ContractType::ERC1155;
+        }
 
         // ERC-721
-        if names.contains("ownerOf") && names.contains("safeTransferFrom") { return ContractType::ERC721 }
+        if names.contains("ownerOf") && names.contains("safeTransferFrom") {
+            return ContractType::ERC721;
+        }
 
         // ERC-20
-        if names.contains("transfer") && names.contains("approve") && names.contains("balanceOf") { return ContractType::ERC20 }
+        if names.contains("transfer") && names.contains("approve") && names.contains("balanceOf") {
+            return ContractType::ERC20;
+        }
 
         // Proxy
-        if names.contains("upgradeTo") || names.contains("implementation") { return ContractType::Proxy }
+        if names.contains("upgradeTo") || names.contains("implementation") {
+            return ContractType::Proxy;
+        }
 
         // Governor
-        if names.contains("propose") && names.contains("castVote") { return ContractType::Governor }
+        if names.contains("propose") && names.contains("castVote") {
+            return ContractType::Governor;
+        }
 
         // Timelock
-        if names.contains("schedule") && names.contains("execute") { return ContractType::Timelock }
+        if names.contains("schedule") && names.contains("execute") {
+            return ContractType::Timelock;
+        }
 
         // DEX
-        if names.contains("swap") || names.contains("addLiquidity") { return ContractType::Dex }
+        if names.contains("swap") || names.contains("addLiquidity") {
+            return ContractType::Dex;
+        }
 
         // Lending
-        if names.contains("borrow") && names.contains("repay") { return ContractType::Lending }
+        if names.contains("borrow") && names.contains("repay") {
+            return ContractType::Lending;
+        }
 
         // Bridge
-        if names.contains("bridgeTo") || names.contains("relayMessage") { return ContractType::Bridge }
+        if names.contains("bridgeTo") || names.contains("relayMessage") {
+            return ContractType::Bridge;
+        }
 
         // Flash Loan
-        if names.contains("flashLoan") || names.contains("executeOperation") { return ContractType::FlashLoan }
+        if names.contains("flashLoan") || names.contains("executeOperation") {
+            return ContractType::FlashLoan;
+        }
 
         ContractType::Unknown
     }
@@ -201,27 +291,57 @@ impl ABIScanner {
         let names: HashSet<_> = functions.iter().map(|f| f.name.as_str()).collect();
         let mut patterns = Vec::new();
 
-        let flash = ["flashLoan", "executeOperation", "onFlashLoan", "receiveFlashLoan"];
-        if flash.iter().any(|f| names.contains(f)) { patterns.push(PatternType::FlashLoanCapable) }
+        let flash = [
+            "flashLoan",
+            "executeOperation",
+            "onFlashLoan",
+            "receiveFlashLoan",
+        ];
+        if flash.iter().any(|f| names.contains(f)) {
+            patterns.push(PatternType::FlashLoanCapable)
+        }
 
         let oracle = ["getPrice", "latestRoundData", "latestAnswer", "getReserves"];
-        if oracle.iter().any(|f| names.contains(f)) { patterns.push(PatternType::OracleDependent) }
+        if oracle.iter().any(|f| names.contains(f)) {
+            patterns.push(PatternType::OracleDependent)
+        }
 
         let dex = ["swap", "addLiquidity", "removeLiquidity"];
-        if dex.iter().any(|f| names.contains(f)) { patterns.push(PatternType::DexInteraction) }
+        if dex.iter().any(|f| names.contains(f)) {
+            patterns.push(PatternType::DexInteraction)
+        }
 
-        if names.contains("owner") || names.contains("hasRole") { patterns.push(PatternType::AccessControlled) }
-        if names.contains("pause") && names.contains("unpause") { patterns.push(PatternType::Pausable) }
-        if names.contains("upgradeTo") || names.contains("initialize") { patterns.push(PatternType::Upgradeable) }
-        if names.contains("permit") || names.contains("nonces") { patterns.push(PatternType::PermitEnabled) }
+        if names.contains("owner") || names.contains("hasRole") {
+            patterns.push(PatternType::AccessControlled)
+        }
+        if names.contains("pause") && names.contains("unpause") {
+            patterns.push(PatternType::Pausable)
+        }
+        if names.contains("upgradeTo") || names.contains("initialize") {
+            patterns.push(PatternType::Upgradeable)
+        }
+        if names.contains("permit") || names.contains("nonces") {
+            patterns.push(PatternType::PermitEnabled)
+        }
 
-        let callbacks = ["onERC721Received", "onERC1155Received", "executeOperation", "uniswapV2Call"];
-        if callbacks.iter().any(|f| names.contains(f)) { patterns.push(PatternType::CallbackEnabled) }
+        let callbacks = [
+            "onERC721Received",
+            "onERC1155Received",
+            "executeOperation",
+            "uniswapV2Call",
+        ];
+        if callbacks.iter().any(|f| names.contains(f)) {
+            patterns.push(PatternType::CallbackEnabled)
+        }
 
         let bridge = ["bridgeTo", "relayMessage", "ccipReceive", "lzReceive"];
-        if bridge.iter().any(|f| names.contains(f)) { patterns.push(PatternType::CrossChainCapable) }
+        if bridge.iter().any(|f| names.contains(f)) {
+            patterns.push(PatternType::CrossChainCapable)
+        }
 
-        if functions.iter().any(|f| f.name.contains("swap") && f.inputs.iter().any(|p| p.name.contains("deadline"))) {
+        if functions.iter().any(|f| {
+            f.name.contains("swap") && f.inputs.iter().any(|p| p.name.contains("deadline"))
+        }) {
             patterns.push(PatternType::MEVExposed);
         }
 
@@ -232,12 +352,24 @@ impl ABIScanner {
         let names: HashSet<_> = functions.iter().map(|f| f.name.as_str()).collect();
         let mut score = 50u8;
 
-        if names.contains("owner") || names.contains("hasRole") { score += 15 }
-        if names.contains("renounceOwnership") { score += 5 }
-        if patterns.contains(&PatternType::Pausable) { score += 10 }
-        if patterns.contains(&PatternType::Upgradeable) { score = score.saturating_sub(10) }
-        if patterns.contains(&PatternType::FlashLoanCapable) { score = score.saturating_sub(10) }
-        if patterns.contains(&PatternType::OracleDependent) { score = score.saturating_sub(5) }
+        if names.contains("owner") || names.contains("hasRole") {
+            score += 15
+        }
+        if names.contains("renounceOwnership") {
+            score += 5
+        }
+        if patterns.contains(&PatternType::Pausable) {
+            score += 10
+        }
+        if patterns.contains(&PatternType::Upgradeable) {
+            score = score.saturating_sub(10)
+        }
+        if patterns.contains(&PatternType::FlashLoanCapable) {
+            score = score.saturating_sub(10)
+        }
+        if patterns.contains(&PatternType::OracleDependent) {
+            score = score.saturating_sub(5)
+        }
 
         score.min(100)
     }
@@ -250,14 +382,31 @@ impl ABIScanner {
         vulns.extend(self.check_patterns(analysis));
         vulns.extend(self.check_selectors(&analysis.functions));
         vulns.extend(self.check_defi_risks(&analysis.functions, &analysis.detected_patterns));
-        vulns.extend(self.check_token_compliance(&analysis.functions, &analysis.events, &analysis.contract_type));
+        vulns.extend(self.check_token_compliance(
+            &analysis.functions,
+            &analysis.events,
+            &analysis.contract_type,
+        ));
 
         if self.verbose {
             println!("\n\x1b[1;36mAdvanced ABI Analysis Complete:\x1b[0m");
-            println!("   \x1b[36mContract Type:\x1b[0m {:?}", analysis.contract_type);
-            println!("   \x1b[36mSecurity Score:\x1b[0m {}/100", analysis.security_score);
-            println!("   \x1b[36mFunctions:\x1b[0m {}, \x1b[36mEvents:\x1b[0m {}", analysis.functions.len(), analysis.events.len());
-            println!("   \x1b[36mPatterns Detected:\x1b[0m {}", analysis.detected_patterns.len());
+            println!(
+                "   \x1b[36mContract Type:\x1b[0m {:?}",
+                analysis.contract_type
+            );
+            println!(
+                "   \x1b[36mSecurity Score:\x1b[0m {}/100",
+                analysis.security_score
+            );
+            println!(
+                "   \x1b[36mFunctions:\x1b[0m {}, \x1b[36mEvents:\x1b[0m {}",
+                analysis.functions.len(),
+                analysis.events.len()
+            );
+            println!(
+                "   \x1b[36mPatterns Detected:\x1b[0m {}",
+                analysis.detected_patterns.len()
+            );
             println!("   \x1b[33mVulnerabilities Found:\x1b[0m {}", vulns.len());
         }
 
@@ -270,16 +419,32 @@ impl ABIScanner {
         let has_pause = names.contains("pause");
 
         let critical_admin = [
-            "mint", "burn", "transferOwnership", "grantRole", "revokeRole",
-            "upgradeTo", "upgradeToAndCall", "initialize", "setOwner", "pause", "unpause",
-            "withdraw", "emergencyWithdraw", "destroy", "kill", "selfdestruct"
+            "mint",
+            "burn",
+            "transferOwnership",
+            "grantRole",
+            "revokeRole",
+            "upgradeTo",
+            "upgradeToAndCall",
+            "initialize",
+            "setOwner",
+            "pause",
+            "unpause",
+            "withdraw",
+            "emergencyWithdraw",
+            "destroy",
+            "kill",
+            "selfdestruct",
         ];
 
         for func in functions {
             let name = func.name.as_str();
 
             // Critical admin functions
-            if critical_admin.iter().any(|p| name.to_lowercase().contains(&p.to_lowercase())) {
+            if critical_admin
+                .iter()
+                .any(|p| name.to_lowercase().contains(&p.to_lowercase()))
+            {
                 if func.state_mutability != "view" && func.state_mutability != "pure" {
                     vulns.push(self.vuln(
                         VulnerabilitySeverity::Critical,
@@ -293,7 +458,11 @@ impl ABIScanner {
             }
 
             // Payable without clear purpose
-            if func.state_mutability == "payable" && !["deposit", "fund", "donate", "buy", "purchase"].iter().any(|p| name.to_lowercase().contains(p)) {
+            if func.state_mutability == "payable"
+                && !["deposit", "fund", "donate", "buy", "purchase"]
+                    .iter()
+                    .any(|p| name.to_lowercase().contains(p))
+            {
                 vulns.push(self.vuln(
                     VulnerabilitySeverity::High,
                     VulnerabilityCategory::ABIParameterValidation,
@@ -305,8 +474,15 @@ impl ABIScanner {
             }
 
             // Dangerous patterns
-            if ["execute", "call", "delegatecall", "multicall"].iter().any(|p| name.to_lowercase().contains(p)) {
-                if func.inputs.iter().any(|p| p.param_type == "bytes" || p.param_type == "bytes[]") {
+            if ["execute", "call", "delegatecall", "multicall"]
+                .iter()
+                .any(|p| name.to_lowercase().contains(p))
+            {
+                if func
+                    .inputs
+                    .iter()
+                    .any(|p| p.param_type == "bytes" || p.param_type == "bytes[]")
+                {
                     vulns.push(self.vuln(
                         VulnerabilitySeverity::Critical,
                         VulnerabilityCategory::ABIArbitraryCall,
@@ -332,7 +508,11 @@ impl ABIScanner {
 
             // Address params in critical functions
             for param in &func.inputs {
-                if param.param_type == "address" && critical_admin.iter().any(|p| name.to_lowercase().contains(&p.to_lowercase())) {
+                if param.param_type == "address"
+                    && critical_admin
+                        .iter()
+                        .any(|p| name.to_lowercase().contains(&p.to_lowercase()))
+                {
                     vulns.push(self.vuln(
                         VulnerabilitySeverity::High,
                         VulnerabilityCategory::ABIParameterValidation,
@@ -346,7 +526,11 @@ impl ABIScanner {
         }
 
         // Missing pause mechanism
-        if !has_pause && functions.iter().any(|f| f.state_mutability == "nonpayable" || f.state_mutability == "payable") {
+        if !has_pause
+            && functions
+                .iter()
+                .any(|f| f.state_mutability == "nonpayable" || f.state_mutability == "payable")
+        {
             vulns.push(self.vuln(
                 VulnerabilitySeverity::Medium,
                 VulnerabilityCategory::ABIEmergencyBypass,
@@ -366,20 +550,26 @@ impl ABIScanner {
         for event in events {
             // Anonymous events
             if event.anonymous {
-                vulns.push(self.vuln(
-                    VulnerabilitySeverity::Medium,
-                    VulnerabilityCategory::ABIEventSecurity,
-                    format!("Anonymous Event: '{}'", event.name),
-                    "Anonymous events don't emit signature topic. Harder to filter and index.".into(),
-                    format!("event {} anonymous", event.name),
-                    "Remove 'anonymous' unless required for gas optimization.".into(),
-                ));
+                vulns.push(
+                    self.vuln(
+                        VulnerabilitySeverity::Medium,
+                        VulnerabilityCategory::ABIEventSecurity,
+                        format!("Anonymous Event: '{}'", event.name),
+                        "Anonymous events don't emit signature topic. Harder to filter and index."
+                            .into(),
+                        format!("event {} anonymous", event.name),
+                        "Remove 'anonymous' unless required for gas optimization.".into(),
+                    ),
+                );
             }
 
             // Sensitive data in events
             let sensitive = ["password", "secret", "private", "key", "seed", "mnemonic"];
             for param in &event.inputs {
-                if sensitive.iter().any(|s| param.name.to_lowercase().contains(s)) {
+                if sensitive
+                    .iter()
+                    .any(|s| param.name.to_lowercase().contains(s))
+                {
                     vulns.push(self.vuln(
                         VulnerabilitySeverity::Critical,
                         VulnerabilityCategory::ABIEventSecurity,
@@ -392,7 +582,11 @@ impl ABIScanner {
             }
 
             // Too many indexed params
-            let indexed = event.inputs.iter().filter(|p| p.indexed.unwrap_or(false)).count();
+            let indexed = event
+                .inputs
+                .iter()
+                .filter(|p| p.indexed.unwrap_or(false))
+                .count();
             if indexed > 3 {
                 vulns.push(self.vuln(
                     VulnerabilitySeverity::Low,
@@ -413,7 +607,10 @@ impl ABIScanner {
         let names: HashSet<_> = analysis.functions.iter().map(|f| f.name.as_str()).collect();
 
         // Upgradeable risks
-        if analysis.detected_patterns.contains(&PatternType::Upgradeable) {
+        if analysis
+            .detected_patterns
+            .contains(&PatternType::Upgradeable)
+        {
             vulns.push(self.vuln(
                 VulnerabilitySeverity::High,
                 VulnerabilityCategory::ABIUpgradeability,
@@ -462,7 +659,10 @@ impl ABIScanner {
         }
 
         // Bridge risks
-        if analysis.detected_patterns.contains(&PatternType::CrossChainCapable) {
+        if analysis
+            .detected_patterns
+            .contains(&PatternType::CrossChainCapable)
+        {
             vulns.push(self.vuln(
                 VulnerabilitySeverity::High,
                 VulnerabilityCategory::ABIBridgeVulnerability,
@@ -482,7 +682,10 @@ impl ABIScanner {
 
         for func in functions {
             if !func.selector.is_empty() {
-                selectors.entry(&func.selector).or_default().push(&func.name);
+                selectors
+                    .entry(&func.selector)
+                    .or_default()
+                    .push(&func.name);
             }
         }
 
@@ -492,7 +695,10 @@ impl ABIScanner {
                     VulnerabilitySeverity::Critical,
                     VulnerabilityCategory::ABISelectorCollision,
                     format!("Selector Collision: {}", sel),
-                    format!("Functions share selector: {}. Undefined behavior.", names.join(", ")),
+                    format!(
+                        "Functions share selector: {}. Undefined behavior.",
+                        names.join(", ")
+                    ),
                     names.join(", "),
                     "Rename functions to generate unique selectors.".into(),
                 ));
@@ -502,7 +708,11 @@ impl ABIScanner {
         vulns
     }
 
-    fn check_defi_risks(&self, functions: &[ABIFunction], patterns: &[PatternType]) -> Vec<Vulnerability> {
+    fn check_defi_risks(
+        &self,
+        functions: &[ABIFunction],
+        patterns: &[PatternType],
+    ) -> Vec<Vulnerability> {
         let mut vulns = Vec::new();
         let names: HashSet<_> = functions.iter().map(|f| f.name.as_str()).collect();
 
@@ -556,7 +766,10 @@ impl ABIScanner {
         // DEX risks
         if patterns.contains(&PatternType::DexInteraction) {
             for func in functions.iter().filter(|f| f.name.contains("swap")) {
-                let has_slippage = func.inputs.iter().any(|p| p.name.contains("min") || p.name.contains("Max"));
+                let has_slippage = func
+                    .inputs
+                    .iter()
+                    .any(|p| p.name.contains("min") || p.name.contains("Max"));
                 let has_deadline = func.inputs.iter().any(|p| p.name.contains("deadline"));
 
                 if !has_slippage {
@@ -597,14 +810,26 @@ impl ABIScanner {
         vulns
     }
 
-    fn check_token_compliance(&self, functions: &[ABIFunction], events: &[ABIEvent], contract_type: &ContractType) -> Vec<Vulnerability> {
+    fn check_token_compliance(
+        &self,
+        functions: &[ABIFunction],
+        events: &[ABIEvent],
+        contract_type: &ContractType,
+    ) -> Vec<Vulnerability> {
         let mut vulns = Vec::new();
         let func_names: HashSet<_> = functions.iter().map(|f| f.name.as_str()).collect();
         let event_names: HashSet<_> = events.iter().map(|e| e.name.as_str()).collect();
 
         match contract_type {
             ContractType::ERC20 => {
-                let required = ["totalSupply", "balanceOf", "transfer", "transferFrom", "approve", "allowance"];
+                let required = [
+                    "totalSupply",
+                    "balanceOf",
+                    "transfer",
+                    "transferFrom",
+                    "approve",
+                    "allowance",
+                ];
                 for f in required {
                     if !func_names.contains(f) {
                         vulns.push(self.vuln(
@@ -630,18 +855,30 @@ impl ABIScanner {
                     }
                 }
                 if func_names.contains("approve") && !func_names.contains("increaseAllowance") {
-                    vulns.push(self.vuln(
-                        VulnerabilitySeverity::Medium,
-                        VulnerabilityCategory::ABITokenStandard,
-                        "Approve Race Condition".into(),
-                        "No increaseAllowance/decreaseAllowance. Vulnerable to front-running.".into(),
-                        "approve() only".into(),
-                        "Add increaseAllowance() and decreaseAllowance().".into(),
-                    ));
+                    vulns.push(
+                        self.vuln(
+                            VulnerabilitySeverity::Medium,
+                            VulnerabilityCategory::ABITokenStandard,
+                            "Approve Race Condition".into(),
+                            "No increaseAllowance/decreaseAllowance. Vulnerable to front-running."
+                                .into(),
+                            "approve() only".into(),
+                            "Add increaseAllowance() and decreaseAllowance().".into(),
+                        ),
+                    );
                 }
             }
             ContractType::ERC721 => {
-                let required = ["balanceOf", "ownerOf", "safeTransferFrom", "transferFrom", "approve", "setApprovalForAll", "getApproved", "isApprovedForAll"];
+                let required = [
+                    "balanceOf",
+                    "ownerOf",
+                    "safeTransferFrom",
+                    "transferFrom",
+                    "approve",
+                    "setApprovalForAll",
+                    "getApproved",
+                    "isApprovedForAll",
+                ];
                 for f in required {
                     if !func_names.contains(f) {
                         vulns.push(self.vuln(
@@ -671,13 +908,29 @@ impl ABIScanner {
         vulns
     }
 
-    fn vuln(&self, severity: VulnerabilitySeverity, category: VulnerabilityCategory, title: String, desc: String, snippet: String, rec: String) -> Vulnerability {
+    fn vuln(
+        &self,
+        severity: VulnerabilitySeverity,
+        category: VulnerabilityCategory,
+        title: String,
+        desc: String,
+        snippet: String,
+        rec: String,
+    ) -> Vulnerability {
         Vulnerability::new(severity, category, title, desc, 0, snippet, rec)
     }
 
     fn sig(&self, func: &ABIFunction) -> String {
-        let params = func.inputs.iter().map(|p| format!("{} {}", p.param_type, p.name)).collect::<Vec<_>>().join(", ");
-        format!("function {}({}) {}", func.name, params, func.state_mutability)
+        let params = func
+            .inputs
+            .iter()
+            .map(|p| format!("{} {}", p.param_type, p.name))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!(
+            "function {}({}) {}",
+            func.name, params, func.state_mutability
+        )
     }
 }
 
@@ -703,7 +956,9 @@ mod tests {
         let scanner = ABIScanner::new(false);
         let abi = r#"[{"type":"function","name":"flashLoan","inputs":[],"outputs":[],"stateMutability":"nonpayable"},{"type":"function","name":"executeOperation","inputs":[],"outputs":[],"stateMutability":"nonpayable"}]"#;
         let analysis = scanner.parse_abi(abi).unwrap();
-        assert!(analysis.detected_patterns.contains(&PatternType::FlashLoanCapable));
+        assert!(analysis
+            .detected_patterns
+            .contains(&PatternType::FlashLoanCapable));
     }
 
     #[test]
@@ -712,7 +967,9 @@ mod tests {
         let abi = r#"[{"type":"function","name":"upgradeTo","inputs":[{"name":"impl","type":"address"}],"outputs":[],"stateMutability":"nonpayable"},{"type":"function","name":"initialize","inputs":[],"outputs":[],"stateMutability":"nonpayable"}]"#;
         let analysis = scanner.parse_abi(abi).unwrap();
         assert_eq!(analysis.contract_type, ContractType::Proxy);
-        assert!(analysis.detected_patterns.contains(&PatternType::Upgradeable));
+        assert!(analysis
+            .detected_patterns
+            .contains(&PatternType::Upgradeable));
     }
 
     #[test]

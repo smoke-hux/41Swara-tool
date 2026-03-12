@@ -13,7 +13,7 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
-use crate::vulnerabilities::{Vulnerability, VulnerabilitySeverity, VulnerabilityCategory};
+use crate::vulnerabilities::{Vulnerability, VulnerabilityCategory, VulnerabilitySeverity};
 
 /// Foundry integration for test generation and correlation
 pub struct FoundryIntegration {
@@ -61,8 +61,12 @@ impl FoundryIntegration {
         // Create output directory
         let _ = fs::create_dir_all(&self.test_output_dir);
 
-        for (idx, vuln) in vulnerabilities.iter()
-            .filter(|v| v.severity == VulnerabilitySeverity::Critical || v.severity == VulnerabilitySeverity::High)
+        for (idx, vuln) in vulnerabilities
+            .iter()
+            .filter(|v| {
+                v.severity == VulnerabilitySeverity::Critical
+                    || v.severity == VulnerabilitySeverity::High
+            })
             .enumerate()
         {
             let test_content = self.generate_test_for_vulnerability(vuln, idx + 1);
@@ -101,9 +105,7 @@ impl FoundryIntegration {
             VulnerabilityCategory::FlashLoanAttack => {
                 self.generate_flash_loan_test(vuln, &test_name)
             }
-            _ => {
-                self.generate_generic_test(vuln, &test_name)
-            }
+            _ => self.generate_generic_test(vuln, &test_name),
         }
     }
 
@@ -479,7 +481,9 @@ contract {} is Test {{
             cmd.args(["--match-test", pattern]);
         }
 
-        let output = cmd.output().map_err(|e| format!("Failed to run forge: {}", e))?;
+        let output = cmd
+            .output()
+            .map_err(|e| format!("Failed to run forge: {}", e))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -512,8 +516,12 @@ contract {} is Test {{
 
             // Look for matching tests
             let matching_test = test_results.iter().find(|t| {
-                t.name.to_lowercase().contains(&sanitized_title.to_lowercase()) ||
-                t.name.to_lowercase().contains(&format!("poc_{:02}", idx + 1))
+                t.name
+                    .to_lowercase()
+                    .contains(&sanitized_title.to_lowercase())
+                    || t.name
+                        .to_lowercase()
+                        .contains(&format!("poc_{:02}", idx + 1))
             });
 
             let (test_exists, test_passes, test_name, confidence_adj) = match matching_test {

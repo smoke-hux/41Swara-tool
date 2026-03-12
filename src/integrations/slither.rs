@@ -15,7 +15,9 @@ use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
 
-use crate::vulnerabilities::{Vulnerability, VulnerabilitySeverity, VulnerabilityCategory, VulnerabilityConfidence};
+use crate::vulnerabilities::{
+    Vulnerability, VulnerabilityCategory, VulnerabilityConfidence, VulnerabilitySeverity,
+};
 
 /// Slither JSON output structure
 #[derive(Debug, Deserialize)]
@@ -116,8 +118,7 @@ impl SlitherIntegration {
 
     /// Load Slither findings from JSON file
     pub fn load_from_file(&mut self, path: &Path) -> Result<usize, String> {
-        let file = File::open(path)
-            .map_err(|e| format!("Failed to open Slither JSON: {}", e))?;
+        let file = File::open(path).map_err(|e| format!("Failed to open Slither JSON: {}", e))?;
         let reader = BufReader::new(file);
 
         let output: SlitherOutput = serde_json::from_reader(reader)
@@ -127,9 +128,7 @@ impl SlitherIntegration {
             return Err(format!("Slither analysis failed: {:?}", output.error));
         }
 
-        self.slither_findings = output.results
-            .map(|r| r.detectors)
-            .unwrap_or_default();
+        self.slither_findings = output.results.map(|r| r.detectors).unwrap_or_default();
 
         Ok(self.slither_findings.len())
     }
@@ -143,9 +142,7 @@ impl SlitherIntegration {
             return Err(format!("Slither analysis failed: {:?}", output.error));
         }
 
-        self.slither_findings = output.results
-            .map(|r| r.detectors)
-            .unwrap_or_default();
+        self.slither_findings = output.results.map(|r| r.detectors).unwrap_or_default();
 
         Ok(self.slither_findings.len())
     }
@@ -185,7 +182,8 @@ impl SlitherIntegration {
                         CorrelationType::Similar
                     },
                     adjusted_confidence: self.calculate_combined_confidence(swara, slither),
-                    unified_severity: self.get_unified_severity(swara.severity.clone(), &slither.impact),
+                    unified_severity: self
+                        .get_unified_severity(swara.severity.clone(), &slither.impact),
                 });
             } else {
                 results.push(CorrelatedFinding {
@@ -225,7 +223,9 @@ impl SlitherIntegration {
         factors += 0.4;
 
         // Line number matching
-        if let Some(line) = slither.elements.first()
+        if let Some(line) = slither
+            .elements
+            .first()
             .and_then(|e| e.source_mapping.as_ref())
             .and_then(|sm| sm.lines.as_ref())
             .and_then(|l| l.first())
@@ -273,41 +273,43 @@ impl SlitherIntegration {
                 slither_lower.contains("reentrancy") || slither_lower.contains("reentrant")
             }
             VulnerabilityCategory::AccessControl => {
-                slither_lower.contains("access") ||
-                slither_lower.contains("protected") ||
-                slither_lower.contains("unprotected") ||
-                slither_lower.contains("arbitrary") ||
-                slither_lower.contains("suicidal")
+                slither_lower.contains("access")
+                    || slither_lower.contains("protected")
+                    || slither_lower.contains("unprotected")
+                    || slither_lower.contains("arbitrary")
+                    || slither_lower.contains("suicidal")
             }
             VulnerabilityCategory::ArithmeticIssues => {
-                slither_lower.contains("divide") ||
-                slither_lower.contains("overflow") ||
-                slither_lower.contains("underflow")
+                slither_lower.contains("divide")
+                    || slither_lower.contains("overflow")
+                    || slither_lower.contains("underflow")
             }
             VulnerabilityCategory::UncheckedReturnValues => {
-                slither_lower.contains("unchecked") ||
-                slither_lower.contains("low-level") ||
-                slither_lower.contains("return")
+                slither_lower.contains("unchecked")
+                    || slither_lower.contains("low-level")
+                    || slither_lower.contains("return")
             }
             VulnerabilityCategory::DelegateCalls => {
-                slither_lower.contains("delegatecall") ||
-                slither_lower.contains("controlled")
+                slither_lower.contains("delegatecall") || slither_lower.contains("controlled")
             }
             VulnerabilityCategory::OracleManipulation => {
-                slither_lower.contains("oracle") ||
-                slither_lower.contains("price")
+                slither_lower.contains("oracle") || slither_lower.contains("price")
             }
             VulnerabilityCategory::GasOptimization => {
-                slither_lower.contains("gas") ||
-                slither_lower.contains("costly") ||
-                slither_lower.contains("dead-code")
+                slither_lower.contains("gas")
+                    || slither_lower.contains("costly")
+                    || slither_lower.contains("dead-code")
             }
-            _ => false
+            _ => false,
         }
     }
 
     /// Calculate combined confidence when both tools find the issue
-    fn calculate_combined_confidence(&self, swara: &Vulnerability, slither: &SlitherFinding) -> f64 {
+    fn calculate_combined_confidence(
+        &self,
+        swara: &Vulnerability,
+        slither: &SlitherFinding,
+    ) -> f64 {
         let swara_conf = self.confidence_to_score(&swara.confidence);
         let slither_conf = self.slither_confidence_to_score(&slither.confidence);
 
@@ -376,35 +378,49 @@ impl SlitherIntegration {
         report.push_str("- Trail of Bits Slither\n\n");
 
         // Statistics
-        let both_found = correlations.iter()
+        let both_found = correlations
+            .iter()
             .filter(|c| c.correlation == CorrelationType::BothFound)
             .count();
-        let similar = correlations.iter()
+        let similar = correlations
+            .iter()
             .filter(|c| c.correlation == CorrelationType::Similar)
             .count();
-        let swara_only = correlations.iter()
+        let swara_only = correlations
+            .iter()
             .filter(|c| c.correlation == CorrelationType::SwaraOnly)
             .count();
-        let slither_only = correlations.iter()
+        let slither_only = correlations
+            .iter()
             .filter(|c| c.correlation == CorrelationType::SlitherOnly)
             .count();
 
         report.push_str("## Correlation Statistics\n\n");
         report.push_str("| Category | Count |\n");
         report.push_str("|----------|-------|\n");
-        report.push_str(&format!("| Both Tools Found (High Confidence) | {} |\n", both_found));
+        report.push_str(&format!(
+            "| Both Tools Found (High Confidence) | {} |\n",
+            both_found
+        ));
         report.push_str(&format!("| Similar Findings | {} |\n", similar));
         report.push_str(&format!("| 41Swara Only | {} |\n", swara_only));
         report.push_str(&format!("| Slither Only | {} |\n", slither_only));
-        report.push_str(&format!("| **Total Unique** | **{}** |\n\n", correlations.len()));
+        report.push_str(&format!(
+            "| **Total Unique** | **{}** |\n\n",
+            correlations.len()
+        ));
 
         // High confidence findings (both found)
         if both_found > 0 || similar > 0 {
             report.push_str("## High Confidence Findings (Corroborated)\n\n");
             report.push_str("These issues were detected by both tools:\n\n");
 
-            for (idx, corr) in correlations.iter()
-                .filter(|c| c.correlation == CorrelationType::BothFound || c.correlation == CorrelationType::Similar)
+            for (idx, corr) in correlations
+                .iter()
+                .filter(|c| {
+                    c.correlation == CorrelationType::BothFound
+                        || c.correlation == CorrelationType::Similar
+                })
                 .enumerate()
             {
                 report.push_str(&format!("### HCF-{:02}: ", idx + 1));
@@ -412,12 +428,18 @@ impl SlitherIntegration {
                 if let Some(swara) = &corr.swara_finding {
                     report.push_str(&format!("{}\n\n", swara.title));
                     report.push_str(&format!("**Severity:** {:?}\n", corr.unified_severity));
-                    report.push_str(&format!("**Confidence:** {:.0}% (corroborated)\n", corr.adjusted_confidence * 100.0));
+                    report.push_str(&format!(
+                        "**Confidence:** {:.0}% (corroborated)\n",
+                        corr.adjusted_confidence * 100.0
+                    ));
                     report.push_str(&format!("**41Swara:** {}\n", swara.description));
                 }
 
                 if let Some(slither) = &corr.slither_finding {
-                    report.push_str(&format!("**Slither ({}):** {}\n\n", slither.check, slither.description));
+                    report.push_str(&format!(
+                        "**Slither ({}):** {}\n\n",
+                        slither.check, slither.description
+                    ));
                 }
 
                 report.push_str("---\n\n");
@@ -429,7 +451,8 @@ impl SlitherIntegration {
             report.push_str("## 41Swara-Only Findings\n\n");
             report.push_str("These issues were found by 41Swara's advanced analysis:\n\n");
 
-            for (idx, corr) in correlations.iter()
+            for (idx, corr) in correlations
+                .iter()
                 .filter(|c| c.correlation == CorrelationType::SwaraOnly)
                 .enumerate()
             {
@@ -448,12 +471,18 @@ impl SlitherIntegration {
             report.push_str("## Slither-Only Findings\n\n");
             report.push_str("These issues were found by Slither:\n\n");
 
-            for (idx, corr) in correlations.iter()
+            for (idx, corr) in correlations
+                .iter()
                 .filter(|c| c.correlation == CorrelationType::SlitherOnly)
                 .enumerate()
             {
                 if let Some(slither) = &corr.slither_finding {
-                    report.push_str(&format!("### L-{:02}: {} ({})\n\n", idx + 1, slither.check, slither.impact));
+                    report.push_str(&format!(
+                        "### L-{:02}: {} ({})\n\n",
+                        idx + 1,
+                        slither.check,
+                        slither.impact
+                    ));
                     report.push_str(&format!("**Description:** {}\n\n", slither.description));
                 }
             }
@@ -467,14 +496,18 @@ impl SlitherIntegration {
         let severity = self.slither_impact_to_severity(&slither.impact);
         let confidence_score = self.slither_confidence_to_score(&slither.confidence);
 
-        let line_number = slither.elements.first()
+        let line_number = slither
+            .elements
+            .first()
             .and_then(|e| e.source_mapping.as_ref())
             .and_then(|sm| sm.lines.as_ref())
             .and_then(|l| l.first())
             .copied()
             .unwrap_or(1);
 
-        let code_snippet = slither.elements.first()
+        let code_snippet = slither
+            .elements
+            .first()
             .map(|e| e.name.clone())
             .unwrap_or_default();
 
@@ -491,7 +524,10 @@ impl SlitherIntegration {
             code_snippet,
             context_before: None,
             context_after: None,
-            recommendation: format!("See Slither detector '{}' for remediation guidance", slither.check),
+            recommendation: format!(
+                "See Slither detector '{}' for remediation guidance",
+                slither.check
+            ),
             confidence_percent: confidence.to_percent(),
             confidence,
             swc_id,
@@ -509,7 +545,10 @@ impl SlitherIntegration {
 
         if check_lower.contains("reentrancy") {
             VulnerabilityCategory::Reentrancy
-        } else if check_lower.contains("arbitrary") || check_lower.contains("suicidal") || check_lower.contains("unprotected") {
+        } else if check_lower.contains("arbitrary")
+            || check_lower.contains("suicidal")
+            || check_lower.contains("unprotected")
+        {
             VulnerabilityCategory::AccessControl
         } else if check_lower.contains("unchecked") || check_lower.contains("low-level") {
             VulnerabilityCategory::UncheckedReturnValues

@@ -10,8 +10,7 @@
 
 #![allow(dead_code)]
 
-pub mod parser;
+pub mod bridge;
 pub mod cfg;
 pub mod dataflow;
-pub mod bridge;
-
+pub mod parser;

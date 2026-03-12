@@ -5,8 +5,8 @@
 
 #![allow(dead_code)]
 
+use crate::vulnerabilities::{Vulnerability, VulnerabilityCategory, VulnerabilitySeverity};
 use regex::Regex;
-use crate::vulnerabilities::{Vulnerability, VulnerabilitySeverity, VulnerabilityCategory};
 
 /// Lending protocol vulnerability analyzer
 pub struct LendingAnalyzer {
@@ -27,8 +27,10 @@ impl LendingAnalyzer {
             liquidate_function: Regex::new(r"function\s+liquidate\w*\s*\([^)]*\)").unwrap(),
             collateral_pattern: Regex::new(r"collateral|Collateral").unwrap(),
             health_factor_pattern: Regex::new(r"healthFactor|health_factor|ltv|LTV").unwrap(),
-            interest_rate_pattern: Regex::new(r"interestRate|interest_rate|borrowRate|supplyRate").unwrap(),
-            flash_loan_pattern: Regex::new(r"flashLoan|flash_loan|executeOperation|onFlashLoan").unwrap(),
+            interest_rate_pattern: Regex::new(r"interestRate|interest_rate|borrowRate|supplyRate")
+                .unwrap(),
+            flash_loan_pattern: Regex::new(r"flashLoan|flash_loan|executeOperation|onFlashLoan")
+                .unwrap(),
         }
     }
 
@@ -65,8 +67,14 @@ impl LendingAnalyzer {
         let mut vulnerabilities = Vec::new();
 
         let unsafe_price_patterns = vec![
-            ("balanceOf(address(this))", "Contract balance used as price source"),
-            ("getReserves()", "Using spot reserves for collateral pricing"),
+            (
+                "balanceOf(address(this))",
+                "Contract balance used as price source",
+            ),
+            (
+                "getReserves()",
+                "Using spot reserves for collateral pricing",
+            ),
             (".price()", "Direct price call without staleness check"),
         ];
 
@@ -75,15 +83,16 @@ impl LendingAnalyzer {
                 if line.contains(pattern) {
                     // Check if used in collateral/borrow context
                     let func_context = self.get_function_context(content, idx);
-                    if self.collateral_pattern.is_match(&func_context) ||
-                       func_context.contains("borrow") ||
-                       func_context.contains("liquidat") {
-
+                    if self.collateral_pattern.is_match(&func_context)
+                        || func_context.contains("borrow")
+                        || func_context.contains("liquidat")
+                    {
                         // Check for TWAP or Chainlink
-                        if !content.contains("TWAP") &&
-                           !content.contains("Chainlink") &&
-                           !content.contains("AggregatorV3") &&
-                           !content.contains("latestRoundData") {
+                        if !content.contains("TWAP")
+                            && !content.contains("Chainlink")
+                            && !content.contains("AggregatorV3")
+                            && !content.contains("latestRoundData")
+                        {
                             vulnerabilities.push(Vulnerability::high_confidence(
                                 VulnerabilitySeverity::Critical,
                                 VulnerabilityCategory::OracleManipulation,
@@ -120,10 +129,11 @@ impl LendingAnalyzer {
                     let func_body = self.extract_function_body(content, idx);
 
                     // Check for snapshot-based voting
-                    if !func_body.contains("getPastVotes") &&
-                       !func_body.contains("getPriorVotes") &&
-                       !func_body.contains("snapshot") &&
-                       !func_body.contains("checkpoint") {
+                    if !func_body.contains("getPastVotes")
+                        && !func_body.contains("getPriorVotes")
+                        && !func_body.contains("snapshot")
+                        && !func_body.contains("checkpoint")
+                    {
                         vulnerabilities.push(Vulnerability::high_confidence(
                             VulnerabilitySeverity::Critical,
                             VulnerabilityCategory::GovernanceAttack,
@@ -150,11 +160,12 @@ impl LendingAnalyzer {
                 let func_body = self.extract_function_body(content, idx);
 
                 // Check for Dutch auction or MEV protection
-                if !func_body.contains("auction") &&
-                   !func_body.contains("Auction") &&
-                   !func_body.contains("flashbots") &&
-                   !func_body.contains("private") &&
-                   !func_body.contains("commit") {
+                if !func_body.contains("auction")
+                    && !func_body.contains("Auction")
+                    && !func_body.contains("flashbots")
+                    && !func_body.contains("private")
+                    && !func_body.contains("commit")
+                {
                     vulnerabilities.push(Vulnerability::new(
                         VulnerabilitySeverity::High,
                         VulnerabilityCategory::MEVExploitable,
@@ -167,18 +178,21 @@ impl LendingAnalyzer {
                 }
 
                 // Check for proper health factor validation
-                if !func_body.contains("healthFactor") &&
-                   !func_body.contains("health_factor") &&
-                   !func_body.contains("isHealthy") &&
-                   !func_body.contains("ltv") {
+                if !func_body.contains("healthFactor")
+                    && !func_body.contains("health_factor")
+                    && !func_body.contains("isHealthy")
+                    && !func_body.contains("ltv")
+                {
                     vulnerabilities.push(Vulnerability::new(
                         VulnerabilitySeverity::High,
                         VulnerabilityCategory::LogicError,
                         "Liquidation Without Health Check".to_string(),
-                        "Liquidation function may not properly verify position is underwater".to_string(),
+                        "Liquidation function may not properly verify position is underwater"
+                            .to_string(),
                         idx + 1,
                         line.to_string(),
-                        "Add health factor check: require(healthFactor < LIQUIDATION_THRESHOLD)".to_string(),
+                        "Add health factor check: require(healthFactor < LIQUIDATION_THRESHOLD)"
+                            .to_string(),
                     ));
                 }
             }
@@ -212,8 +226,11 @@ impl LendingAnalyzer {
                 // Check for unbounded interest rates
                 if line.contains("interestRate") && line.contains("*") {
                     let func_body = self.extract_function_body(content, idx);
-                    if !func_body.contains("max") && !func_body.contains("MAX") &&
-                       !func_body.contains("cap") && !func_body.contains("Cap") {
+                    if !func_body.contains("max")
+                        && !func_body.contains("MAX")
+                        && !func_body.contains("cap")
+                        && !func_body.contains("Cap")
+                    {
                         vulnerabilities.push(Vulnerability::new(
                             VulnerabilitySeverity::Medium,
                             VulnerabilityCategory::LogicError,
@@ -236,20 +253,24 @@ impl LendingAnalyzer {
         let mut vulnerabilities = Vec::new();
 
         // Check for collateral deposit functions
-        let deposit_pattern = Regex::new(r"function\s+(deposit|addCollateral|supply)\w*\s*\(").unwrap();
+        let deposit_pattern =
+            Regex::new(r"function\s+(deposit|addCollateral|supply)\w*\s*\(").unwrap();
 
         for (idx, line) in content.lines().enumerate() {
             if deposit_pattern.is_match(line) {
                 let func_body = self.extract_function_body(content, idx);
 
                 // Check for proper token handling
-                if func_body.contains("transferFrom") && !func_body.contains("SafeERC20") &&
-                   !func_body.contains("safeTransferFrom") {
+                if func_body.contains("transferFrom")
+                    && !func_body.contains("SafeERC20")
+                    && !func_body.contains("safeTransferFrom")
+                {
                     vulnerabilities.push(Vulnerability::new(
                         VulnerabilitySeverity::High,
                         VulnerabilityCategory::UnusedReturnValues,
                         "Unsafe Collateral Transfer".to_string(),
-                        "Collateral transfer doesn't use SafeERC20 - return value not checked".to_string(),
+                        "Collateral transfer doesn't use SafeERC20 - return value not checked"
+                            .to_string(),
                         idx + 1,
                         line.to_string(),
                         "Use SafeERC20.safeTransferFrom() for collateral deposits".to_string(),
@@ -257,11 +278,15 @@ impl LendingAnalyzer {
                 }
 
                 // Check for rebase token handling
-                if !func_body.contains("rebasing") && !func_body.contains("rebase") &&
-                   content.contains("collateral") {
+                if !func_body.contains("rebasing")
+                    && !func_body.contains("rebase")
+                    && content.contains("collateral")
+                {
                     // This is informational - rebasing tokens need special handling
-                    if content.contains("whitelist") || content.contains("Whitelist") ||
-                       content.contains("supportedToken") {
+                    if content.contains("whitelist")
+                        || content.contains("Whitelist")
+                        || content.contains("supportedToken")
+                    {
                         // Has token whitelist - good
                     } else {
                         vulnerabilities.push(Vulnerability::new(
@@ -271,7 +296,8 @@ impl LendingAnalyzer {
                             "Lending protocol may not handle rebasing tokens correctly".to_string(),
                             idx + 1,
                             line.to_string(),
-                            "Implement token whitelist or add special handling for rebasing tokens".to_string(),
+                            "Implement token whitelist or add special handling for rebasing tokens"
+                                .to_string(),
                         ));
                     }
                 }
@@ -285,13 +311,16 @@ impl LendingAnalyzer {
                     let func_body = self.extract_function_body(content, idx);
 
                     // Check for timelock
-                    if !func_body.contains("timelock") && !func_body.contains("Timelock") &&
-                       !func_body.contains("delay") {
+                    if !func_body.contains("timelock")
+                        && !func_body.contains("Timelock")
+                        && !func_body.contains("delay")
+                    {
                         vulnerabilities.push(Vulnerability::new(
                             VulnerabilitySeverity::High,
                             VulnerabilityCategory::AccessControl,
                             "Collateral Factor Change Without Timelock".to_string(),
-                            "Collateral factor can be changed instantly - users can't react".to_string(),
+                            "Collateral factor can be changed instantly - users can't react"
+                                .to_string(),
                             idx + 1,
                             line.to_string(),
                             "Add timelock delay for collateral factor changes".to_string(),
@@ -313,8 +342,11 @@ impl LendingAnalyzer {
                 let func_body = self.extract_function_body(content, idx);
 
                 // Check for collateral sufficiency validation
-                if !func_body.contains("collateral") && !func_body.contains("healthFactor") &&
-                   !func_body.contains("ltv") && !func_body.contains("LTV") {
+                if !func_body.contains("collateral")
+                    && !func_body.contains("healthFactor")
+                    && !func_body.contains("ltv")
+                    && !func_body.contains("LTV")
+                {
                     vulnerabilities.push(Vulnerability::high_confidence(
                         VulnerabilitySeverity::Critical,
                         VulnerabilityCategory::LogicError,
@@ -327,13 +359,16 @@ impl LendingAnalyzer {
                 }
 
                 // Check for borrow cap
-                if !func_body.contains("borrowCap") && !func_body.contains("maxBorrow") &&
-                   !func_body.contains("borrowLimit") {
+                if !func_body.contains("borrowCap")
+                    && !func_body.contains("maxBorrow")
+                    && !func_body.contains("borrowLimit")
+                {
                     vulnerabilities.push(Vulnerability::new(
                         VulnerabilitySeverity::Medium,
                         VulnerabilityCategory::DoSAttacks,
                         "No Borrow Cap Implemented".to_string(),
-                        "Borrow function without cap - protocol can accumulate unlimited debt".to_string(),
+                        "Borrow function without cap - protocol can accumulate unlimited debt"
+                            .to_string(),
                         idx + 1,
                         line.to_string(),
                         "Implement per-asset and global borrow caps".to_string(),
@@ -398,14 +433,17 @@ impl LendingAnalyzer {
                 }
 
                 // Check for msg.sender validation (pool address)
-                if !func_body.contains("msg.sender") ||
-                   (!func_body.contains("POOL") && !func_body.contains("lendingPool") &&
-                    !func_body.contains("flashLoanProvider")) {
+                if !func_body.contains("msg.sender")
+                    || (!func_body.contains("POOL")
+                        && !func_body.contains("lendingPool")
+                        && !func_body.contains("flashLoanProvider"))
+                {
                     vulnerabilities.push(Vulnerability::high_confidence(
                         VulnerabilitySeverity::Critical,
                         VulnerabilityCategory::FlashLoanAttack,
                         "Flash Loan Callback Missing Pool Validation".to_string(),
-                        "Flash loan callback doesn't verify msg.sender is the lending pool".to_string(),
+                        "Flash loan callback doesn't verify msg.sender is the lending pool"
+                            .to_string(),
                         idx + 1,
                         line.to_string(),
                         "Add: require(msg.sender == address(POOL), 'Invalid caller')".to_string(),

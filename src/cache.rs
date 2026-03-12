@@ -148,7 +148,9 @@ impl ScanCache {
 
     /// Get cached vulnerabilities for a file
     pub fn get(&self, file_path: &str) -> Option<Vec<CachedVulnerability>> {
-        self.entries.get(file_path).map(|e| e.vulnerabilities.clone())
+        self.entries
+            .get(file_path)
+            .map(|e| e.vulnerabilities.clone())
     }
 
     /// Store scan results in cache
@@ -168,7 +170,10 @@ impl ScanCache {
             file_hash: hash,
             file_path: file_path.to_string(),
             last_modified,
-            vulnerabilities: vulnerabilities.iter().map(CachedVulnerability::from).collect(),
+            vulnerabilities: vulnerabilities
+                .iter()
+                .map(CachedVulnerability::from)
+                .collect(),
             scan_timestamp: now,
         };
 
@@ -196,7 +201,8 @@ impl ScanCache {
                 fs::create_dir_all(parent)?;
             }
 
-            let cache_data: HashMap<String, CacheEntry> = self.entries
+            let cache_data: HashMap<String, CacheEntry> = self
+                .entries
                 .iter()
                 .map(|e| (e.key().clone(), e.value().clone()))
                 .collect();
@@ -213,7 +219,9 @@ impl ScanCache {
         if let Some(path) = &self.cache_path {
             if let Ok(file) = File::open(path) {
                 let reader = BufReader::new(file);
-                if let Ok(cache_data) = serde_json::from_reader::<_, HashMap<String, CacheEntry>>(reader) {
+                if let Ok(cache_data) =
+                    serde_json::from_reader::<_, HashMap<String, CacheEntry>>(reader)
+                {
                     for (key, value) in cache_data {
                         self.entries.insert(key, value);
                     }
@@ -240,9 +248,8 @@ impl ScanCache {
 
         let ttl_secs = self.ttl.as_secs();
 
-        self.entries.retain(|_, entry| {
-            now - entry.scan_timestamp <= ttl_secs
-        });
+        self.entries
+            .retain(|_, entry| now - entry.scan_timestamp <= ttl_secs);
     }
 
     /// Get number of cached files
@@ -257,7 +264,8 @@ impl ScanCache {
 
     /// Check which files from a list need scanning (not cached or modified)
     pub fn files_needing_scan(&self, files: &[(String, String)]) -> Vec<String> {
-        files.iter()
+        files
+            .iter()
             .filter(|(path, content)| !self.is_cached(path, content))
             .map(|(path, _)| path.clone())
             .collect()
@@ -283,7 +291,8 @@ impl BatchCache {
 
     /// Batch check for cached files
     pub fn batch_check(&self, files: &[(&str, &str)]) -> Vec<bool> {
-        files.iter()
+        files
+            .iter()
             .map(|(path, content)| self.cache.is_cached(path, content))
             .collect()
     }

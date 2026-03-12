@@ -5,9 +5,9 @@
 
 #![allow(dead_code)]
 
-use std::collections::{HashMap, HashSet};
+use crate::vulnerabilities::{Vulnerability, VulnerabilityCategory, VulnerabilitySeverity};
 use regex::Regex;
-use crate::vulnerabilities::{Vulnerability, VulnerabilitySeverity, VulnerabilityCategory};
+use std::collections::{HashMap, HashSet};
 
 /// Represents an imported dependency
 #[derive(Debug, Clone)]
@@ -53,7 +53,8 @@ impl DependencyAnalyzer {
                 package: "@openzeppelin/contracts".to_string(),
                 affected_versions: vec!["4.0.0".to_string(), "4.1.0".to_string()],
                 severity: VulnerabilitySeverity::Critical,
-                description: "ERC1967Upgrade vulnerability allowing unauthorized upgrade".to_string(),
+                description: "ERC1967Upgrade vulnerability allowing unauthorized upgrade"
+                    .to_string(),
                 recommendation: "Upgrade to OpenZeppelin 4.3.2 or later".to_string(),
                 cve: Some("CVE-2021-41264".to_string()),
             },
@@ -67,7 +68,11 @@ impl DependencyAnalyzer {
             },
             KnownVulnerability {
                 package: "@openzeppelin/contracts".to_string(),
-                affected_versions: vec!["4.7.0".to_string(), "4.7.1".to_string(), "4.7.2".to_string()],
+                affected_versions: vec![
+                    "4.7.0".to_string(),
+                    "4.7.1".to_string(),
+                    "4.7.2".to_string(),
+                ],
                 severity: VulnerabilitySeverity::High,
                 description: "ERC165Checker may revert instead of returning false".to_string(),
                 recommendation: "Upgrade to OpenZeppelin 4.7.3 or later".to_string(),
@@ -75,9 +80,16 @@ impl DependencyAnalyzer {
             },
             KnownVulnerability {
                 package: "@openzeppelin/contracts".to_string(),
-                affected_versions: vec!["3.0.0".to_string(), "3.1.0".to_string(), "3.2.0".to_string(), "3.3.0".to_string(), "3.4.0".to_string()],
+                affected_versions: vec![
+                    "3.0.0".to_string(),
+                    "3.1.0".to_string(),
+                    "3.2.0".to_string(),
+                    "3.3.0".to_string(),
+                    "3.4.0".to_string(),
+                ],
                 severity: VulnerabilitySeverity::Critical,
-                description: "Initializable contract can be re-initialized in some scenarios".to_string(),
+                description: "Initializable contract can be re-initialized in some scenarios"
+                    .to_string(),
                 recommendation: "Upgrade to OpenZeppelin 4.x and use reinitializer".to_string(),
                 cve: None,
             },
@@ -86,7 +98,8 @@ impl DependencyAnalyzer {
                 package: "@chainlink/contracts".to_string(),
                 affected_versions: vec!["0.1.0".to_string(), "0.2.0".to_string()],
                 severity: VulnerabilitySeverity::High,
-                description: "AggregatorV2V3Interface may return stale prices without validation".to_string(),
+                description: "AggregatorV2V3Interface may return stale prices without validation"
+                    .to_string(),
                 recommendation: "Always check updatedAt and answeredInRound".to_string(),
                 cve: None,
             },
@@ -95,7 +108,8 @@ impl DependencyAnalyzer {
                 package: "@uniswap/v2-periphery".to_string(),
                 affected_versions: vec!["1.0.0".to_string()],
                 severity: VulnerabilitySeverity::High,
-                description: "Deadline check may be bypassed if not properly implemented".to_string(),
+                description: "Deadline check may be bypassed if not properly implemented"
+                    .to_string(),
                 recommendation: "Ensure deadline is validated against block.timestamp".to_string(),
                 cve: None,
             },
@@ -104,7 +118,8 @@ impl DependencyAnalyzer {
                 package: "solmate".to_string(),
                 affected_versions: vec!["6.0.0".to_string(), "6.1.0".to_string()],
                 severity: VulnerabilitySeverity::Medium,
-                description: "ERC20 approve may have race condition without increaseAllowance".to_string(),
+                description: "ERC20 approve may have race condition without increaseAllowance"
+                    .to_string(),
                 recommendation: "Use SafeERC20 wrapper or implement approval checks".to_string(),
                 cve: None,
             },
@@ -142,28 +157,34 @@ impl DependencyAnalyzer {
         let mut imports = Vec::new();
 
         // Standard import pattern
-        let import_pattern = Regex::new(
-            r#"import\s*(?:\{([^}]+)\}\s*from\s*)?"([^"]+)"|import\s+"([^"]+)""#
-        ).unwrap();
+        let import_pattern =
+            Regex::new(r#"import\s*(?:\{([^}]+)\}\s*from\s*)?"([^"]+)"|import\s+"([^"]+)""#)
+                .unwrap();
 
         // Aliased import pattern
-        let alias_pattern = Regex::new(
-            r#"import\s+"([^"]+)"\s+as\s+(\w+)"#
-        ).unwrap();
+        let alias_pattern = Regex::new(r#"import\s+"([^"]+)"\s+as\s+(\w+)"#).unwrap();
 
         for (idx, line) in content.lines().enumerate() {
             if let Some(caps) = import_pattern.captures(line) {
-                let symbols: Vec<String> = caps.get(1)
-                    .map(|m| m.as_str().split(',').map(|s| s.trim().to_string()).collect())
+                let symbols: Vec<String> = caps
+                    .get(1)
+                    .map(|m| {
+                        m.as_str()
+                            .split(',')
+                            .map(|s| s.trim().to_string())
+                            .collect()
+                    })
                     .unwrap_or_default();
 
-                let path = caps.get(2)
+                let path = caps
+                    .get(2)
                     .or_else(|| caps.get(3))
                     .map(|m| m.as_str().to_string())
                     .unwrap_or_default();
 
                 if !path.is_empty() {
-                    let is_openzeppelin = path.contains("@openzeppelin") || path.contains("openzeppelin");
+                    let is_openzeppelin =
+                        path.contains("@openzeppelin") || path.contains("openzeppelin");
                     let is_local = path.starts_with("./") || path.starts_with("../");
                     let version = self.extract_version_from_path(&path);
 
@@ -181,11 +202,15 @@ impl DependencyAnalyzer {
 
             // Check for aliased imports
             if let Some(caps) = alias_pattern.captures(line) {
-                let path = caps.get(1).map(|m| m.as_str().to_string()).unwrap_or_default();
+                let path = caps
+                    .get(1)
+                    .map(|m| m.as_str().to_string())
+                    .unwrap_or_default();
                 let alias = caps.get(2).map(|m| m.as_str().to_string());
 
                 if !path.is_empty() {
-                    let is_openzeppelin = path.contains("@openzeppelin") || path.contains("openzeppelin");
+                    let is_openzeppelin =
+                        path.contains("@openzeppelin") || path.contains("openzeppelin");
                     let is_local = path.starts_with("./") || path.starts_with("../");
                     let version = self.extract_version_from_path(&path);
 
@@ -208,7 +233,8 @@ impl DependencyAnalyzer {
     /// Extract version from import path if present
     fn extract_version_from_path(&self, path: &str) -> Option<String> {
         let version_pattern = Regex::new(r"@(\d+\.\d+\.\d+)").unwrap();
-        version_pattern.captures(path)
+        version_pattern
+            .captures(path)
             .and_then(|c| c.get(1))
             .map(|m| m.as_str().to_string())
     }
@@ -226,8 +252,15 @@ impl DependencyAnalyzer {
                                 known_vuln.severity.clone(),
                                 VulnerabilityCategory::CompilerBug, // Using this as closest category
                                 format!("Known Vulnerability in {}", known_vuln.package),
-                                format!("{} {}", known_vuln.description,
-                                       known_vuln.cve.as_ref().map(|c| format!("({})", c)).unwrap_or_default()),
+                                format!(
+                                    "{} {}",
+                                    known_vuln.description,
+                                    known_vuln
+                                        .cve
+                                        .as_ref()
+                                        .map(|c| format!("({})", c))
+                                        .unwrap_or_default()
+                                ),
                                 import.line,
                                 format!("import \"{}\"", import.path),
                                 known_vuln.recommendation.clone(),
@@ -248,11 +281,16 @@ impl DependencyAnalyzer {
     }
 
     /// Check for version mismatches between dependencies
-    fn check_version_mismatches(&self, content: &str, imports: &[ImportedDependency]) -> Vec<Vulnerability> {
+    fn check_version_mismatches(
+        &self,
+        content: &str,
+        imports: &[ImportedDependency],
+    ) -> Vec<Vulnerability> {
         let mut vulnerabilities = Vec::new();
 
         // Group imports by package
-        let mut package_versions: HashMap<String, Vec<(&ImportedDependency, String)>> = HashMap::new();
+        let mut package_versions: HashMap<String, Vec<(&ImportedDependency, String)>> =
+            HashMap::new();
 
         for import in imports {
             // Extract package name
@@ -263,7 +301,8 @@ impl DependencyAnalyzer {
             };
 
             if let Some(ref version) = import.version {
-                package_versions.entry(package)
+                package_versions
+                    .entry(package)
                     .or_insert_with(Vec::new)
                     .push((import, version.clone()));
             }
@@ -279,7 +318,10 @@ impl DependencyAnalyzer {
                     VulnerabilitySeverity::Medium,
                     VulnerabilityCategory::CompilerBug,
                     format!("Version Mismatch in {}", package),
-                    format!("Multiple versions detected: {} - may cause unexpected behavior", version_list.join(", ")),
+                    format!(
+                        "Multiple versions detected: {} - may cause unexpected behavior",
+                        version_list.join(", ")
+                    ),
                     versions[0].0.line,
                     format!("Package: {}", package),
                     "Use a single consistent version across all imports".to_string(),
@@ -293,15 +335,24 @@ impl DependencyAnalyzer {
             let pragma_version = caps.get(1).map(|m| m.as_str()).unwrap_or("");
 
             // OpenZeppelin 5.x requires Solidity 0.8.20+
-            let has_oz5 = imports.iter().any(|i| i.path.contains("@openzeppelin") && i.version.as_ref().map(|v| v.starts_with("5.")).unwrap_or(false));
-            let has_old_pragma = pragma_version.contains("0.8.0") || pragma_version.contains("0.8.1") || pragma_version.contains("^0.8.0");
+            let has_oz5 = imports.iter().any(|i| {
+                i.path.contains("@openzeppelin")
+                    && i.version
+                        .as_ref()
+                        .map(|v| v.starts_with("5."))
+                        .unwrap_or(false)
+            });
+            let has_old_pragma = pragma_version.contains("0.8.0")
+                || pragma_version.contains("0.8.1")
+                || pragma_version.contains("^0.8.0");
 
             if has_oz5 && has_old_pragma {
                 vulnerabilities.push(Vulnerability::new(
                     VulnerabilitySeverity::High,
                     VulnerabilityCategory::CompilerBug,
                     "OpenZeppelin 5.x Incompatible with Solidity Version".to_string(),
-                    "OpenZeppelin 5.x requires Solidity 0.8.20+ but pragma suggests older version".to_string(),
+                    "OpenZeppelin 5.x requires Solidity 0.8.20+ but pragma suggests older version"
+                        .to_string(),
                     1,
                     format!("pragma solidity {}", pragma_version),
                     "Update to pragma solidity ^0.8.20 or downgrade OpenZeppelin".to_string(),
@@ -318,7 +369,8 @@ impl DependencyAnalyzer {
 
         for import in imports {
             // Check for wildcard imports (all symbols)
-            if import.symbols.is_empty() && import.alias.is_none() && !import.path.ends_with(".sol") {
+            if import.symbols.is_empty() && import.alias.is_none() && !import.path.ends_with(".sol")
+            {
                 if !import.path.contains("interface") && !import.path.contains("Interface") {
                     vulnerabilities.push(Vulnerability::new(
                         VulnerabilitySeverity::Low,
@@ -333,7 +385,10 @@ impl DependencyAnalyzer {
             }
 
             // Check for git/URL imports (supply chain risk)
-            if import.path.contains("github.com") || import.path.contains("http://") || import.path.contains("https://") {
+            if import.path.contains("github.com")
+                || import.path.contains("http://")
+                || import.path.contains("https://")
+            {
                 vulnerabilities.push(Vulnerability::high_confidence(
                     VulnerabilitySeverity::Critical,
                     VulnerabilityCategory::CompilerBug,
@@ -347,9 +402,18 @@ impl DependencyAnalyzer {
 
             // Check for deprecated import paths
             let deprecated_paths = vec![
-                ("@openzeppelin/contracts/access/Ownable.sol", "Consider using OwnableUpgradeable for upgradeable contracts"),
-                ("@openzeppelin/contracts/security/Pausable.sol", "Consider using PausableUpgradeable for upgradeable contracts"),
-                ("@chainlink/contracts/src/v0.6/", "Upgrade to Chainlink v0.8 interfaces"),
+                (
+                    "@openzeppelin/contracts/access/Ownable.sol",
+                    "Consider using OwnableUpgradeable for upgradeable contracts",
+                ),
+                (
+                    "@openzeppelin/contracts/security/Pausable.sol",
+                    "Consider using PausableUpgradeable for upgradeable contracts",
+                ),
+                (
+                    "@chainlink/contracts/src/v0.6/",
+                    "Upgrade to Chainlink v0.8 interfaces",
+                ),
             ];
 
             for (deprecated, suggestion) in deprecated_paths {
@@ -371,12 +435,17 @@ impl DependencyAnalyzer {
     }
 
     /// Check for potential circular dependency issues
-    fn check_circular_dependencies(&self, imports: &[ImportedDependency], content: &str) -> Vec<Vulnerability> {
+    fn check_circular_dependencies(
+        &self,
+        imports: &[ImportedDependency],
+        content: &str,
+    ) -> Vec<Vulnerability> {
         let mut vulnerabilities = Vec::new();
 
         // Get current contract name
         let contract_pattern = Regex::new(r"contract\s+(\w+)").unwrap();
-        let current_contract = contract_pattern.captures(content)
+        let current_contract = contract_pattern
+            .captures(content)
             .and_then(|c| c.get(1))
             .map(|m| m.as_str().to_string());
 
@@ -389,7 +458,10 @@ impl DependencyAnalyzer {
                         VulnerabilitySeverity::Medium,
                         VulnerabilityCategory::CompilerBug,
                         "Potential Circular Dependency".to_string(),
-                        format!("Import path '{}' may create circular dependency with '{}'", import.path, contract_name),
+                        format!(
+                            "Import path '{}' may create circular dependency with '{}'",
+                            import.path, contract_name
+                        ),
                         import.line,
                         format!("import \"{}\"", import.path),
                         "Review import structure to avoid circular dependencies".to_string(),
@@ -402,21 +474,32 @@ impl DependencyAnalyzer {
     }
 
     /// Check for outdated patterns in imports and usage
-    fn check_outdated_patterns(&self, content: &str, imports: &[ImportedDependency]) -> Vec<Vulnerability> {
+    fn check_outdated_patterns(
+        &self,
+        content: &str,
+        imports: &[ImportedDependency],
+    ) -> Vec<Vulnerability> {
         let mut vulnerabilities = Vec::new();
 
         // Check for SafeMath usage with Solidity 0.8+
-        let uses_safemath = imports.iter().any(|i| i.path.contains("SafeMath") || i.symbols.iter().any(|s| s == "SafeMath"));
-        let uses_solidity_8 = content.contains("pragma solidity") &&
-                             (content.contains("0.8.") || content.contains("^0.8"));
+        let uses_safemath = imports
+            .iter()
+            .any(|i| i.path.contains("SafeMath") || i.symbols.iter().any(|s| s == "SafeMath"));
+        let uses_solidity_8 = content.contains("pragma solidity")
+            && (content.contains("0.8.") || content.contains("^0.8"));
 
         if uses_safemath && uses_solidity_8 {
             vulnerabilities.push(Vulnerability::new(
                 VulnerabilitySeverity::Info,
                 VulnerabilityCategory::GasOptimization,
                 "Unnecessary SafeMath Import".to_string(),
-                "SafeMath is not needed in Solidity 0.8+ - built-in overflow protection".to_string(),
-                imports.iter().find(|i| i.path.contains("SafeMath")).map(|i| i.line).unwrap_or(1),
+                "SafeMath is not needed in Solidity 0.8+ - built-in overflow protection"
+                    .to_string(),
+                imports
+                    .iter()
+                    .find(|i| i.path.contains("SafeMath"))
+                    .map(|i| i.line)
+                    .unwrap_or(1),
                 "using SafeMath for uint256".to_string(),
                 "Remove SafeMath import and usage to save gas".to_string(),
             ));
@@ -430,24 +513,36 @@ impl DependencyAnalyzer {
                 VulnerabilityCategory::GasOptimization,
                 "Deprecated Counters Library".to_string(),
                 "Counters library is deprecated in OpenZeppelin 5.x".to_string(),
-                imports.iter().find(|i| i.path.contains("Counters")).map(|i| i.line).unwrap_or(1),
+                imports
+                    .iter()
+                    .find(|i| i.path.contains("Counters"))
+                    .map(|i| i.line)
+                    .unwrap_or(1),
                 "import \"@openzeppelin/contracts/utils/Counters.sol\"".to_string(),
                 "Use plain uint256 with unchecked increment for gas savings".to_string(),
             ));
         }
 
         // Check for ERC20 without SafeERC20
-        let uses_erc20 = imports.iter().any(|i| i.path.contains("ERC20") || i.path.contains("IERC20"));
+        let uses_erc20 = imports
+            .iter()
+            .any(|i| i.path.contains("ERC20") || i.path.contains("IERC20"));
         let uses_safe_erc20 = imports.iter().any(|i| i.path.contains("SafeERC20"));
-        let has_transfer_calls = content.contains(".transfer(") || content.contains(".transferFrom(");
+        let has_transfer_calls =
+            content.contains(".transfer(") || content.contains(".transferFrom(");
 
         if uses_erc20 && has_transfer_calls && !uses_safe_erc20 {
             vulnerabilities.push(Vulnerability::new(
                 VulnerabilitySeverity::High,
                 VulnerabilityCategory::UncheckedReturnValues,
                 "ERC20 Without SafeERC20".to_string(),
-                "Using ERC20 transfer without SafeERC20 wrapper - some tokens don't return bool".to_string(),
-                imports.iter().find(|i| i.path.contains("ERC20")).map(|i| i.line).unwrap_or(1),
+                "Using ERC20 transfer without SafeERC20 wrapper - some tokens don't return bool"
+                    .to_string(),
+                imports
+                    .iter()
+                    .find(|i| i.path.contains("ERC20"))
+                    .map(|i| i.line)
+                    .unwrap_or(1),
                 ".transfer() / .transferFrom()".to_string(),
                 "Import and use SafeERC20: safeTransfer(), safeTransferFrom()".to_string(),
             ));
@@ -472,7 +567,10 @@ impl DependencyAnalyzer {
                 VulnerabilitySeverity::Medium,
                 VulnerabilityCategory::CompilerBug,
                 format!("Mixed Dependencies: OpenZeppelin + {}", conflict_source),
-                format!("Mixing OpenZeppelin with {} may cause interface conflicts", conflict_source),
+                format!(
+                    "Mixing OpenZeppelin with {} may cause interface conflicts",
+                    conflict_source
+                ),
                 1,
                 "Multiple dependency sources".to_string(),
                 "Stick to one dependency library when possible for consistency".to_string(),
@@ -480,13 +578,19 @@ impl DependencyAnalyzer {
         }
 
         // Check for different ERC20 implementations
-        let erc20_sources: HashSet<_> = imports.iter()
+        let erc20_sources: HashSet<_> = imports
+            .iter()
             .filter(|i| i.path.contains("ERC20"))
             .map(|i| {
-                if i.path.contains("openzeppelin") { "OpenZeppelin" }
-                else if i.path.contains("solmate") { "Solmate" }
-                else if i.path.contains("solady") { "Solady" }
-                else { "Other" }
+                if i.path.contains("openzeppelin") {
+                    "OpenZeppelin"
+                } else if i.path.contains("solmate") {
+                    "Solmate"
+                } else if i.path.contains("solady") {
+                    "Solady"
+                } else {
+                    "Other"
+                }
             })
             .collect();
 
@@ -495,7 +599,10 @@ impl DependencyAnalyzer {
                 VulnerabilitySeverity::High,
                 VulnerabilityCategory::CompilerBug,
                 "Multiple ERC20 Implementations".to_string(),
-                format!("Multiple ERC20 sources detected: {:?} - may cause conflicts", erc20_sources),
+                format!(
+                    "Multiple ERC20 sources detected: {:?} - may cause conflicts",
+                    erc20_sources
+                ),
                 1,
                 "Different ERC20 implementations".to_string(),
                 "Use a single ERC20 implementation source".to_string(),
@@ -513,7 +620,8 @@ impl DependencyAnalyzer {
         let local_count = imports.iter().filter(|i| i.is_local).count();
         let external_count = imports.len() - openzeppelin_count - local_count;
 
-        let packages: HashSet<_> = imports.iter()
+        let packages: HashSet<_> = imports
+            .iter()
             .map(|i| {
                 if i.path.contains('@') {
                     i.path.split('/').take(2).collect::<Vec<_>>().join("/")

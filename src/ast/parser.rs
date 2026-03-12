@@ -353,14 +353,27 @@ impl ASTParser {
         let mut imports = Vec::new();
 
         for captures in self.import_pattern.captures_iter(content) {
-            let symbols = captures.get(1)
-                .map(|m| m.as_str().split(',').map(|s| s.trim().to_string()).collect())
+            let symbols = captures
+                .get(1)
+                .map(|m| {
+                    m.as_str()
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .collect()
+                })
                 .unwrap_or_default();
-            let path = captures.get(2).map(|m| m.as_str().to_string()).unwrap_or_default();
+            let path = captures
+                .get(2)
+                .map(|m| m.as_str().to_string())
+                .unwrap_or_default();
             let match_start = captures.get(0).map(|m| m.start()).unwrap_or(0);
             let line = content[..match_start].matches('\n').count() + 1;
 
-            imports.push(ImportDirective { path, symbols, line });
+            imports.push(ImportDirective {
+                path,
+                symbols,
+                line,
+            });
         }
 
         imports
@@ -370,10 +383,22 @@ impl ASTParser {
         let mut contracts = Vec::new();
 
         for captures in self.contract_pattern.captures_iter(content) {
-            let contract_type_str = captures.name("type").map(|m| m.as_str()).unwrap_or("contract");
-            let name = captures.name("name").map(|m| m.as_str().to_string()).unwrap_or_default();
-            let inheritance = captures.name("inheritance")
-                .map(|m| m.as_str().split(',').map(|s| s.trim().to_string()).collect())
+            let contract_type_str = captures
+                .name("type")
+                .map(|m| m.as_str())
+                .unwrap_or("contract");
+            let name = captures
+                .name("name")
+                .map(|m| m.as_str().to_string())
+                .unwrap_or_default();
+            let inheritance = captures
+                .name("inheritance")
+                .map(|m| {
+                    m.as_str()
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .collect()
+                })
                 .unwrap_or_default();
 
             let match_start = captures.get(0).map(|m| m.start()).unwrap_or(0);
@@ -438,7 +463,9 @@ impl ASTParser {
                     }
                     _ => {}
                 }
-            } else if c == string_char && content[start..].chars().nth(i.saturating_sub(1)) != Some('\\') {
+            } else if c == string_char
+                && content[start..].chars().nth(i.saturating_sub(1)) != Some('\\')
+            {
                 in_string = false;
             }
         }
@@ -450,8 +477,14 @@ impl ASTParser {
         let mut variables = Vec::new();
 
         for captures in self.state_var_pattern.captures_iter(content) {
-            let var_type = captures.name("type").map(|m| m.as_str().to_string()).unwrap_or_default();
-            let name = captures.name("name").map(|m| m.as_str().to_string()).unwrap_or_default();
+            let var_type = captures
+                .name("type")
+                .map(|m| m.as_str().to_string())
+                .unwrap_or_default();
+            let name = captures
+                .name("name")
+                .map(|m| m.as_str().to_string())
+                .unwrap_or_default();
             let visibility = match captures.name("visibility").map(|m| m.as_str()) {
                 Some("public") => Visibility::Public,
                 Some("private") => Visibility::Private,
@@ -481,14 +514,35 @@ impl ASTParser {
         variables
     }
 
-    fn parse_functions(&self, content: &str, base_line: usize, _lines: &[&str]) -> Vec<FunctionDefinition> {
+    fn parse_functions(
+        &self,
+        content: &str,
+        base_line: usize,
+        _lines: &[&str],
+    ) -> Vec<FunctionDefinition> {
         let mut functions = Vec::new();
 
         // Also check for constructor, fallback, and receive
         let special_patterns = vec![
-            (Regex::new(r"constructor\s*\((?P<params>[^)]*)\)\s*(?P<modifiers>[^{]*)?\{").unwrap(), true, false, false),
-            (Regex::new(r"fallback\s*\(\)\s*(?P<modifiers>[^{]*)?\{").unwrap(), false, true, false),
-            (Regex::new(r"receive\s*\(\)\s*(?P<modifiers>[^{]*)?\{").unwrap(), false, false, true),
+            (
+                Regex::new(r"constructor\s*\((?P<params>[^)]*)\)\s*(?P<modifiers>[^{]*)?\{")
+                    .unwrap(),
+                true,
+                false,
+                false,
+            ),
+            (
+                Regex::new(r"fallback\s*\(\)\s*(?P<modifiers>[^{]*)?\{").unwrap(),
+                false,
+                true,
+                false,
+            ),
+            (
+                Regex::new(r"receive\s*\(\)\s*(?P<modifiers>[^{]*)?\{").unwrap(),
+                false,
+                false,
+                true,
+            ),
         ];
 
         for (pattern, is_constructor, is_fallback, is_receive) in special_patterns {
@@ -497,22 +551,32 @@ impl ASTParser {
                 let start_line = base_line + content[..match_start].matches('\n').count();
                 let end_line = self.find_matching_brace(content, match_start);
 
-                let parameters = captures.name("params")
+                let parameters = captures
+                    .name("params")
                     .map(|m| self.parse_parameters(m.as_str()))
                     .unwrap_or_default();
 
-                let modifiers = captures.name("modifiers")
+                let modifiers = captures
+                    .name("modifiers")
                     .map(|m| self.extract_modifiers(m.as_str()))
                     .unwrap_or_default();
 
                 let body = self.extract_function_body(content, match_start, base_line);
 
                 functions.push(FunctionDefinition {
-                    name: if is_constructor { "constructor".to_string() }
-                          else if is_fallback { "fallback".to_string() }
-                          else { "receive".to_string() },
+                    name: if is_constructor {
+                        "constructor".to_string()
+                    } else if is_fallback {
+                        "fallback".to_string()
+                    } else {
+                        "receive".to_string()
+                    },
                     visibility: Visibility::Public,
-                    state_mutability: if is_receive { StateMutability::Payable } else { StateMutability::NonPayable },
+                    state_mutability: if is_receive {
+                        StateMutability::Payable
+                    } else {
+                        StateMutability::NonPayable
+                    },
                     modifiers,
                     parameters,
                     return_parameters: vec![],
@@ -528,7 +592,10 @@ impl ASTParser {
 
         // Regular functions
         for captures in self.function_pattern.captures_iter(content) {
-            let name = captures.name("name").map(|m| m.as_str().to_string()).unwrap_or_default();
+            let name = captures
+                .name("name")
+                .map(|m| m.as_str().to_string())
+                .unwrap_or_default();
             let params_str = captures.name("params").map(|m| m.as_str()).unwrap_or("");
             let modifiers_str = captures.name("modifiers").map(|m| m.as_str()).unwrap_or("");
 
@@ -538,7 +605,8 @@ impl ASTParser {
 
             let parameters = self.parse_parameters(params_str);
             let modifiers = self.extract_modifiers(modifiers_str);
-            let (visibility, state_mutability, return_params) = self.parse_function_modifiers(modifiers_str);
+            let (visibility, state_mutability, return_params) =
+                self.parse_function_modifiers(modifiers_str);
 
             let body = self.extract_function_body(content, match_start, base_line);
 
@@ -575,14 +643,14 @@ impl ASTParser {
             }
 
             let param_type = parts[0].to_string();
-            let storage_location = parts.iter()
-                .find_map(|&p| match p {
-                    "memory" => Some(StorageLocation::Memory),
-                    "storage" => Some(StorageLocation::Storage),
-                    "calldata" => Some(StorageLocation::Calldata),
-                    _ => None,
-                });
-            let name = parts.last()
+            let storage_location = parts.iter().find_map(|&p| match p {
+                "memory" => Some(StorageLocation::Memory),
+                "storage" => Some(StorageLocation::Storage),
+                "calldata" => Some(StorageLocation::Calldata),
+                _ => None,
+            });
+            let name = parts
+                .last()
                 .filter(|&&n| n != "memory" && n != "storage" && n != "calldata")
                 .map(|&s| s.to_string())
                 .unwrap_or_default();
@@ -601,7 +669,10 @@ impl ASTParser {
         let mut modifiers = Vec::new();
         let modifier_pattern = Regex::new(r"(\w+)(?:\([^)]*\))?").unwrap();
 
-        let keywords = ["public", "private", "internal", "external", "pure", "view", "payable", "virtual", "override", "returns"];
+        let keywords = [
+            "public", "private", "internal", "external", "pure", "view", "payable", "virtual",
+            "override", "returns",
+        ];
 
         for captures in modifier_pattern.captures_iter(modifiers_str) {
             if let Some(m) = captures.get(1) {
@@ -615,7 +686,10 @@ impl ASTParser {
         modifiers
     }
 
-    fn parse_function_modifiers(&self, modifiers_str: &str) -> (Visibility, StateMutability, Vec<Parameter>) {
+    fn parse_function_modifiers(
+        &self,
+        modifiers_str: &str,
+    ) -> (Visibility, StateMutability, Vec<Parameter>) {
         let visibility = if modifiers_str.contains("public") {
             Visibility::Public
         } else if modifiers_str.contains("external") {
@@ -640,7 +714,8 @@ impl ASTParser {
         let return_params = if let Some(returns_start) = modifiers_str.find("returns") {
             if let Some(paren_start) = modifiers_str[returns_start..].find('(') {
                 if let Some(paren_end) = modifiers_str[returns_start + paren_start..].find(')') {
-                    let returns_str = &modifiers_str[returns_start + paren_start + 1..returns_start + paren_start + paren_end];
+                    let returns_str = &modifiers_str
+                        [returns_start + paren_start + 1..returns_start + paren_start + paren_end];
                     self.parse_parameters(returns_str)
                 } else {
                     vec![]
@@ -655,7 +730,12 @@ impl ASTParser {
         (visibility, state_mutability, return_params)
     }
 
-    fn extract_function_body(&self, content: &str, start: usize, base_line: usize) -> Option<FunctionBody> {
+    fn extract_function_body(
+        &self,
+        content: &str,
+        start: usize,
+        base_line: usize,
+    ) -> Option<FunctionBody> {
         // Find opening brace
         let brace_start = content[start..].find('{')?;
         let body_start = start + brace_start + 1;
@@ -705,7 +785,10 @@ impl ASTParser {
 
             // External calls
             if let Some(captures) = self.external_call_pattern.captures(trimmed) {
-                let target = captures.name("target").map(|m| m.as_str().to_string()).unwrap_or_default();
+                let target = captures
+                    .name("target")
+                    .map(|m| m.as_str().to_string())
+                    .unwrap_or_default();
                 let method = captures.name("method").map(|m| m.as_str()).unwrap_or("");
                 let value_transfer = method == "call" && trimmed.contains("value:");
 
@@ -718,7 +801,10 @@ impl ASTParser {
             }
             // Require statements
             else if let Some(captures) = self.require_pattern.captures(trimmed) {
-                let condition = captures.name("condition").map(|m| m.as_str().to_string()).unwrap_or_default();
+                let condition = captures
+                    .name("condition")
+                    .map(|m| m.as_str().to_string())
+                    .unwrap_or_default();
                 let message = captures.name("message").map(|m| m.as_str().to_string());
 
                 statements.push(Statement::Require {
@@ -729,9 +815,18 @@ impl ASTParser {
             }
             // Emit statements
             else if let Some(captures) = self.emit_pattern.captures(trimmed) {
-                let event = captures.name("event").map(|m| m.as_str().to_string()).unwrap_or_default();
-                let args = captures.name("args")
-                    .map(|m| m.as_str().split(',').map(|s| s.trim().to_string()).collect())
+                let event = captures
+                    .name("event")
+                    .map(|m| m.as_str().to_string())
+                    .unwrap_or_default();
+                let args = captures
+                    .name("args")
+                    .map(|m| {
+                        m.as_str()
+                            .split(',')
+                            .map(|s| s.trim().to_string())
+                            .collect()
+                    })
                     .unwrap_or_default();
 
                 statements.push(Statement::Emit {
@@ -742,7 +837,8 @@ impl ASTParser {
             }
             // Return statements
             else if trimmed.starts_with("return") {
-                let value = trimmed.strip_prefix("return")
+                let value = trimmed
+                    .strip_prefix("return")
                     .map(|s| s.trim().trim_end_matches(';').trim().to_string())
                     .filter(|s| !s.is_empty());
 
@@ -753,7 +849,8 @@ impl ASTParser {
             }
             // Revert statements
             else if trimmed.starts_with("revert") {
-                let error = trimmed.strip_prefix("revert")
+                let error = trimmed
+                    .strip_prefix("revert")
                     .map(|s| s.trim().trim_end_matches(';').trim().to_string())
                     .filter(|s| !s.is_empty());
 
@@ -778,8 +875,14 @@ impl ASTParser {
             }
             // Assignments
             else if let Some(captures) = self.assignment_pattern.captures(trimmed) {
-                let target = captures.name("target").map(|m| m.as_str().to_string()).unwrap_or_default();
-                let value = captures.name("value").map(|m| m.as_str().to_string()).unwrap_or_default();
+                let target = captures
+                    .name("target")
+                    .map(|m| m.as_str().to_string())
+                    .unwrap_or_default();
+                let value = captures
+                    .name("value")
+                    .map(|m| m.as_str().to_string())
+                    .unwrap_or_default();
 
                 statements.push(Statement::Assignment {
                     target,
@@ -803,7 +906,10 @@ impl ASTParser {
         let mut modifiers = Vec::new();
 
         for captures in self.modifier_def_pattern.captures_iter(content) {
-            let name = captures.name("name").map(|m| m.as_str().to_string()).unwrap_or_default();
+            let name = captures
+                .name("name")
+                .map(|m| m.as_str().to_string())
+                .unwrap_or_default();
             let params_str = captures.name("params").map(|m| m.as_str()).unwrap_or("");
 
             let match_start = captures.get(0).map(|m| m.start()).unwrap_or(0);
@@ -829,7 +935,10 @@ impl ASTParser {
         let mut events = Vec::new();
 
         for captures in self.event_pattern.captures_iter(content) {
-            let name = captures.name("name").map(|m| m.as_str().to_string()).unwrap_or_default();
+            let name = captures
+                .name("name")
+                .map(|m| m.as_str().to_string())
+                .unwrap_or_default();
             let params_str = captures.name("params").map(|m| m.as_str()).unwrap_or("");
 
             let match_start = captures.get(0).map(|m| m.start()).unwrap_or(0);
@@ -858,7 +967,8 @@ impl ASTParser {
 
             let indexed = parts.contains(&"indexed");
             let param_type = parts[0].to_string();
-            let name = parts.last()
+            let name = parts
+                .last()
                 .filter(|&&n| n != "indexed")
                 .map(|&s| s.to_string())
                 .unwrap_or_default();
@@ -877,7 +987,10 @@ impl ASTParser {
         let mut errors = Vec::new();
 
         for captures in self.error_pattern.captures_iter(content) {
-            let name = captures.name("name").map(|m| m.as_str().to_string()).unwrap_or_default();
+            let name = captures
+                .name("name")
+                .map(|m| m.as_str().to_string())
+                .unwrap_or_default();
             let params_str = captures.name("params").map(|m| m.as_str()).unwrap_or("");
 
             let match_start = captures.get(0).map(|m| m.start()).unwrap_or(0);
@@ -899,7 +1012,10 @@ impl ASTParser {
         let mut structs = Vec::new();
 
         for captures in self.struct_pattern.captures_iter(content) {
-            let name = captures.name("name").map(|m| m.as_str().to_string()).unwrap_or_default();
+            let name = captures
+                .name("name")
+                .map(|m| m.as_str().to_string())
+                .unwrap_or_default();
 
             let match_start = captures.get(0).map(|m| m.start()).unwrap_or(0);
             let line = base_line + content[..match_start].matches('\n').count();
@@ -921,7 +1037,10 @@ impl ASTParser {
         let mut enums = Vec::new();
 
         for captures in self.enum_pattern.captures_iter(content) {
-            let name = captures.name("name").map(|m| m.as_str().to_string()).unwrap_or_default();
+            let name = captures
+                .name("name")
+                .map(|m| m.as_str().to_string())
+                .unwrap_or_default();
 
             let match_start = captures.get(0).map(|m| m.start()).unwrap_or(0);
             let line = base_line + content[..match_start].matches('\n').count();
@@ -929,18 +1048,18 @@ impl ASTParser {
             // Parse enum values (simplified)
             let values: Vec<String> = vec![];
 
-            enums.push(EnumDefinition {
-                name,
-                values,
-                line,
-            });
+            enums.push(EnumDefinition { name, values, line });
         }
 
         enums
     }
 
     /// Get function by name from a contract
-    pub fn get_function<'a>(&self, contract: &'a ContractDefinition, name: &str) -> Option<&'a FunctionDefinition> {
+    pub fn get_function<'a>(
+        &self,
+        contract: &'a ContractDefinition,
+        name: &str,
+    ) -> Option<&'a FunctionDefinition> {
         contract.functions.iter().find(|f| f.name == name)
     }
 
@@ -954,9 +1073,12 @@ impl ASTParser {
 
     /// Get all external calls from a function body
     pub fn get_external_calls<'a>(&self, function: &'a FunctionDefinition) -> Vec<&'a Statement> {
-        function.body.as_ref()
+        function
+            .body
+            .as_ref()
             .map(|body| {
-                body.statements.iter()
+                body.statements
+                    .iter()
                     .filter(|s| matches!(s, Statement::ExternalCall { .. }))
                     .collect()
             })

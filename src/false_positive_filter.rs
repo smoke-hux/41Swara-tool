@@ -28,9 +28,9 @@
 
 #![allow(dead_code)]
 
+use crate::vulnerabilities::{Vulnerability, VulnerabilityCategory, VulnerabilitySeverity};
 use regex::Regex;
 use std::collections::HashSet;
-use crate::vulnerabilities::{Vulnerability, VulnerabilityCategory, VulnerabilitySeverity};
 
 /// Configuration knobs that control how aggressively the false-positive filter
 /// suppresses findings. All boolean flags default to `true` (trust safe libraries,
@@ -249,11 +249,13 @@ impl FalsePositiveFilter {
         let mut ctx = ContractContext::default();
 
         // Detect Solidity version from the pragma directive
-        let version_pattern = Regex::new(r"pragma\s+solidity\s*([\^>=<]*)?\s*(\d+\.\d+\.\d+|\d+\.\d+)").unwrap();
+        let version_pattern =
+            Regex::new(r"pragma\s+solidity\s*([\^>=<]*)?\s*(\d+\.\d+\.\d+|\d+\.\d+)").unwrap();
         if let Some(caps) = version_pattern.captures(content) {
             ctx.solidity_version = caps.get(2).map(|m| m.as_str().to_string());
             if let Some(ref version) = ctx.solidity_version {
-                ctx.is_solidity_0_8_plus = version.starts_with("0.8") || version.starts_with("0.9")
+                ctx.is_solidity_0_8_plus = version.starts_with("0.8")
+                    || version.starts_with("0.9")
                     || version.chars().next().map_or(false, |c| c > '0');
             }
         }
@@ -290,8 +292,10 @@ impl FalsePositiveFilter {
         ctx.is_interface_only = has_interface && !has_contract;
 
         // Detect library declarations (libraries have restricted capabilities)
-        ctx.is_library = Regex::new(r"^\s*library\s+\w+").unwrap()
-            .find(content).is_some();
+        ctx.is_library = Regex::new(r"^\s*library\s+\w+")
+            .unwrap()
+            .find(content)
+            .is_some();
 
         // Detect test contracts (Foundry, Hardhat, DSTest frameworks)
         ctx.is_test_contract = content.contains("import \"forge-std")
@@ -319,7 +323,8 @@ impl FalsePositiveFilter {
         }
 
         // Extract the inheritance list (contracts/interfaces after `is`)
-        let inherit_pattern = Regex::new(r"(contract|abstract\s+contract)\s+\w+\s+is\s+([^{]+)").unwrap();
+        let inherit_pattern =
+            Regex::new(r"(contract|abstract\s+contract)\s+\w+\s+is\s+([^{]+)").unwrap();
         if let Some(caps) = inherit_pattern.captures(content) {
             if let Some(inherited) = caps.get(2) {
                 for part in inherited.as_str().split(',') {
@@ -332,16 +337,22 @@ impl FalsePositiveFilter {
         }
 
         // Extract all import paths (both direct and named import syntax)
-        let import_pattern = Regex::new(r#"import\s+["']([^"']+)["']|import\s+\{[^}]+\}\s+from\s+["']([^"']+)["']"#).unwrap();
+        let import_pattern =
+            Regex::new(r#"import\s+["']([^"']+)["']|import\s+\{[^}]+\}\s+from\s+["']([^"']+)["']"#)
+                .unwrap();
         for cap in import_pattern.captures_iter(content) {
-            let path = cap.get(1).or_else(|| cap.get(2)).map(|m| m.as_str().to_string());
+            let path = cap
+                .get(1)
+                .or_else(|| cap.get(2))
+                .map(|m| m.as_str().to_string());
             if let Some(p) = path {
                 ctx.imported_files.push(p);
             }
         }
 
         // Extract developer-placed audit/security annotations from comments
-        let audit_pattern = Regex::new(r"@audit|@security|@notice\s+SAFE|// SAFE:|// AUDITED").unwrap();
+        let audit_pattern =
+            Regex::new(r"@audit|@security|@notice\s+SAFE|// SAFE:|// AUDITED").unwrap();
         for mat in audit_pattern.find_iter(content) {
             ctx.audit_annotations.push(mat.as_str().to_string());
         }
@@ -380,14 +391,21 @@ impl FalsePositiveFilter {
                     "private"
                 } else {
                     "public"
-                }.to_string();
+                }
+                .to_string();
 
                 let is_view_pure = modifiers_str.contains("view") || modifiers_str.contains("pure");
 
                 // Collect non-standard modifiers (i.e., custom ones like onlyOwner)
                 let modifiers: Vec<String> = modifiers_str
                     .split_whitespace()
-                    .filter(|m| !["external", "public", "internal", "private", "view", "pure", "payable", "virtual", "override"].contains(m))
+                    .filter(|m| {
+                        ![
+                            "external", "public", "internal", "private", "view", "pure", "payable",
+                            "virtual", "override",
+                        ]
+                        .contains(m)
+                    })
                     .map(|s| s.to_string())
                     .collect();
 
@@ -453,6 +471,163 @@ impl FalsePositiveFilter {
         filtered
     }
 
+    fn get_context_window(
+        &self,
+        content: &str,
+        line_number: usize,
+        before: usize,
+        after: usize,
+    ) -> String {
+        let lines: Vec<&str> = content.lines().collect();
+        if lines.is_empty() {
+            return String::new();
+        }
+
+        let idx = line_number.saturating_sub(1);
+        let start = idx.saturating_sub(before);
+        let end = (idx + after + 1).min(lines.len());
+        lines[start..end].join("\n")
+    }
+
+    fn has_guard_or_validation(&self, context: &str) -> bool {
+        context.contains("require(")
+            || context.contains("assert(")
+            || context.contains("revert")
+            || context.contains("if (")
+            || context.contains("if(")
+    }
+
+    fn has_array_length_validation(&self, context: &str) -> bool {
+        context.contains(".length") && self.has_guard_or_validation(context)
+    }
+
+    fn has_raw_bytes_validation(&self, context: &str) -> bool {
+        context.contains("abi.decode")
+            || context.contains("bytes4(")
+            || context.contains("selector")
+            || (context.contains(".length") && self.has_guard_or_validation(context))
+    }
+
+    fn has_fee_on_transfer_accounting(&self, context: &str) -> bool {
+        (context.contains("balancebefore") && context.contains("balanceafter"))
+            || (context.contains("beforebalance") && context.contains("afterbalance"))
+            || (context.contains("received")
+                && context.contains("balanceafter")
+                && context.contains('-'))
+            || (context.contains("balanceof(") && context.contains('-'))
+    }
+
+    fn has_access_control_guard(&self, context: &str) -> bool {
+        context.contains("onlyowner")
+            || context.contains("onlyadmin")
+            || context.contains("onlyrole")
+            || context.contains("requiresauth")
+            || context.contains("authorized")
+            || context.contains("governance")
+            || context.contains("timelock")
+            || context.contains("_checkowner()")
+            || context.contains("_checkrole(")
+            || context.contains("require(msg.sender")
+            || context.contains("require(_msgsender()")
+            || context.contains("if (msg.sender !=")
+    }
+
+    fn has_pause_guard(&self, content: &str, context: &str) -> bool {
+        let content_lower = content.to_lowercase();
+        let pause_keywords = [
+            "pausable",
+            "whennotpaused",
+            "whenactive",
+            "notpaused",
+            "onlywhenactive",
+            "onlywhenlive",
+            "onlyoperational",
+            "emergencyshutdown",
+            "shutdown",
+            "halted",
+            "stopped",
+            "circuitbreaker",
+            "pauseguard",
+        ];
+
+        pause_keywords
+            .iter()
+            .any(|k| content_lower.contains(k) || context.contains(k))
+            || context.contains("require(!paused")
+            || context.contains("require(!ispaused")
+            || context.contains("require(!emergencyshutdown")
+            || context.contains("require(active")
+            || context.contains("if (paused)")
+            || context.contains("if (emergencyshutdown)")
+            || context.contains("revert paused")
+    }
+
+    fn has_slippage_guard(&self, context: &str) -> bool {
+        let slippage_keywords = [
+            "amountoutmin",
+            "minamountout",
+            "minout",
+            "minreturn",
+            "minreceived",
+            "minimumreceived",
+            "minsharesout",
+            "minshares",
+            "minliquidity",
+            "minamount",
+            "mindy",
+            "maxslippage",
+            "slippagebps",
+            "priceimpact",
+        ];
+
+        slippage_keywords.iter().any(|k| context.contains(k))
+            && (self.has_guard_or_validation(context)
+                || context.contains("quote(")
+                || context.contains("preview")
+                || context.contains("getamountsout")
+                || context.contains("getamountout"))
+    }
+
+    fn has_deadline_guard(&self, context: &str) -> bool {
+        let deadline_keywords = [
+            "deadline",
+            "expiry",
+            "validuntil",
+            "expiresat",
+            "expiration",
+        ];
+
+        deadline_keywords.iter().any(|k| context.contains(k))
+            && (context.contains("block.timestamp")
+                || context.contains("<= ")
+                || context.contains(" < ")
+                || self.has_guard_or_validation(context))
+    }
+
+    fn has_signature_verification(&self, content: &str, context: &str) -> bool {
+        let content_lower = content.to_lowercase();
+        context.contains("_verify(")
+            || context.contains("verify(")
+            || context.contains("ecdsa.recover")
+            || context.contains("signaturechecker")
+            || context.contains("ecrecover")
+            || context.contains("recover(")
+            || content_lower.contains("erc20permit")
+            || content_lower.contains("domain_separator")
+    }
+
+    fn has_nonce_management(&self, content: &str, context: &str) -> bool {
+        let content_lower = content.to_lowercase();
+        context.contains("_usenonce(")
+            || context.contains("nonce++")
+            || context.contains("++nonce")
+            || context.contains("+= 1")
+            || context.contains("nonce = nonce + 1")
+            || context.contains("_nonces[")
+            || context.contains("nonces[")
+            || content_lower.contains("noncebitmap")
+    }
+
     /// Determine if a vulnerability should be kept
     fn should_keep(&self, vuln: &Vulnerability, content: &str, ctx: &ContractContext) -> bool {
         // Skip all findings in test/mock contracts if strict mode
@@ -492,9 +667,7 @@ impl FalsePositiveFilter {
 
         // Category-specific filtering
         match vuln.category {
-            VulnerabilityCategory::ArithmeticIssues => {
-                self.filter_arithmetic(vuln, ctx)
-            }
+            VulnerabilityCategory::ArithmeticIssues => self.filter_arithmetic(vuln, ctx),
             VulnerabilityCategory::Reentrancy
             | VulnerabilityCategory::CallbackReentrancy
             | VulnerabilityCategory::ERC777CallbackReentrancy
@@ -518,19 +691,13 @@ impl FalsePositiveFilter {
                 self.filter_access_control(vuln, content, ctx)
             }
             VulnerabilityCategory::UncheckedReturnValues
-            | VulnerabilityCategory::UnusedReturnValues => {
-                self.filter_unchecked_returns(vuln, ctx)
-            }
-            VulnerabilityCategory::PragmaIssues => {
-                self.filter_pragma(vuln, ctx)
-            }
+            | VulnerabilityCategory::UnusedReturnValues => self.filter_unchecked_returns(vuln, ctx),
+            VulnerabilityCategory::PragmaIssues => self.filter_pragma(vuln, ctx),
             VulnerabilityCategory::GasOptimization => {
                 // Always filter gas optimizations in test contracts
                 !ctx.is_test_contract
             }
-            VulnerabilityCategory::MagicNumbers => {
-                self.filter_magic_numbers(vuln, content)
-            }
+            VulnerabilityCategory::MagicNumbers => self.filter_magic_numbers(vuln, content),
             VulnerabilityCategory::OracleManipulation => {
                 // FP-6: Suppress if no pricing context (just routing usage)
                 let lines: Vec<&str> = content.lines().collect();
@@ -538,8 +705,10 @@ impl FalsePositiveFilter {
                 let start = vuln_line.saturating_sub(5);
                 let end = (vuln_line + 6).min(lines.len());
                 let context: String = lines[start..end].join("\n").to_lowercase();
-                let has_pricing_context = context.contains("price") || context.contains("oracle")
-                    || context.contains(" / ") || context.contains(" * ");
+                let has_pricing_context = context.contains("price")
+                    || context.contains("oracle")
+                    || context.contains(" / ")
+                    || context.contains(" * ");
                 if !has_pricing_context {
                     return false;
                 }
@@ -548,30 +717,34 @@ impl FalsePositiveFilter {
             VulnerabilityCategory::UnprotectedProxyUpgrade
             | VulnerabilityCategory::ProxyAdminVulnerability => {
                 // FP-7: Suppress transferOwnership findings with Ownable2Step
-                if content.contains("Ownable2Step") || content.contains("acceptOwnership")
-                    || content.contains("pendingOwner") {
+                if content.contains("Ownable2Step")
+                    || content.contains("acceptOwnership")
+                    || content.contains("pendingOwner")
+                {
                     if vuln.code_snippet.contains("transferOwnership")
                         || vuln.title.contains("transferOwnership")
-                        || vuln.description.contains("transferOwnership") {
+                        || vuln.description.contains("transferOwnership")
+                    {
                         return false;
                     }
                 }
                 self.filter_proxy_upgrade(vuln, content, ctx)
             }
             VulnerabilityCategory::SignatureVulnerabilities
-            | VulnerabilityCategory::SignatureReplay => {
-                self.filter_signature(vuln, content, ctx)
+            | VulnerabilityCategory::SignatureReplay => self.filter_signature(vuln, content, ctx),
+            VulnerabilityCategory::SignatureVerificationBypass => {
+                self.filter_signature_bypass(vuln, content, ctx)
             }
-            VulnerabilityCategory::BlockTimestamp
-            | VulnerabilityCategory::TimeManipulation => {
+            VulnerabilityCategory::BlockTimestamp | VulnerabilityCategory::TimeManipulation => {
                 self.filter_timestamp(vuln, content)
             }
-            VulnerabilityCategory::DelegateCalls => {
-                self.filter_delegatecall(vuln, content, ctx)
-            }
+            VulnerabilityCategory::DelegateCalls => self.filter_delegatecall(vuln, content, ctx),
             VulnerabilityCategory::MissingEmergencyStop => {
-                // Don't report if Pausable is used
-                if content.contains("Pausable") || content.contains("whenNotPaused") {
+                let context = self
+                    .get_context_window(content, vuln.line_number, 3, 25)
+                    .to_lowercase();
+                // Don't report if any pause/circuit-breaker pattern is used
+                if self.has_pause_guard(content, &context) {
                     return false;
                 }
                 // Don't report in test contracts
@@ -582,16 +755,15 @@ impl FalsePositiveFilter {
             }
             VulnerabilityCategory::MetaTransactionVulnerability
             | VulnerabilityCategory::TrustedForwarderBypass => {
-                // Don't report if using OZ ERC2771Context properly
-                if ctx.uses_openzeppelin && content.contains("ERC2771Context") {
-                    return false;
-                }
-                true
+                self.filter_meta_transaction(vuln, content, ctx)
             }
             VulnerabilityCategory::DoubleClaiming => {
                 // Don't report if rewardDebt or claimed mapping exists
-                if content.contains("rewardDebt") || content.contains("claimed[")
-                    || content.contains("hasClaimed") || content.contains("_claimed") {
+                if content.contains("rewardDebt")
+                    || content.contains("claimed[")
+                    || content.contains("hasClaimed")
+                    || content.contains("_claimed")
+                {
                     return false;
                 }
                 true
@@ -599,21 +771,79 @@ impl FalsePositiveFilter {
             VulnerabilityCategory::UncheckedMathOperation => {
                 // Don't report in Solidity 0.8+ for regular math (overflow protected)
                 // Only keep for unchecked blocks and bit shifts
-                if ctx.is_solidity_0_8_plus && !vuln.code_snippet.contains("unchecked")
-                    && !vuln.code_snippet.contains("<<") && !vuln.code_snippet.contains(">>") {
+                if ctx.is_solidity_0_8_plus
+                    && !vuln.code_snippet.contains("unchecked")
+                    && !vuln.code_snippet.contains("<<")
+                    && !vuln.code_snippet.contains(">>")
+                {
                     return false;
                 }
                 true
             }
             VulnerabilityCategory::InputValidationFailure => {
+                let title = vuln.title.to_lowercase();
+                let snippet = vuln.code_snippet.to_lowercase();
+                let context = self
+                    .get_context_window(content, vuln.line_number, 3, 25)
+                    .to_lowercase();
+
                 // Don't report for view/pure functions
-                if vuln.code_snippet.contains(" view ") || vuln.code_snippet.contains(" pure ") {
+                if snippet.contains(" view ")
+                    || snippet.contains(" pure ")
+                    || context.contains(" view ")
+                    || context.contains(" pure ")
+                {
                     return false;
                 }
+
                 // Don't report for internal/private functions
-                if vuln.code_snippet.contains(" internal ") || vuln.code_snippet.contains(" private ") {
+                if snippet.contains(" internal ")
+                    || snippet.contains(" private ")
+                    || context.contains(" internal ")
+                    || context.contains(" private ")
+                {
                     return false;
                 }
+
+                if title.contains("array parameter") || title.contains("array length validation") {
+                    if self.has_array_length_validation(&context) {
+                        return false;
+                    }
+                }
+
+                if title.contains("unchecked raw calldata") {
+                    if self.has_raw_bytes_validation(&context) {
+                        return false;
+                    }
+                }
+
+                if title.contains("fee-on-transfer") {
+                    if self.has_fee_on_transfer_accounting(&context) {
+                        return false;
+                    }
+                }
+
+                if title.contains("contract check bypassable") {
+                    let helper_context = context.contains("function iscontract")
+                        || context.contains("function _iscontract")
+                        || snippet.trim_start().starts_with("return ")
+                        || context.contains("returns (bool)")
+                        || context.contains("returns(bool)");
+                    let used_for_auth = context.contains("require(")
+                        || context.contains("if (")
+                        || context.contains("if(")
+                        || context.contains("revert");
+                    if helper_context || !used_for_auth {
+                        return false;
+                    }
+                }
+
+                if title.contains("layerzero missing payload validation") {
+                    if self.has_raw_bytes_validation(&context) {
+                        return false;
+                    }
+                }
+
                 true
             }
             VulnerabilityCategory::LowLevelCalls => {
@@ -651,8 +881,10 @@ impl FalsePositiveFilter {
             }
             VulnerabilityCategory::MissingTimelock => {
                 // Don't report if timelock pattern exists
-                if content.contains("TimelockController") || content.contains("Timelock")
-                    || content.contains("delay") && content.contains("queue") {
+                if content.contains("TimelockController")
+                    || content.contains("Timelock")
+                    || content.contains("delay") && content.contains("queue")
+                {
                     return false;
                 }
                 // Don't report in test contracts
@@ -707,7 +939,6 @@ impl FalsePositiveFilter {
             }
 
             // --- v0.7.0 new category filters ---
-
             VulnerabilityCategory::ERC2771MulticallSpoofing => {
                 // Suppress if using OZ ERC2771Forwarder v4.9+ (fixed version)
                 if content.contains("ERC2771Forwarder") {
@@ -721,8 +952,11 @@ impl FalsePositiveFilter {
             }
             VulnerabilityCategory::FeeOnTransferAssumption => {
                 // Suppress if balance diff pattern exists anywhere in the function
-                if content.contains("balanceBefore") || content.contains("balanceAfter")
-                    || content.contains("received =") || content.contains("_before") && content.contains("_after") {
+                if content.contains("balanceBefore")
+                    || content.contains("balanceAfter")
+                    || content.contains("received =")
+                    || content.contains("_before") && content.contains("_after")
+                {
                     return false;
                 }
                 // Suppress in test contracts
@@ -744,8 +978,10 @@ impl FalsePositiveFilter {
             }
             VulnerabilityCategory::UnprotectedAdminSweep => {
                 // Suppress if timelock exists
-                if content.contains("TimelockController") || content.contains("Timelock")
-                    || content.contains("delay") && content.contains("queue") {
+                if content.contains("TimelockController")
+                    || content.contains("Timelock")
+                    || content.contains("delay") && content.contains("queue")
+                {
                     return false;
                 }
                 if ctx.is_test_contract {
@@ -754,14 +990,12 @@ impl FalsePositiveFilter {
                 true
             }
             VulnerabilityCategory::MissingSlippageProtection => {
-                // Suppress internal/private functions
-                if vuln.code_snippet.contains(" internal ") || vuln.code_snippet.contains(" private ") {
-                    return false;
-                }
-                if ctx.is_test_contract {
-                    return false;
-                }
-                true
+                self.filter_slippage_or_mev(vuln, content, ctx, true)
+            }
+            VulnerabilityCategory::FrontRunning
+            | VulnerabilityCategory::MEVExploitable
+            | VulnerabilityCategory::MissingSwapDeadline => {
+                self.filter_slippage_or_mev(vuln, content, ctx, false)
             }
             VulnerabilityCategory::MulticallStateReset
             | VulnerabilityCategory::InconsistentStateReset
@@ -780,8 +1014,11 @@ impl FalsePositiveFilter {
             }
             VulnerabilityCategory::DonationAttackVector => {
                 // Suppress if virtual offset pattern exists
-                if content.contains("virtualAssets") || content.contains("_decimalsOffset")
-                    || content.contains("INITIAL_DEPOSIT") || content.contains("+ 1)") {
+                if content.contains("virtualAssets")
+                    || content.contains("_decimalsOffset")
+                    || content.contains("INITIAL_DEPOSIT")
+                    || content.contains("+ 1)")
+                {
                     return false;
                 }
                 if ctx.is_test_contract {
@@ -791,8 +1028,10 @@ impl FalsePositiveFilter {
             }
             VulnerabilityCategory::AVSSlashingRisk => {
                 // Suppress if dispute/delay mechanism exists
-                if content.contains("dispute") || content.contains("vetoable")
-                    || content.contains("cooldown") && content.contains("queue") {
+                if content.contains("dispute")
+                    || content.contains("vetoable")
+                    || content.contains("cooldown") && content.contains("queue")
+                {
                     return false;
                 }
                 true
@@ -801,8 +1040,10 @@ impl FalsePositiveFilter {
             _ => {
                 if ctx.uses_safe_erc20 {
                     let snippet = &vuln.code_snippet;
-                    if snippet.contains("safeTransfer") || snippet.contains("SafeERC20")
-                        || snippet.contains("safeApprove") || snippet.contains("safeIncreaseAllowance")
+                    if snippet.contains("safeTransfer")
+                        || snippet.contains("SafeERC20")
+                        || snippet.contains("safeApprove")
+                        || snippet.contains("safeIncreaseAllowance")
                     {
                         return false;
                     }
@@ -826,7 +1067,12 @@ impl FalsePositiveFilter {
     }
 
     /// Filter reentrancy issues
-    fn filter_reentrancy(&self, vuln: &Vulnerability, content: &str, ctx: &ContractContext) -> bool {
+    fn filter_reentrancy(
+        &self,
+        vuln: &Vulnerability,
+        content: &str,
+        ctx: &ContractContext,
+    ) -> bool {
         // Has reentrancy guard
         if ctx.uses_reentrancy_guard {
             return false;
@@ -857,7 +1103,12 @@ impl FalsePositiveFilter {
     }
 
     /// Filter access control issues
-    fn filter_access_control(&self, vuln: &Vulnerability, content: &str, ctx: &ContractContext) -> bool {
+    fn filter_access_control(
+        &self,
+        vuln: &Vulnerability,
+        content: &str,
+        ctx: &ContractContext,
+    ) -> bool {
         let lines: Vec<&str> = content.lines().collect();
         if vuln.line_number > 0 && vuln.line_number <= lines.len() {
             // Read the full function signature (multi-line: from `function` to `{`)
@@ -876,8 +1127,16 @@ impl FalsePositiveFilter {
 
             // Check for common access control patterns in the full signature
             let access_patterns = [
-                "onlyOwner", "onlyAdmin", "onlyRole", "onlyMinter", "onlyGovernance",
-                "auth", "authorized", "requiresAuth", "whenNotPaused", "initializer",
+                "onlyOwner",
+                "onlyAdmin",
+                "onlyRole",
+                "onlyMinter",
+                "onlyGovernance",
+                "auth",
+                "authorized",
+                "requiresAuth",
+                "whenNotPaused",
+                "initializer",
                 "nonReentrant",
             ];
 
@@ -900,8 +1159,11 @@ impl FalsePositiveFilter {
             }
 
             // Check if it's a view/pure function (read-only, less critical)
-            if full_sig.contains(" view ") || full_sig.contains(" view)")
-                || full_sig.contains(" pure ") || full_sig.contains(" pure)") {
+            if full_sig.contains(" view ")
+                || full_sig.contains(" view)")
+                || full_sig.contains(" pure ")
+                || full_sig.contains(" pure)")
+            {
                 return false;
             }
 
@@ -919,7 +1181,8 @@ impl FalsePositiveFilter {
                     || check_line.contains("require(_msgSender()")
                     || check_line.contains("if (msg.sender !=")
                     || check_line.contains("_checkOwner()")
-                    || check_line.contains("_checkRole(") {
+                    || check_line.contains("_checkRole(")
+                {
                     return false;
                 }
                 // Stop at function end
@@ -963,7 +1226,9 @@ impl FalsePositiveFilter {
         let snippet = &vuln.code_snippet;
 
         // Common acceptable values
-        let acceptable = ["0", "1", "2", "100", "1000", "10000", "1e18", "1e6", "10**18", "10**6"];
+        let acceptable = [
+            "0", "1", "2", "100", "1000", "10000", "1e18", "1e6", "10**18", "10**6",
+        ];
         for val in &acceptable {
             if snippet.contains(val) {
                 return false;
@@ -976,7 +1241,8 @@ impl FalsePositiveFilter {
         }
 
         // Precision constants
-        if snippet.contains("PRECISION") || snippet.contains("DECIMALS") || snippet.contains("WAD") {
+        if snippet.contains("PRECISION") || snippet.contains("DECIMALS") || snippet.contains("WAD")
+        {
             return false;
         }
 
@@ -993,9 +1259,30 @@ impl FalsePositiveFilter {
     }
 
     /// Filter proxy upgrade issues
-    fn filter_proxy_upgrade(&self, _vuln: &Vulnerability, content: &str, ctx: &ContractContext) -> bool {
+    fn filter_proxy_upgrade(
+        &self,
+        _vuln: &Vulnerability,
+        content: &str,
+        ctx: &ContractContext,
+    ) -> bool {
+        let context = self
+            .get_context_window(content, _vuln.line_number, 2, 20)
+            .to_lowercase();
+
+        if self.has_access_control_guard(&context) {
+            return false;
+        }
         // Check for protected upgrade patterns
         if content.contains("_authorizeUpgrade") && content.contains("onlyOwner") {
+            return false;
+        }
+        if content.contains("_authorizeUpgrade")
+            && (content.contains("onlyRole")
+                || content.contains("requiresAuth")
+                || content.contains("auth")
+                || content.contains("_checkOwner()")
+                || content.contains("_checkRole("))
+        {
             return false;
         }
         if ctx.uses_openzeppelin && content.contains("UUPSUpgradeable") {
@@ -1008,7 +1295,12 @@ impl FalsePositiveFilter {
     }
 
     /// Filter signature issues
-    fn filter_signature(&self, _vuln: &Vulnerability, content: &str, ctx: &ContractContext) -> bool {
+    fn filter_signature(&self, vuln: &Vulnerability, content: &str, ctx: &ContractContext) -> bool {
+        let title = vuln.title.to_lowercase();
+        let context = self
+            .get_context_window(content, vuln.line_number, 3, 30)
+            .to_lowercase();
+
         // Using safe libraries
         if content.contains("ECDSA.recover") || content.contains("ECDSA.tryRecover") {
             return false;
@@ -1019,6 +1311,140 @@ impl FalsePositiveFilter {
         if ctx.uses_openzeppelin && content.contains("@openzeppelin") && content.contains("ECDSA") {
             return false;
         }
+        if title.contains("deadline") || title.contains("permit") {
+            if self.has_deadline_guard(&context) {
+                return false;
+            }
+        }
+        if (title.contains("replay") || title.contains("signature"))
+            && self.has_signature_verification(content, &context)
+        {
+            if self.has_nonce_management(content, &context)
+                && (self.has_deadline_guard(&context)
+                    || context.contains("domain_separator")
+                    || context.contains("block.chainid")
+                    || content.to_lowercase().contains("domain_separator"))
+            {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn filter_signature_bypass(
+        &self,
+        vuln: &Vulnerability,
+        content: &str,
+        ctx: &ContractContext,
+    ) -> bool {
+        let context = self
+            .get_context_window(content, vuln.line_number, 3, 20)
+            .to_lowercase();
+
+        if ctx.uses_openzeppelin && content.contains("ECDSA") {
+            return false;
+        }
+
+        if context.contains("address(0)")
+            && (context.contains("require(recovered !=")
+                || context.contains("require(recovered!=")
+                || context.contains("recovered == expected")
+                || context.contains("recovered == owner")
+                || context.contains("recovered == signer"))
+        {
+            return false;
+        }
+
+        true
+    }
+
+    fn filter_meta_transaction(
+        &self,
+        vuln: &Vulnerability,
+        content: &str,
+        ctx: &ContractContext,
+    ) -> bool {
+        let title = vuln.title.to_lowercase();
+        let context = self
+            .get_context_window(content, vuln.line_number, 3, 30)
+            .to_lowercase();
+        let content_lower = content.to_lowercase();
+
+        if ctx.uses_openzeppelin && content.contains("ERC2771Context") {
+            return false;
+        }
+
+        if title.contains("minimalforwarder pattern")
+            || title.contains("kiloex-pattern forwarder exploit")
+        {
+            let has_safe_forwarder_flow = content_lower.contains("function execute")
+                && self.has_signature_verification(content, &content_lower)
+                && self.has_nonce_management(content, &content_lower);
+            if has_safe_forwarder_flow {
+                return false;
+            }
+        }
+
+        if title.contains("mutable trusted forwarder") || title.contains("trusted forwarder") {
+            if self.has_access_control_guard(&context)
+                || context.contains("immutable")
+                || context.contains("constructor(")
+            {
+                return false;
+            }
+        }
+
+        if self.has_signature_verification(content, &context)
+            && self.has_nonce_management(content, &context)
+        {
+            return false;
+        }
+
+        if self.has_signature_verification(content, &context) && self.has_deadline_guard(&context) {
+            return false;
+        }
+
+        true
+    }
+
+    fn filter_slippage_or_mev(
+        &self,
+        vuln: &Vulnerability,
+        content: &str,
+        ctx: &ContractContext,
+        only_slippage: bool,
+    ) -> bool {
+        let snippet = vuln.code_snippet.to_lowercase();
+        let context = self
+            .get_context_window(content, vuln.line_number, 3, 35)
+            .to_lowercase();
+
+        if snippet.contains(" internal ")
+            || snippet.contains(" private ")
+            || context.contains(" internal ")
+            || context.contains(" private ")
+        {
+            return false;
+        }
+        if ctx.is_test_contract {
+            return false;
+        }
+        if self.has_slippage_guard(&context) {
+            if only_slippage {
+                return false;
+            }
+            if !vuln.title.to_lowercase().contains("deadline") {
+                return false;
+            }
+        }
+        if self.has_deadline_guard(&context) && vuln.title.to_lowercase().contains("deadline") {
+            return false;
+        }
+        if self.has_pause_guard(content, &context)
+            && vuln.category == VulnerabilityCategory::MissingEmergencyStop
+        {
+            return false;
+        }
         true
     }
 
@@ -1027,8 +1453,12 @@ impl FalsePositiveFilter {
         let snippet = &vuln.code_snippet;
 
         // Event emissions using timestamp are fine
-        if snippet.contains("emit") || content.lines().nth(vuln.line_number.saturating_sub(1))
-            .map_or(false, |l| l.contains("emit")) {
+        if snippet.contains("emit")
+            || content
+                .lines()
+                .nth(vuln.line_number.saturating_sub(1))
+                .map_or(false, |l| l.contains("emit"))
+        {
             return false;
         }
 
@@ -1041,15 +1471,22 @@ impl FalsePositiveFilter {
     }
 
     /// Filter delegatecall issues
-    fn filter_delegatecall(&self, _vuln: &Vulnerability, content: &str, ctx: &ContractContext) -> bool {
+    fn filter_delegatecall(
+        &self,
+        _vuln: &Vulnerability,
+        content: &str,
+        ctx: &ContractContext,
+    ) -> bool {
         // ERC-1967 proxy pattern
         if content.contains("_IMPLEMENTATION_SLOT") || content.contains("ERC1967") {
             return false;
         }
         // Standard proxy patterns
-        if ctx.inherited_contracts.iter().any(|c| {
-            c.contains("Proxy") || c.contains("UUPS") || c.contains("Transparent")
-        }) {
+        if ctx
+            .inherited_contracts
+            .iter()
+            .any(|c| c.contains("Proxy") || c.contains("UUPS") || c.contains("Transparent"))
+        {
             return false;
         }
         true
@@ -1077,7 +1514,9 @@ impl FalsePositiveFilter {
             VulnerabilityCategory::Reentrancy if !ctx.uses_reentrancy_guard => {
                 vuln.confidence_percent = (vuln.confidence_percent + 15).min(100);
             }
-            VulnerabilityCategory::ArithmeticIssues if !ctx.is_solidity_0_8_plus && !ctx.uses_safemath => {
+            VulnerabilityCategory::ArithmeticIssues
+                if !ctx.is_solidity_0_8_plus && !ctx.uses_safemath =>
+            {
                 vuln.confidence_percent = (vuln.confidence_percent + 20).min(100);
             }
             _ => {}
@@ -1174,7 +1613,7 @@ impl FalsePositiveFilter {
                 // and by advanced_analysis/logic_analyzer as LogicError)
                 VulnerabilityCategory::FrontRunning => 9,
 
-                _ => 0,  // group 0 = no grouping
+                _ => 0, // group 0 = no grouping
             }
         };
 
@@ -1200,8 +1639,11 @@ impl FalsePositiveFilter {
                 if v.title.contains("CEI") || v.title.contains("State After") {
                     return 1; // reentrancy group
                 }
-                if v.title.contains("First Depositor") || v.title.contains("Inflation")
-                    || v.title.contains("ERC4626") || v.title.contains("LP Inflation") {
+                if v.title.contains("First Depositor")
+                    || v.title.contains("Inflation")
+                    || v.title.contains("ERC4626")
+                    || v.title.contains("LP Inflation")
+                {
                     return 7; // ERC-4626 inflation group
                 }
                 if v.title.contains("Approve Race") {
@@ -1234,7 +1676,8 @@ impl FalsePositiveFilter {
                     continue;
                 }
                 let line_diff = (vulnerabilities[i].line_number as isize
-                    - vulnerabilities[j].line_number as isize).unsigned_abs();
+                    - vulnerabilities[j].line_number as isize)
+                    .unsigned_abs();
                 if line_diff <= merge_window {
                     // Keep the higher-severity one
                     if severity_rank(&vulnerabilities[i]) >= severity_rank(&vulnerabilities[j]) {
@@ -1256,11 +1699,16 @@ impl FalsePositiveFilter {
 
         // Pass 3: Suppress [Threat Model] findings when a specific detection
         // for the same category group already exists
-        let has_specific_detection: HashSet<u8> = vulnerabilities.iter()
+        let has_specific_detection: HashSet<u8> = vulnerabilities
+            .iter()
             .filter(|v| !v.title.starts_with("[Threat Model]"))
             .filter_map(|v| {
                 let g = effective_group(v);
-                if g != 0 { Some(g) } else { None }
+                if g != 0 {
+                    Some(g)
+                } else {
+                    None
+                }
             })
             .collect();
 

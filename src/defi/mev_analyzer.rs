@@ -6,8 +6,8 @@
 #![allow(dead_code)]
 #![allow(unused_variables)]
 
+use crate::vulnerabilities::{Vulnerability, VulnerabilityCategory, VulnerabilitySeverity};
 use regex::Regex;
-use crate::vulnerabilities::{Vulnerability, VulnerabilitySeverity, VulnerabilityCategory};
 
 /// MEV vulnerability analyzer
 pub struct MEVAnalyzer {
@@ -62,15 +62,15 @@ impl MEVAnalyzer {
         for (idx, line) in content.lines().enumerate() {
             if self.swap_pattern.is_match(line) {
                 // Check for slippage protection
-                let has_slippage = line.contains("minAmount") ||
-                                   line.contains("amountOutMin") ||
-                                   line.contains("minReturn") ||
-                                   line.contains("slippage");
+                let has_slippage = line.contains("minAmount")
+                    || line.contains("amountOutMin")
+                    || line.contains("minReturn")
+                    || line.contains("slippage");
 
                 // Check for deadline
-                let has_deadline = line.contains("deadline") ||
-                                   line.contains("expiry") ||
-                                   line.contains("validUntil");
+                let has_deadline = line.contains("deadline")
+                    || line.contains("expiry")
+                    || line.contains("validUntil");
 
                 if !has_slippage && !has_deadline {
                     vulnerabilities.push(Vulnerability::high_confidence(
@@ -80,7 +80,8 @@ impl MEVAnalyzer {
                         "Swap function without slippage AND deadline protection".to_string(),
                         idx + 1,
                         line.to_string(),
-                        "Add BOTH minAmountOut AND deadline parameters to prevent sandwich attacks".to_string(),
+                        "Add BOTH minAmountOut AND deadline parameters to prevent sandwich attacks"
+                            .to_string(),
                     ));
                 } else if !has_slippage {
                     vulnerabilities.push(Vulnerability::new(
@@ -90,14 +91,16 @@ impl MEVAnalyzer {
                         "Swap function without minimum output protection".to_string(),
                         idx + 1,
                         line.to_string(),
-                        "Add minAmountOut parameter to protect against price manipulation".to_string(),
+                        "Add minAmountOut parameter to protect against price manipulation"
+                            .to_string(),
                     ));
                 } else if !has_deadline {
                     vulnerabilities.push(Vulnerability::new(
                         VulnerabilitySeverity::High,
                         VulnerabilityCategory::MEVExploitable,
                         "Missing Transaction Deadline".to_string(),
-                        "Swap function without deadline - can be held for unfavorable execution".to_string(),
+                        "Swap function without deadline - can be held for unfavorable execution"
+                            .to_string(),
                         idx + 1,
                         line.to_string(),
                         "Add deadline parameter: require(block.timestamp <= deadline)".to_string(),
@@ -106,9 +109,10 @@ impl MEVAnalyzer {
 
                 // Check for zero slippage in the function body
                 let func_body = self.extract_function_body(content, idx);
-                if func_body.contains("amountOutMin = 0") ||
-                   func_body.contains("minAmount = 0") ||
-                   func_body.contains(", 0,") && func_body.contains("swap") {
+                if func_body.contains("amountOutMin = 0")
+                    || func_body.contains("minAmount = 0")
+                    || func_body.contains(", 0,") && func_body.contains("swap")
+                {
                     vulnerabilities.push(Vulnerability::high_confidence(
                         VulnerabilitySeverity::Critical,
                         VulnerabilityCategory::MEVExploitable,
@@ -161,16 +165,15 @@ impl MEVAnalyzer {
                 let func_body = self.extract_function_body(content, idx);
 
                 // Check for MEV protection mechanisms
-                let has_mev_protection =
-                    func_body.contains("flashbots") ||
-                    func_body.contains("Flashbots") ||
-                    func_body.contains("private") ||
-                    func_body.contains("auction") ||
-                    func_body.contains("Auction") ||
-                    func_body.contains("dutch") ||
-                    func_body.contains("Dutch") ||
-                    content.contains("commit") ||
-                    content.contains("reveal");
+                let has_mev_protection = func_body.contains("flashbots")
+                    || func_body.contains("Flashbots")
+                    || func_body.contains("private")
+                    || func_body.contains("auction")
+                    || func_body.contains("Auction")
+                    || func_body.contains("dutch")
+                    || func_body.contains("Dutch")
+                    || content.contains("commit")
+                    || content.contains("reveal");
 
                 if !has_mev_protection {
                     vulnerabilities.push(Vulnerability::new(
@@ -192,10 +195,12 @@ impl MEVAnalyzer {
                             VulnerabilitySeverity::Medium,
                             VulnerabilityCategory::MEVExploitable,
                             "Liquidation Bonus Incentivizes MEV".to_string(),
-                            "Fixed liquidation bonus creates predictable MEV opportunity".to_string(),
+                            "Fixed liquidation bonus creates predictable MEV opportunity"
+                                .to_string(),
                             idx + 1,
                             line.to_string(),
-                            "Consider variable bonus based on competition or Dutch auction".to_string(),
+                            "Consider variable bonus based on competition or Dutch auction"
+                                .to_string(),
                         ));
                     }
                 }
@@ -210,18 +215,18 @@ impl MEVAnalyzer {
         let mut vulnerabilities = Vec::new();
 
         // Check for oracle update functions
-        let oracle_update_pattern = Regex::new(r"function\s+(setPrice|updatePrice|submitPrice|report)\w*\s*\(").unwrap();
+        let oracle_update_pattern =
+            Regex::new(r"function\s+(setPrice|updatePrice|submitPrice|report)\w*\s*\(").unwrap();
 
         for (idx, line) in content.lines().enumerate() {
             if oracle_update_pattern.is_match(line) {
                 let func_body = self.extract_function_body(content, idx);
 
                 // Check for access control
-                let has_access_control =
-                    func_body.contains("onlyOwner") ||
-                    func_body.contains("onlyOracle") ||
-                    func_body.contains("onlyReporter") ||
-                    func_body.contains("hasRole");
+                let has_access_control = func_body.contains("onlyOwner")
+                    || func_body.contains("onlyOracle")
+                    || func_body.contains("onlyReporter")
+                    || func_body.contains("hasRole");
 
                 if !has_access_control {
                     vulnerabilities.push(Vulnerability::high_confidence(
@@ -231,13 +236,16 @@ impl MEVAnalyzer {
                         "Oracle price update visible in mempool before execution".to_string(),
                         idx + 1,
                         line.to_string(),
-                        "Use commit-reveal, threshold signatures, or private mempool for updates".to_string(),
+                        "Use commit-reveal, threshold signatures, or private mempool for updates"
+                            .to_string(),
                     ));
                 }
 
                 // Check for deviation limits
-                if !func_body.contains("deviation") && !func_body.contains("maxChange") &&
-                   !func_body.contains("threshold") {
+                if !func_body.contains("deviation")
+                    && !func_body.contains("maxChange")
+                    && !func_body.contains("threshold")
+                {
                     vulnerabilities.push(Vulnerability::new(
                         VulnerabilitySeverity::Medium,
                         VulnerabilityCategory::OracleManipulation,
@@ -307,7 +315,8 @@ impl MEVAnalyzer {
                     let func_body = self.extract_function_body(content, idx);
 
                     // Check for minimum reveal delay
-                    if !func_body.contains("block.number") && !func_body.contains("block.timestamp") {
+                    if !func_body.contains("block.number") && !func_body.contains("block.timestamp")
+                    {
                         vulnerabilities.push(Vulnerability::new(
                             VulnerabilitySeverity::High,
                             VulnerabilityCategory::FrontRunning,
@@ -328,7 +337,8 @@ impl MEVAnalyzer {
                             "Reveal doesn't verify against stored commit hash".to_string(),
                             idx + 1,
                             line.to_string(),
-                            "Verify: keccak256(abi.encode(value, secret)) == storedCommit".to_string(),
+                            "Verify: keccak256(abi.encode(value, secret)) == storedCommit"
+                                .to_string(),
                         ));
                     }
                 }
@@ -338,9 +348,11 @@ impl MEVAnalyzer {
                 VulnerabilitySeverity::Medium,
                 VulnerabilityCategory::LogicError,
                 "Incomplete Commit-Reveal Pattern".to_string(),
-                format!("Has {} but not {}",
+                format!(
+                    "Has {} but not {}",
                     if has_commit { "commit" } else { "reveal" },
-                    if has_commit { "reveal" } else { "commit" }),
+                    if has_commit { "reveal" } else { "commit" }
+                ),
                 1,
                 "Commit-reveal implementation".to_string(),
                 "Implement complete commit-reveal pattern with both phases".to_string(),
@@ -355,7 +367,8 @@ impl MEVAnalyzer {
         let mut vulnerabilities = Vec::new();
 
         // Check for mint functions
-        let mint_pattern = Regex::new(r"function\s+mint\w*\s*\([^)]*\)\s*(external|public)").unwrap();
+        let mint_pattern =
+            Regex::new(r"function\s+mint\w*\s*\([^)]*\)\s*(external|public)").unwrap();
 
         if content.contains("ERC721") || content.contains("ERC1155") {
             for (idx, line) in content.lines().enumerate() {
@@ -363,11 +376,10 @@ impl MEVAnalyzer {
                     let func_body = self.extract_function_body(content, idx);
 
                     // Check for whitelist/merkle proof
-                    let has_whitelist =
-                        func_body.contains("whitelist") ||
-                        func_body.contains("merkle") ||
-                        func_body.contains("Merkle") ||
-                        func_body.contains("proof");
+                    let has_whitelist = func_body.contains("whitelist")
+                        || func_body.contains("merkle")
+                        || func_body.contains("Merkle")
+                        || func_body.contains("proof");
 
                     // Check for reveal pattern (for metadata)
                     let has_reveal = content.contains("reveal") || content.contains("Reveal");
@@ -386,13 +398,16 @@ impl MEVAnalyzer {
 
                     // Check for batch mint without limit
                     if func_body.contains("amount") || func_body.contains("quantity") {
-                        if !func_body.contains("maxMint") && !func_body.contains("MAX_") &&
-                           !func_body.contains("limit") {
+                        if !func_body.contains("maxMint")
+                            && !func_body.contains("MAX_")
+                            && !func_body.contains("limit")
+                        {
                             vulnerabilities.push(Vulnerability::new(
                                 VulnerabilitySeverity::High,
                                 VulnerabilityCategory::DoSAttacks,
                                 "Unlimited Batch Mint".to_string(),
-                                "Batch mint without limit - whales can mint entire supply".to_string(),
+                                "Batch mint without limit - whales can mint entire supply"
+                                    .to_string(),
                                 idx + 1,
                                 line.to_string(),
                                 "Add per-transaction and per-wallet mint limits".to_string(),
@@ -406,7 +421,8 @@ impl MEVAnalyzer {
                             VulnerabilitySeverity::Critical,
                             VulnerabilityCategory::FrontRunning,
                             "Predictable NFT Randomness".to_string(),
-                            "Using block.timestamp for randomness - miners can manipulate".to_string(),
+                            "Using block.timestamp for randomness - miners can manipulate"
+                                .to_string(),
                             idx + 1,
                             line.to_string(),
                             "Use Chainlink VRF or commit-reveal for fair randomness".to_string(),
@@ -428,10 +444,9 @@ impl MEVAnalyzer {
                 let func_body = self.extract_function_body(content, idx);
 
                 // Check for sealed bid
-                let is_sealed =
-                    func_body.contains("commit") ||
-                    func_body.contains("sealed") ||
-                    func_body.contains("hash");
+                let is_sealed = func_body.contains("commit")
+                    || func_body.contains("sealed")
+                    || func_body.contains("hash");
 
                 if !is_sealed {
                     vulnerabilities.push(Vulnerability::new(
@@ -441,18 +456,22 @@ impl MEVAnalyzer {
                         "Bids visible in mempool can be frontrun/outbid".to_string(),
                         idx + 1,
                         line.to_string(),
-                        "Consider sealed-bid auction or Flashbots Protect for fair bidding".to_string(),
+                        "Consider sealed-bid auction or Flashbots Protect for fair bidding"
+                            .to_string(),
                     ));
                 }
 
                 // Check for last-block sniping protection
-                if !func_body.contains("timeExtension") && !func_body.contains("extendAuction") &&
-                   !func_body.contains("antiSnipe") {
+                if !func_body.contains("timeExtension")
+                    && !func_body.contains("extendAuction")
+                    && !func_body.contains("antiSnipe")
+                {
                     vulnerabilities.push(Vulnerability::new(
                         VulnerabilitySeverity::Low,
                         VulnerabilityCategory::FrontRunning,
                         "Auction Without Anti-Snipe".to_string(),
-                        "No time extension on late bids - vulnerable to last-second sniping".to_string(),
+                        "No time extension on late bids - vulnerable to last-second sniping"
+                            .to_string(),
                         idx + 1,
                         line.to_string(),
                         "Extend auction end time if bid placed near deadline".to_string(),
@@ -474,8 +493,7 @@ impl MEVAnalyzer {
                 let func_context = self.get_function_context(content, idx);
 
                 // Check for strict equality (bad pattern)
-                if line.contains("== block.timestamp") ||
-                   line.contains("block.timestamp ==") {
+                if line.contains("== block.timestamp") || line.contains("block.timestamp ==") {
                     vulnerabilities.push(Vulnerability::new(
                         VulnerabilitySeverity::High,
                         VulnerabilityCategory::FrontRunning,
@@ -493,7 +511,11 @@ impl MEVAnalyzer {
                     let value: u64 = caps.get(1).unwrap().as_str().parse().unwrap_or(0);
                     let unit = caps.get(2).unwrap().as_str();
 
-                    let seconds = if unit.starts_with("minute") { value * 60 } else { value };
+                    let seconds = if unit.starts_with("minute") {
+                        value * 60
+                    } else {
+                        value
+                    };
 
                     if seconds < 900 && seconds > 0 {
                         // Less than 15 minutes
@@ -504,7 +526,8 @@ impl MEVAnalyzer {
                             format!("Time window of {} seconds may be manipulable", seconds),
                             idx + 1,
                             line.to_string(),
-                            "Use longer time windows (>15 min) for MEV-sensitive operations".to_string(),
+                            "Use longer time windows (>15 min) for MEV-sensitive operations"
+                                .to_string(),
                         ));
                     }
                 }

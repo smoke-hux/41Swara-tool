@@ -7,9 +7,9 @@
 #![allow(unused_imports)]
 #![allow(unused_mut)]
 
-use std::collections::{HashMap, HashSet};
-use super::parser::{SolidityAST, FunctionDefinition, Statement, ContractDefinition, Visibility};
 use super::cfg::CFGBuilder;
+use super::parser::{ContractDefinition, FunctionDefinition, SolidityAST, Statement, Visibility};
+use std::collections::{HashMap, HashSet};
 
 /// Taint sources - origins of potentially malicious data
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -48,7 +48,7 @@ pub enum TaintSink {
 pub struct TaintResult {
     pub source: TaintSource,
     pub sink: TaintSink,
-    pub path: Vec<String>,     // Variable names in taint propagation path
+    pub path: Vec<String>, // Variable names in taint propagation path
     pub source_line: usize,
     pub sink_line: usize,
     pub description: String,
@@ -132,7 +132,7 @@ impl DataFlowAnalyzer {
             if var.visibility == Visibility::Public {
                 self.taint_map.insert(
                     var.name.clone(),
-                    TaintState::tainted(TaintSource::StorageRead, &var.name)
+                    TaintState::tainted(TaintSource::StorageRead, &var.name),
                 );
             }
         }
@@ -151,25 +151,34 @@ impl DataFlowAnalyzer {
         // Initialize taint from function parameters (calldata is taint source)
         for param in &function.parameters {
             let source = TaintSource::FunctionParameter(param.name.clone());
-            local_taint.insert(
-                param.name.clone(),
-                TaintState::tainted(source, &param.name)
-            );
+            local_taint.insert(param.name.clone(), TaintState::tainted(source, &param.name));
         }
 
         // Add implicit taint sources
-        local_taint.insert("msg.sender".to_string(),
-            TaintState::tainted(TaintSource::MsgSender, "msg.sender"));
-        local_taint.insert("msg.value".to_string(),
-            TaintState::tainted(TaintSource::MsgValue, "msg.value"));
-        local_taint.insert("msg.data".to_string(),
-            TaintState::tainted(TaintSource::MsgData, "msg.data"));
-        local_taint.insert("block.timestamp".to_string(),
-            TaintState::tainted(TaintSource::BlockTimestamp, "block.timestamp"));
-        local_taint.insert("block.number".to_string(),
-            TaintState::tainted(TaintSource::BlockNumber, "block.number"));
-        local_taint.insert("tx.origin".to_string(),
-            TaintState::tainted(TaintSource::TxOrigin, "tx.origin"));
+        local_taint.insert(
+            "msg.sender".to_string(),
+            TaintState::tainted(TaintSource::MsgSender, "msg.sender"),
+        );
+        local_taint.insert(
+            "msg.value".to_string(),
+            TaintState::tainted(TaintSource::MsgValue, "msg.value"),
+        );
+        local_taint.insert(
+            "msg.data".to_string(),
+            TaintState::tainted(TaintSource::MsgData, "msg.data"),
+        );
+        local_taint.insert(
+            "block.timestamp".to_string(),
+            TaintState::tainted(TaintSource::BlockTimestamp, "block.timestamp"),
+        );
+        local_taint.insert(
+            "block.number".to_string(),
+            TaintState::tainted(TaintSource::BlockNumber, "block.number"),
+        );
+        local_taint.insert(
+            "tx.origin".to_string(),
+            TaintState::tainted(TaintSource::TxOrigin, "tx.origin"),
+        );
 
         // Analyze function body
         if let Some(body) = &function.body {
@@ -186,7 +195,7 @@ impl DataFlowAnalyzer {
     ) {
         for stmt in statements {
             match stmt {
-                Statement::VariableDeclaration { name, value,  .. } => {
+                Statement::VariableDeclaration { name, value, .. } => {
                     if let Some(val_expr) = value {
                         let taint = self.compute_expression_taint(val_expr, taint_map);
                         if taint.is_tainted {
@@ -195,7 +204,11 @@ impl DataFlowAnalyzer {
                     }
                 }
 
-                Statement::Assignment { target, value, line } => {
+                Statement::Assignment {
+                    target,
+                    value,
+                    line,
+                } => {
                     let taint = self.compute_expression_taint(value, taint_map);
                     if taint.is_tainted {
                         let propagated = taint.propagate(target);
@@ -221,7 +234,12 @@ impl DataFlowAnalyzer {
                     }
                 }
 
-                Statement::ExternalCall { target, function, value_transfer, line } => {
+                Statement::ExternalCall {
+                    target,
+                    function,
+                    value_transfer,
+                    line,
+                } => {
                     // Check if call target is tainted (dangerous!)
                     if let Some(target_taint) = taint_map.get(target) {
                         if target_taint.is_tainted {
@@ -268,7 +286,9 @@ impl DataFlowAnalyzer {
                     }
                 }
 
-                Statement::Require { condition, line, .. } => {
+                Statement::Require {
+                    condition, line, ..
+                } => {
                     // Check if require condition uses tainted data
                     let taint = self.compute_expression_taint(condition, taint_map);
                     if taint.is_tainted {
@@ -290,7 +310,12 @@ impl DataFlowAnalyzer {
                     }
                 }
 
-                Statement::If { condition, then_block, else_block, line } => {
+                Statement::If {
+                    condition,
+                    then_block,
+                    else_block,
+                    line,
+                } => {
                     // Analyze condition
                     let _cond_taint = self.compute_expression_taint(condition, taint_map);
 
@@ -318,7 +343,9 @@ impl DataFlowAnalyzer {
                             path: vec!["assembly".to_string()],
                             source_line: *line,
                             sink_line: *line,
-                            description: "Assembly block with storage access - manual review required".to_string(),
+                            description:
+                                "Assembly block with storage access - manual review required"
+                                    .to_string(),
                         });
                     }
 
@@ -347,7 +374,9 @@ impl DataFlowAnalyzer {
                             path: vec!["assembly".to_string()],
                             source_line: *line,
                             sink_line: *line,
-                            description: "Assembly contains contract creation - verify initialization".to_string(),
+                            description:
+                                "Assembly contains contract creation - verify initialization"
+                                    .to_string(),
                         });
                     }
                 }
@@ -381,10 +410,16 @@ impl DataFlowAnalyzer {
             result.merge(&TaintState::tainted(TaintSource::MsgData, "msg.data"));
         }
         if expr.contains("block.timestamp") {
-            result.merge(&TaintState::tainted(TaintSource::BlockTimestamp, "block.timestamp"));
+            result.merge(&TaintState::tainted(
+                TaintSource::BlockTimestamp,
+                "block.timestamp",
+            ));
         }
         if expr.contains("block.number") {
-            result.merge(&TaintState::tainted(TaintSource::BlockNumber, "block.number"));
+            result.merge(&TaintState::tainted(
+                TaintSource::BlockNumber,
+                "block.number",
+            ));
         }
         if expr.contains("tx.origin") {
             result.merge(&TaintState::tainted(TaintSource::TxOrigin, "tx.origin"));
@@ -409,26 +444,28 @@ impl DataFlowAnalyzer {
         // - Starts with underscore (common convention)
         // - Starts with s_ (storage prefix convention)
         // - Contains common state variable patterns
-        name.starts_with('_') ||
-        name.starts_with("s_") ||
-        name.contains("balance") ||
-        name.contains("Balance") ||
-        name.contains("owner") ||
-        name.contains("Owner") ||
-        name.contains("total") ||
-        name.contains("Total")
+        name.starts_with('_')
+            || name.starts_with("s_")
+            || name.contains("balance")
+            || name.contains("Balance")
+            || name.contains("owner")
+            || name.contains("Owner")
+            || name.contains("total")
+            || name.contains("Total")
     }
 
     /// Get all flows from a specific source type
     pub fn get_flows_from_source(&self, source_type: TaintSource) -> Vec<&TaintResult> {
-        self.results.iter()
+        self.results
+            .iter()
             .filter(|r| r.source == source_type)
             .collect()
     }
 
     /// Get all flows to a specific sink type
     pub fn get_flows_to_sink(&self, sink_type: TaintSink) -> Vec<&TaintResult> {
-        self.results.iter()
+        self.results
+            .iter()
             .filter(|r| r.sink == sink_type)
             .collect()
     }
@@ -436,12 +473,13 @@ impl DataFlowAnalyzer {
     /// Check if there's a dangerous taint flow (source to dangerous sink)
     pub fn has_dangerous_flow(&self) -> bool {
         self.results.iter().any(|r| {
-            matches!(r.sink,
-                TaintSink::ExternalCall |
-                TaintSink::DelegateCall |
-                TaintSink::Selfdestruct |
-                TaintSink::Create |
-                TaintSink::Create2
+            matches!(
+                r.sink,
+                TaintSink::ExternalCall
+                    | TaintSink::DelegateCall
+                    | TaintSink::Selfdestruct
+                    | TaintSink::Create
+                    | TaintSink::Create2
             )
         })
     }
@@ -506,19 +544,27 @@ impl InterproceduralAnalyzer {
                             format!("{}::{}", contract_prefix, callee)
                         };
 
-                        if let Some(callee_summary) = self.function_summaries.get(&callee_key).cloned() {
-                            if let Some(caller_summary) = self.function_summaries.get_mut(caller_key) {
+                        if let Some(callee_summary) =
+                            self.function_summaries.get(&callee_key).cloned()
+                        {
+                            if let Some(caller_summary) =
+                                self.function_summaries.get_mut(caller_key)
+                            {
                                 // Propagate: if callee returns tainted data, mark caller's summary
                                 if callee_summary.tainted_returns {
                                     let old_len = caller_summary.taint_sources.len();
-                                    caller_summary.taint_sources.extend(callee_summary.taint_sources.iter().cloned());
+                                    caller_summary
+                                        .taint_sources
+                                        .extend(callee_summary.taint_sources.iter().cloned());
                                     if caller_summary.taint_sources.len() > old_len {
                                         changed = true;
                                     }
                                 }
                                 // Propagate: if callee has dangerous sinks, caller inherits them
                                 let old_sink_len = caller_summary.taint_sinks.len();
-                                caller_summary.taint_sinks.extend(callee_summary.taint_sinks.iter().cloned());
+                                caller_summary
+                                    .taint_sinks
+                                    .extend(callee_summary.taint_sinks.iter().cloned());
                                 if caller_summary.taint_sinks.len() > old_sink_len {
                                     changed = true;
                                 }
@@ -541,7 +587,10 @@ impl InterproceduralAnalyzer {
 
         // All external/public function parameters are tainted from calldata
         for (i, _param) in function.parameters.iter().enumerate() {
-            if matches!(function.visibility, Visibility::External | Visibility::Public) {
+            if matches!(
+                function.visibility,
+                Visibility::External | Visibility::Public
+            ) {
                 tainted_params.push(i);
                 sources.insert(TaintSource::Calldata);
             }
@@ -579,11 +628,21 @@ impl InterproceduralAnalyzer {
                     }
                 }
                 Statement::Assignment { value, .. } => {
-                    if value.contains("msg.sender") { sources.insert(TaintSource::MsgSender); }
-                    if value.contains("msg.value") { sources.insert(TaintSource::MsgValue); }
-                    if value.contains("tx.origin") { sources.insert(TaintSource::TxOrigin); }
+                    if value.contains("msg.sender") {
+                        sources.insert(TaintSource::MsgSender);
+                    }
+                    if value.contains("msg.value") {
+                        sources.insert(TaintSource::MsgValue);
+                    }
+                    if value.contains("tx.origin") {
+                        sources.insert(TaintSource::TxOrigin);
+                    }
                 }
-                Statement::If { then_block, else_block, .. } => {
+                Statement::If {
+                    then_block,
+                    else_block,
+                    ..
+                } => {
                     self.scan_statements_for_sinks(then_block, sources, sinks);
                     if let Some(else_stmts) = else_block {
                         self.scan_statements_for_sinks(else_stmts, sources, sinks);
@@ -593,8 +652,12 @@ impl InterproceduralAnalyzer {
                     self.scan_statements_for_sinks(body, sources, sinks);
                 }
                 Statement::Assembly { content, .. } => {
-                    if content.contains("selfdestruct") { sinks.insert(TaintSink::Selfdestruct); }
-                    if content.contains("sstore") { sinks.insert(TaintSink::StateWrite); }
+                    if content.contains("selfdestruct") {
+                        sinks.insert(TaintSink::Selfdestruct);
+                    }
+                    if content.contains("sstore") {
+                        sinks.insert(TaintSink::StateWrite);
+                    }
                 }
                 _ => {}
             }
@@ -617,10 +680,16 @@ impl InterproceduralAnalyzer {
                 Statement::InternalCall { function, .. } => {
                     callees.push(function.clone());
                 }
-                Statement::ExternalCall { target, function, .. } => {
+                Statement::ExternalCall {
+                    target, function, ..
+                } => {
                     callees.push(format!("{}.{}", target, function));
                 }
-                Statement::If { then_block, else_block, .. } => {
+                Statement::If {
+                    then_block,
+                    else_block,
+                    ..
+                } => {
                     self.extract_callees_from_statements(then_block, callees);
                     if let Some(else_stmts) = else_block {
                         self.extract_callees_from_statements(else_stmts, callees);
@@ -636,7 +705,8 @@ impl InterproceduralAnalyzer {
 
     /// Get functions that can reach a target function
     pub fn get_callers(&self, target: &str) -> Vec<&String> {
-        self.call_graph.iter()
+        self.call_graph
+            .iter()
             .filter(|(_, callees)| callees.contains(&target.to_string()))
             .map(|(caller, _)| caller)
             .collect()
@@ -656,11 +726,12 @@ impl InterproceduralAnalyzer {
     /// Check if a function has any dangerous taint flows based on summaries.
     pub fn has_dangerous_flow_in(&self, function_key: &str) -> bool {
         if let Some(summary) = self.function_summaries.get(function_key) {
-            summary.taint_sinks.iter().any(|s| matches!(s,
-                TaintSink::ExternalCall |
-                TaintSink::DelegateCall |
-                TaintSink::Selfdestruct
-            ))
+            summary.taint_sinks.iter().any(|s| {
+                matches!(
+                    s,
+                    TaintSink::ExternalCall | TaintSink::DelegateCall | TaintSink::Selfdestruct
+                )
+            })
         } else {
             false
         }

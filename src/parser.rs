@@ -1,7 +1,7 @@
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::Result;
 use std::path::Path;
-use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum CompilerVersion {
@@ -138,11 +138,11 @@ impl SolidityParser {
     pub fn new() -> Self {
         Self
     }
-    
+
     pub fn read_file<P: AsRef<Path>>(&self, path: P) -> Result<String> {
         fs::read_to_string(path)
     }
-    
+
     pub fn parse_lines(&self, content: &str) -> Vec<(usize, String)> {
         content
             .lines()
@@ -150,57 +150,63 @@ impl SolidityParser {
             .map(|(idx, line)| (idx + 1, line.to_string()))
             .collect()
     }
-    
+
     #[allow(dead_code)]
     pub fn extract_functions(&self, content: &str) -> Vec<(usize, String)> {
         let mut functions = Vec::new();
         let lines = self.parse_lines(content);
-        
+
         for (line_num, line) in lines {
             let trimmed = line.trim();
             if trimmed.starts_with("function ") {
                 functions.push((line_num, line));
             }
         }
-        
+
         functions
     }
-    
+
     #[allow(dead_code)]
     pub fn extract_modifiers(&self, content: &str) -> Vec<(usize, String)> {
         let mut modifiers = Vec::new();
         let lines = self.parse_lines(content);
-        
+
         for (line_num, line) in lines {
             let trimmed = line.trim();
             if trimmed.starts_with("modifier ") {
                 modifiers.push((line_num, line));
             }
         }
-        
+
         modifiers
     }
-    
+
     #[allow(dead_code)]
     pub fn extract_state_variables(&self, content: &str) -> Vec<(usize, String)> {
         let mut variables = Vec::new();
         let lines = self.parse_lines(content);
-        
+
         for (line_num, line) in lines {
             let trimmed = line.trim();
             // Basic detection of state variables
-            if (trimmed.contains("uint") || trimmed.contains("int") || 
-                trimmed.contains("bool") || trimmed.contains("address") ||
-                trimmed.contains("string") || trimmed.contains("bytes")) &&
-               !trimmed.starts_with("//") && !trimmed.starts_with("function") &&
-               !trimmed.starts_with("event") && !trimmed.starts_with("modifier") {
+            if (trimmed.contains("uint")
+                || trimmed.contains("int")
+                || trimmed.contains("bool")
+                || trimmed.contains("address")
+                || trimmed.contains("string")
+                || trimmed.contains("bytes"))
+                && !trimmed.starts_with("//")
+                && !trimmed.starts_with("function")
+                && !trimmed.starts_with("event")
+                && !trimmed.starts_with("modifier")
+            {
                 variables.push((line_num, line));
             }
         }
-        
+
         variables
     }
-    
+
     #[allow(dead_code)]
     pub fn get_contract_name(&self, content: &str) -> Option<String> {
         for line in content.lines() {
@@ -208,14 +214,15 @@ impl SolidityParser {
             if trimmed.starts_with("contract ") {
                 if let Some(name) = trimmed
                     .strip_prefix("contract ")
-                    .and_then(|s| s.split_whitespace().next()) {
+                    .and_then(|s| s.split_whitespace().next())
+                {
                     return Some(name.to_string());
                 }
             }
         }
         None
     }
-    
+
     pub fn get_pragma_version(&self, content: &str) -> Option<String> {
         for line in content.lines() {
             let trimmed = line.trim();
@@ -225,7 +232,7 @@ impl SolidityParser {
         }
         None
     }
-    
+
     pub fn get_compiler_version(&self, content: &str) -> Option<CompilerVersion> {
         if let Some(pragma) = self.get_pragma_version(content) {
             if pragma.contains("0.4.") {
@@ -242,24 +249,28 @@ impl SolidityParser {
         }
         None
     }
-    
+
     pub fn get_detailed_version(&self, content: &str) -> Option<DetailedVersion> {
         if let Some(pragma) = self.get_pragma_version(content) {
             // Extract version number from pragma
             // Handles formats like: "^0.8.19", ">=0.8.0", "0.8.20", etc.
             let version_regex = regex::Regex::new(r"(\d+)\.(\d+)\.(\d+)").ok()?;
-            
+
             if let Some(captures) = version_regex.captures(&pragma) {
                 let major = captures.get(1)?.as_str().parse().ok()?;
                 let minor = captures.get(2)?.as_str().parse().ok()?;
                 let patch = captures.get(3)?.as_str().parse().ok()?;
-                
-                return Some(DetailedVersion { major, minor, patch });
+
+                return Some(DetailedVersion {
+                    major,
+                    minor,
+                    patch,
+                });
             }
         }
         None
     }
-    
+
     /// Extract comprehensive compiler information from contract source.
     /// Returns None if no pragma solidity statement is found.
     pub fn extract_compiler_info(&self, content: &str) -> Option<CompilerInfo> {
@@ -283,7 +294,11 @@ impl SolidityParser {
                 PragmaConstraint::GreaterEqual
             } else if after_solidity.starts_with('>') || after_solidity.contains('>') {
                 PragmaConstraint::Greater
-            } else if after_solidity.chars().next().map_or(false, |c| c.is_ascii_digit()) {
+            } else if after_solidity
+                .chars()
+                .next()
+                .map_or(false, |c| c.is_ascii_digit())
+            {
                 PragmaConstraint::Exact
             } else {
                 PragmaConstraint::Other
@@ -306,17 +321,25 @@ impl SolidityParser {
         };
 
         let latest_recommended = "0.8.28".to_string();
-        let upgrade_recommended = !(detailed.major == 0 && detailed.minor == 8 && detailed.patch >= 28);
+        let upgrade_recommended =
+            !(detailed.major == 0 && detailed.minor == 8 && detailed.patch >= 28);
 
         // Determine EVM features
         let evm_features = EvmFeatures {
             overflow_protection: detailed.minor >= 8 || detailed.major > 0,
             try_catch: (detailed.minor >= 6 || detailed.major > 0),
-            custom_errors: (detailed.minor > 8 || (detailed.minor == 8 && detailed.patch >= 4)) || detailed.major > 0,
-            user_defined_value_types: (detailed.minor > 8 || (detailed.minor == 8 && detailed.patch >= 8)) || detailed.major > 0,
-            push0_opcode: (detailed.minor > 8 || (detailed.minor == 8 && detailed.patch >= 20)) || detailed.major > 0,
-            transient_storage: (detailed.minor > 8 || (detailed.minor == 8 && detailed.patch >= 24)) || detailed.major > 0,
-            immutable_vars: (detailed.minor > 6 || (detailed.minor == 6 && detailed.patch >= 5)) || detailed.major > 0,
+            custom_errors: (detailed.minor > 8 || (detailed.minor == 8 && detailed.patch >= 4))
+                || detailed.major > 0,
+            user_defined_value_types: (detailed.minor > 8
+                || (detailed.minor == 8 && detailed.patch >= 8))
+                || detailed.major > 0,
+            push0_opcode: (detailed.minor > 8 || (detailed.minor == 8 && detailed.patch >= 20))
+                || detailed.major > 0,
+            transient_storage: (detailed.minor > 8
+                || (detailed.minor == 8 && detailed.patch >= 24))
+                || detailed.major > 0,
+            immutable_vars: (detailed.minor > 6 || (detailed.minor == 6 && detailed.patch >= 5))
+                || detailed.major > 0,
             abi_coder_v2_default: detailed.minor >= 8 || detailed.major > 0,
         };
 
@@ -345,7 +368,8 @@ impl SolidityParser {
             VersionAge::Recent if known_cves > 0 => format!(
                 "Solidity {} has {} minor known issue{}. \
                  Upgrading to {} is recommended for the latest fixes.",
-                version_string, known_cves,
+                version_string,
+                known_cves,
                 if known_cves > 1 { "s" } else { "" },
                 latest_recommended
             ),
@@ -384,43 +408,75 @@ impl SolidityParser {
             (0, 8) => {
                 let patch = version.patch;
                 if patch <= 12 {
-                    vulnerabilities.push("Version < 0.8.13: Vulnerable to optimizer bug with inline assembly".to_string());
+                    vulnerabilities.push(
+                        "Version < 0.8.13: Vulnerable to optimizer bug with inline assembly"
+                            .to_string(),
+                    );
                 }
                 if patch <= 14 {
-                    vulnerabilities.push("Version < 0.8.15: ABI coder v2 issues with tuples".to_string());
+                    vulnerabilities
+                        .push("Version < 0.8.15: ABI coder v2 issues with tuples".to_string());
                 }
                 if patch <= 16 {
-                    vulnerabilities.push("Version < 0.8.17: Vulnerable to storage write reentrancy in libraries".to_string());
+                    vulnerabilities.push(
+                        "Version < 0.8.17: Vulnerable to storage write reentrancy in libraries"
+                            .to_string(),
+                    );
                 }
                 if patch <= 18 {
-                    vulnerabilities.push("Version < 0.8.19: Optimizer bug affecting constant expressions".to_string());
+                    vulnerabilities.push(
+                        "Version < 0.8.19: Optimizer bug affecting constant expressions"
+                            .to_string(),
+                    );
                 }
                 if patch <= 19 {
-                    vulnerabilities.push("Version < 0.8.20: Missing check in bytes.concat() with dynamic arrays".to_string());
+                    vulnerabilities.push(
+                        "Version < 0.8.20: Missing check in bytes.concat() with dynamic arrays"
+                            .to_string(),
+                    );
                 }
                 if patch <= 20 {
-                    vulnerabilities.push("Version < 0.8.21: Potential issues with using for directive and libraries".to_string());
+                    vulnerabilities.push(
+                        "Version < 0.8.21: Potential issues with using for directive and libraries"
+                            .to_string(),
+                    );
                 }
                 if patch <= 21 {
-                    vulnerabilities.push("Version < 0.8.22: Head overflow bug in calldata tuple decoder".to_string());
+                    vulnerabilities.push(
+                        "Version < 0.8.22: Head overflow bug in calldata tuple decoder".to_string(),
+                    );
                 }
                 if patch == 22 {
-                    vulnerabilities.push("Version 0.8.22: Contains unchecked loop increment overflow bug".to_string());
+                    vulnerabilities.push(
+                        "Version 0.8.22: Contains unchecked loop increment overflow bug"
+                            .to_string(),
+                    );
                 }
                 if patch <= 23 {
-                    vulnerabilities.push("Version < 0.8.24: Missing check for extra data in CREATE2 deployments".to_string());
+                    vulnerabilities.push(
+                        "Version < 0.8.24: Missing check for extra data in CREATE2 deployments"
+                            .to_string(),
+                    );
                 }
                 if patch <= 24 {
-                    vulnerabilities.push("Version < 0.8.25: Optimizer bug with multiple memory copies".to_string());
+                    vulnerabilities.push(
+                        "Version < 0.8.25: Optimizer bug with multiple memory copies".to_string(),
+                    );
                 }
                 if patch <= 25 {
-                    vulnerabilities.push("Version < 0.8.26: Potential issues with transient storage (TSTORE/TLOAD)".to_string());
+                    vulnerabilities.push(
+                        "Version < 0.8.26: Potential issues with transient storage (TSTORE/TLOAD)"
+                            .to_string(),
+                    );
                 }
                 if patch == 27 {
                     vulnerabilities.push("Version 0.8.27: Known issue with constructor visibility (deprecated but still compilable)".to_string());
                 }
                 if patch <= 27 {
-                    vulnerabilities.push("Version < 0.8.28: Vulnerable to specific edge cases in unchecked blocks".to_string());
+                    vulnerabilities.push(
+                        "Version < 0.8.28: Vulnerable to specific edge cases in unchecked blocks"
+                            .to_string(),
+                    );
                 }
                 if patch == 29 {
                     vulnerabilities.push("Version 0.8.29: Memory expansion cost miscalculation in specific scenarios".to_string());
@@ -432,23 +488,32 @@ impl SolidityParser {
 
             // Solidity 0.7.x vulnerabilities
             (0, 7) => {
-                vulnerabilities.push("Version 0.7.x: No automatic overflow/underflow protection - use SafeMath".to_string());
+                vulnerabilities.push(
+                    "Version 0.7.x: No automatic overflow/underflow protection - use SafeMath"
+                        .to_string(),
+                );
                 if version.patch < 6 {
-                    vulnerabilities.push("Version < 0.7.6: Vulnerable to shift operation bugs".to_string());
+                    vulnerabilities
+                        .push("Version < 0.7.6: Vulnerable to shift operation bugs".to_string());
                 }
             }
 
             // Solidity 0.6.x vulnerabilities
             (0, 6) => {
-                vulnerabilities.push("Version 0.6.x: No automatic overflow/underflow protection".to_string());
+                vulnerabilities
+                    .push("Version 0.6.x: No automatic overflow/underflow protection".to_string());
                 if version.patch < 12 {
-                    vulnerabilities.push("Version < 0.6.12: Array slice bug can cause data corruption".to_string());
+                    vulnerabilities.push(
+                        "Version < 0.6.12: Array slice bug can cause data corruption".to_string(),
+                    );
                 }
             }
 
             // Solidity 0.5.x vulnerabilities
             (0, 5) => {
-                vulnerabilities.push("Version 0.5.x: Outdated - many security improvements missing".to_string());
+                vulnerabilities.push(
+                    "Version 0.5.x: Outdated - many security improvements missing".to_string(),
+                );
                 if version.patch < 17 {
                     vulnerabilities.push("Version < 0.5.17: ABIEncoderV2 bugs present".to_string());
                 }
@@ -456,8 +521,12 @@ impl SolidityParser {
 
             // Solidity 0.4.x vulnerabilities
             (0, 4) => {
-                vulnerabilities.push("Version 0.4.x: CRITICALLY OUTDATED - Multiple severe vulnerabilities".to_string());
-                vulnerabilities.push("No constructor keyword - using contract name is deprecated".to_string());
+                vulnerabilities.push(
+                    "Version 0.4.x: CRITICALLY OUTDATED - Multiple severe vulnerabilities"
+                        .to_string(),
+                );
+                vulnerabilities
+                    .push("No constructor keyword - using contract name is deprecated".to_string());
                 vulnerabilities.push("No automatic overflow protection".to_string());
                 vulnerabilities.push("Delegatecall return value not properly checked".to_string());
             }
@@ -467,7 +536,7 @@ impl SolidityParser {
 
         vulnerabilities
     }
-    
+
     #[allow(dead_code)]
     pub fn remove_comments(&self, content: &str) -> String {
         let mut result = String::new();
@@ -528,7 +597,7 @@ impl SolidityParser {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_extract_functions() {
         let parser = SolidityParser::new();
@@ -546,7 +615,7 @@ contract Test {
         let functions = parser.extract_functions(content);
         assert_eq!(functions.len(), 2);
     }
-    
+
     #[test]
     fn test_get_contract_name() {
         let parser = SolidityParser::new();
@@ -554,7 +623,7 @@ contract Test {
         let name = parser.get_contract_name(content);
         assert_eq!(name, Some("MyContract".to_string()));
     }
-    
+
     #[test]
     fn test_remove_comments() {
         let parser = SolidityParser::new();
@@ -574,30 +643,66 @@ uint256 public value; // inline comment
         let parser = SolidityParser::new();
         let content = r#"string url = "http://example.com"; // real comment"#;
         let cleaned = parser.remove_comments(content);
-        assert!(cleaned.contains("http://example.com"), "URL inside string was incorrectly stripped");
-        assert!(!cleaned.contains("real comment"), "Comment after string was not stripped");
+        assert!(
+            cleaned.contains("http://example.com"),
+            "URL inside string was incorrectly stripped"
+        );
+        assert!(
+            !cleaned.contains("real comment"),
+            "Comment after string was not stripped"
+        );
     }
 
     #[test]
     fn test_version_vulnerable_cumulative() {
         let parser = SolidityParser::new();
         // Version 0.8.5 should fire ALL CVEs for patches <= 5
-        let version = DetailedVersion { major: 0, minor: 8, patch: 5 };
+        let version = DetailedVersion {
+            major: 0,
+            minor: 8,
+            patch: 5,
+        };
         let vulns = parser.is_version_vulnerable(&version);
-        assert!(vulns.len() >= 5, "Expected at least 5 CVEs for 0.8.5, got {}: {:?}", vulns.len(), vulns);
-        assert!(vulns.iter().any(|v| v.contains("0.8.13")), "Missing optimizer bug CVE");
-        assert!(vulns.iter().any(|v| v.contains("0.8.15")), "Missing ABI coder CVE");
-        assert!(vulns.iter().any(|v| v.contains("0.8.17")), "Missing storage write CVE");
+        assert!(
+            vulns.len() >= 5,
+            "Expected at least 5 CVEs for 0.8.5, got {}: {:?}",
+            vulns.len(),
+            vulns
+        );
+        assert!(
+            vulns.iter().any(|v| v.contains("0.8.13")),
+            "Missing optimizer bug CVE"
+        );
+        assert!(
+            vulns.iter().any(|v| v.contains("0.8.15")),
+            "Missing ABI coder CVE"
+        );
+        assert!(
+            vulns.iter().any(|v| v.contains("0.8.17")),
+            "Missing storage write CVE"
+        );
     }
 
     #[test]
     fn test_version_vulnerable_latest_has_fewer() {
         let parser = SolidityParser::new();
-        let old = DetailedVersion { major: 0, minor: 8, patch: 5 };
-        let new = DetailedVersion { major: 0, minor: 8, patch: 26 };
+        let old = DetailedVersion {
+            major: 0,
+            minor: 8,
+            patch: 5,
+        };
+        let new = DetailedVersion {
+            major: 0,
+            minor: 8,
+            patch: 26,
+        };
         let old_vulns = parser.is_version_vulnerable(&old);
         let new_vulns = parser.is_version_vulnerable(&new);
-        assert!(old_vulns.len() > new_vulns.len(),
-            "0.8.5 should have more CVEs than 0.8.26: {} vs {}", old_vulns.len(), new_vulns.len());
+        assert!(
+            old_vulns.len() > new_vulns.len(),
+            "0.8.5 should have more CVEs than 0.8.26: {} vs {}",
+            old_vulns.len(),
+            new_vulns.len()
+        );
     }
 }

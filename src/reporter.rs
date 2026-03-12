@@ -1,9 +1,9 @@
-use std::path::{Path, PathBuf};
-use std::collections::HashMap;
 use colored::*;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
-use crate::vulnerabilities::{Vulnerability, VulnerabilitySeverity, VulnerabilityConfidence};
 use crate::parser::CompilerInfo;
+use crate::vulnerabilities::{Vulnerability, VulnerabilityConfidence, VulnerabilitySeverity};
 
 pub struct VulnerabilityReporter {
     format: String,
@@ -24,27 +24,30 @@ impl VulnerabilityReporter {
     pub fn set_compiler_info(&mut self, file_path: &Path, info: CompilerInfo) {
         self.compiler_infos.insert(file_path.to_path_buf(), info);
     }
-    
+
     pub fn generate_clean_report(&self, file_path: &Path, vulnerabilities: &[Vulnerability]) {
         if vulnerabilities.is_empty() {
             println!("No vulnerabilities found in {}", file_path.display());
             return;
         }
-        
+
         println!("# Smart Contract Vulnerability Report");
         println!();
         println!("**File**: `{}`", file_path.display());
         println!("**Total Vulnerabilities**: {}", vulnerabilities.len());
-        println!("**Analysis Date**: {}", chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC"));
+        println!(
+            "**Analysis Date**: {}",
+            chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC")
+        );
         println!();
-        
+
         // Group by severity
         let mut critical = Vec::new();
         let mut high = Vec::new();
         let mut medium = Vec::new();
         let mut low = Vec::new();
         let mut info = Vec::new();
-        
+
         for vuln in vulnerabilities {
             match vuln.severity {
                 VulnerabilitySeverity::Critical => critical.push(vuln),
@@ -54,19 +57,29 @@ impl VulnerabilityReporter {
                 VulnerabilitySeverity::Info => info.push(vuln),
             }
         }
-        
+
         // Print summary
         println!("## Vulnerability Summary");
         println!();
         println!("| Severity | Count |");
         println!("|----------|-------|");
-        if !critical.is_empty() { println!("| **Critical** | {} |", critical.len()); }
-        if !high.is_empty() { println!("| **High** | {} |", high.len()); }
-        if !medium.is_empty() { println!("| **Medium** | {} |", medium.len()); }
-        if !low.is_empty() { println!("| **Low** | {} |", low.len()); }
-        if !info.is_empty() { println!("| **Info** | {} |", info.len()); }
+        if !critical.is_empty() {
+            println!("| **Critical** | {} |", critical.len());
+        }
+        if !high.is_empty() {
+            println!("| **High** | {} |", high.len());
+        }
+        if !medium.is_empty() {
+            println!("| **Medium** | {} |", medium.len());
+        }
+        if !low.is_empty() {
+            println!("| **Low** | {} |", low.len());
+        }
+        if !info.is_empty() {
+            println!("| **Info** | {} |", info.len());
+        }
         println!();
-        
+
         // Print vulnerabilities by severity
         if !critical.is_empty() {
             self.print_severity_section("Critical Vulnerabilities", &critical, "🔴");
@@ -84,16 +97,17 @@ impl VulnerabilityReporter {
             self.print_severity_section("Informational", &info, "🔵");
         }
     }
-    
+
     fn print_severity_section(&self, title: &str, vulnerabilities: &[&Vulnerability], emoji: &str) {
         println!("## {emoji} {title}");
         println!();
-        
+
         for (index, vuln) in vulnerabilities.iter().enumerate() {
-            println!("### {}.{} {} (Line {})", 
-                emoji, 
-                index + 1, 
-                vuln.title, 
+            println!(
+                "### {}.{} {} (Line {})",
+                emoji,
+                index + 1,
+                vuln.title,
                 vuln.line_number
             );
             println!();
@@ -112,7 +126,7 @@ impl VulnerabilityReporter {
             println!();
         }
     }
-    
+
     pub fn add_file_results(&mut self, file_path: &PathBuf, vulnerabilities: Vec<Vulnerability>) {
         // Print results immediately for better user experience
         if !vulnerabilities.is_empty() {
@@ -121,7 +135,8 @@ impl VulnerabilityReporter {
                 _ => self.print_text_results(file_path, &vulnerabilities),
             }
         } else {
-            println!("{} No vulnerabilities found in {}",
+            println!(
+                "{} No vulnerabilities found in {}",
                 "✅".green(),
                 file_path.display()
             );
@@ -132,12 +147,18 @@ impl VulnerabilityReporter {
 
     /// Add results without printing to stdout.
     /// Used when output format is JSON/SARIF but we still need results for markdown report generation.
-    pub fn add_file_results_silent(&mut self, file_path: &Path, vulnerabilities: Vec<Vulnerability>) {
-        self.results.insert(file_path.to_path_buf(), vulnerabilities);
+    pub fn add_file_results_silent(
+        &mut self,
+        file_path: &Path,
+        vulnerabilities: Vec<Vulnerability>,
+    ) {
+        self.results
+            .insert(file_path.to_path_buf(), vulnerabilities);
     }
-    
+
     fn print_text_results(&self, file_path: &Path, vulnerabilities: &[Vulnerability]) {
-        println!("\n{} {} (Line-by-line Analysis)",
+        println!(
+            "\n{} {} (Line-by-line Analysis)",
             "🔍 SCAN RESULTS FOR".bold().bright_blue(),
             file_path.display().to_string().bright_white().bold()
         );
@@ -148,7 +169,8 @@ impl VulnerabilityReporter {
         for vuln in vulnerabilities {
             // Print category header if it's a new category
             if current_category.as_ref() != Some(&vuln.category) {
-                println!("\n{} {}",
+                println!(
+                    "\n{} {}",
                     "📋".bright_yellow(),
                     vuln.category.as_str().bright_yellow().bold()
                 );
@@ -173,14 +195,16 @@ impl VulnerabilityReporter {
                 VulnerabilityConfidence::Low => "○",
             };
 
-            println!("\n  {} {} {} [{}]",
+            println!(
+                "\n  {} {} {} [{}]",
                 self.get_severity_icon(&vuln.severity),
                 confidence_icon.bright_white(),
                 vuln.title.color(vuln.severity.color()).bold(),
                 location.bright_white().bold()
             );
 
-            println!("     {}: {}",
+            println!(
+                "     {}: {}",
                 "Description".bright_cyan().bold(),
                 vuln.description
             );
@@ -189,8 +213,11 @@ impl VulnerabilityReporter {
             if let Some(ref context_before) = vuln.context_before {
                 println!("     {}:", "Context".bright_blue().bold());
                 for (i, line) in context_before.lines().enumerate() {
-                    let line_num = vuln.line_number.saturating_sub(context_before.lines().count() - i);
-                    println!("       {} │ {}",
+                    let line_num = vuln
+                        .line_number
+                        .saturating_sub(context_before.lines().count() - i);
+                    println!(
+                        "       {} │ {}",
                         format!("{line_num:>4}").dimmed(),
                         line.dimmed()
                     );
@@ -199,7 +226,8 @@ impl VulnerabilityReporter {
 
             // Print the vulnerable code with line number
             println!("     {}:", "Vulnerable Code".bright_magenta().bold());
-            println!("       {} │ {}",
+            println!(
+                "       {} │ {}",
                 format!("{:>4}", vuln.line_number).bright_red(),
                 vuln.code_snippet.bright_white().bold()
             );
@@ -208,14 +236,16 @@ impl VulnerabilityReporter {
             if let Some(ref context_after) = vuln.context_after {
                 for (i, line) in context_after.lines().enumerate() {
                     let line_num = vuln.line_number + 1 + i;
-                    println!("       {} │ {}",
+                    println!(
+                        "       {} │ {}",
                         format!("{line_num:>4}").dimmed(),
                         line.dimmed()
                     );
                 }
             }
 
-            println!("     {}: {}",
+            println!(
+                "     {}: {}",
                 "Recommendation".bright_green().bold(),
                 vuln.recommendation
             );
@@ -223,18 +253,24 @@ impl VulnerabilityReporter {
             // CVSS score and priority label
             let priority_label = if let Some(cvss) = vuln.cvss_score {
                 let priority_score = cvss * vuln.confidence_percent as f64 / 100.0;
-                if priority_score >= 7.0 { "P1".bright_red().bold() }
-                else if priority_score >= 4.0 { "P2".bright_yellow().bold() }
-                else { "P3".dimmed().bold() }
+                if priority_score >= 7.0 {
+                    "P1".bright_red().bold()
+                } else if priority_score >= 4.0 {
+                    "P2".bright_yellow().bold()
+                } else {
+                    "P3".dimmed().bold()
+                }
             } else {
                 "P3".dimmed().bold()
             };
 
-            let cvss_display = vuln.cvss_score
+            let cvss_display = vuln
+                .cvss_score
                 .map(|s| format!("{s:.1}"))
                 .unwrap_or_else(|| "-".to_string());
 
-            println!("     {}: {} | {}: {} | {}: {} | {}: {}",
+            println!(
+                "     {}: {} | {}: {} | {}: {} | {}: {}",
                 "Severity".bright_red().bold(),
                 vuln.severity.as_str().color(vuln.severity.color()).bold(),
                 "CVSS".bright_cyan().bold(),
@@ -247,7 +283,8 @@ impl VulnerabilityReporter {
 
             // Show exploit references if any
             if !vuln.exploit_references.is_empty() {
-                println!("     {}: {}",
+                println!(
+                    "     {}: {}",
                     "Real-world exploits".bright_red().bold(),
                     vuln.exploit_references.join("; ")
                 );
@@ -264,7 +301,7 @@ impl VulnerabilityReporter {
             VulnerabilityConfidence::Low => "Low".dimmed(),
         }
     }
-    
+
     fn print_json_results(&self, file_path: &Path, vulnerabilities: &[Vulnerability]) {
         // The new fields (cvss_score, cvss_vector, exploit_references, attack_path)
         // are already included via serde Serialize on the Vulnerability struct
@@ -277,11 +314,11 @@ impl VulnerabilityReporter {
 
         println!("{}", serde_json::to_string_pretty(&json_output).unwrap());
     }
-    
+
     pub fn print_summary(&self) {
         let total_files = self.results.len();
         let total_vulnerabilities: usize = self.results.values().map(|v| v.len()).sum();
-        
+
         if self.format == "json" {
             let summary = serde_json::json!({
                 "summary": {
@@ -294,93 +331,126 @@ impl VulnerabilityReporter {
             println!("\n{}", serde_json::to_string_pretty(&summary).unwrap());
             return;
         }
-        
+
         // Text format summary
         println!("\n{}", "📊 VULNERABILITY SCAN SUMMARY".bright_blue().bold());
         println!("{}", "━".repeat(50).bright_blue());
-        
-        println!("📁 Files scanned: {}", total_files.to_string().bright_white().bold());
-        println!("🔍 Total issues found: {}", 
+
+        println!(
+            "📁 Files scanned: {}",
+            total_files.to_string().bright_white().bold()
+        );
+        println!(
+            "🔍 Total issues found: {}",
             if total_vulnerabilities > 0 {
                 total_vulnerabilities.to_string().bright_red().bold()
             } else {
                 total_vulnerabilities.to_string().bright_green().bold()
             }
         );
-        
+
         if total_vulnerabilities > 0 {
             println!("\n{}", "🎯 SEVERITY BREAKDOWN".bright_yellow().bold());
             let severity_counts = self.get_severity_breakdown();
             for (severity, count) in [
-                (VulnerabilitySeverity::Critical, severity_counts.get("CRITICAL").unwrap_or(&0)),
-                (VulnerabilitySeverity::High, severity_counts.get("HIGH").unwrap_or(&0)),
-                (VulnerabilitySeverity::Medium, severity_counts.get("MEDIUM").unwrap_or(&0)),
-                (VulnerabilitySeverity::Low, severity_counts.get("LOW").unwrap_or(&0)),
-                (VulnerabilitySeverity::Info, severity_counts.get("INFO").unwrap_or(&0)),
+                (
+                    VulnerabilitySeverity::Critical,
+                    severity_counts.get("CRITICAL").unwrap_or(&0),
+                ),
+                (
+                    VulnerabilitySeverity::High,
+                    severity_counts.get("HIGH").unwrap_or(&0),
+                ),
+                (
+                    VulnerabilitySeverity::Medium,
+                    severity_counts.get("MEDIUM").unwrap_or(&0),
+                ),
+                (
+                    VulnerabilitySeverity::Low,
+                    severity_counts.get("LOW").unwrap_or(&0),
+                ),
+                (
+                    VulnerabilitySeverity::Info,
+                    severity_counts.get("INFO").unwrap_or(&0),
+                ),
             ] {
                 if *count > 0 {
-                    println!("  {} {}: {}", 
+                    println!(
+                        "  {} {}: {}",
                         self.get_severity_icon(&severity),
                         severity.as_str().color(severity.color()).bold(),
                         count.to_string().bright_white().bold()
                     );
                 }
             }
-            
+
             println!("\n{}", "📂 CATEGORY BREAKDOWN".bright_cyan().bold());
             let mut categories: Vec<_> = self.get_category_breakdown().into_iter().collect();
             categories.sort_by(|a, b| b.1.cmp(&a.1)); // Sort by count descending
-            
-            for (category, count) in categories.iter().take(10) { // Show top 10 categories
+
+            for (category, count) in categories.iter().take(10) {
+                // Show top 10 categories
                 if *count > 0 {
-                    println!("  • {}: {}", 
-                        category.bright_white(), 
+                    println!(
+                        "  • {}: {}",
+                        category.bright_white(),
                         count.to_string().bright_yellow().bold()
                     );
                 }
             }
         }
-        
+
         println!("\n{}", "━".repeat(50).bright_blue());
-        
+
         if total_vulnerabilities > 0 {
             println!("⚠️  {}", "Review the issues above and follow the recommendations to improve your smart contract security.".bright_yellow());
         } else {
-            println!("✅ {}", "Great! No obvious vulnerabilities detected in the scanned contracts.".bright_green());
+            println!(
+                "✅ {}",
+                "Great! No obvious vulnerabilities detected in the scanned contracts."
+                    .bright_green()
+            );
         }
-        
+
         println!("{}", "🔒 Remember: This tool provides basic vulnerability detection. Consider professional audits for production contracts.".bright_blue());
         println!();
         println!("{}", "━".repeat(50).bright_blue());
         println!("🌐 For a more in-depth analysis and professional audit of your smart contract");
-        println!("   vulnerabilities, visit {} or contact the team directly.", "41swara.com".bright_cyan().bold());
+        println!(
+            "   vulnerabilities, visit {} or contact the team directly.",
+            "41swara.com".bright_cyan().bold()
+        );
         println!("{}", "━".repeat(50).bright_blue());
     }
-    
+
     fn get_severity_breakdown(&self) -> HashMap<String, usize> {
         let mut breakdown = HashMap::new();
-        
+
         for vulnerabilities in self.results.values() {
             for vuln in vulnerabilities {
-                *breakdown.entry(vuln.severity.as_str().to_string()).or_insert(0) += 1;
+                *breakdown
+                    .entry(vuln.severity.as_str().to_string())
+                    .or_insert(0) += 1;
             }
         }
-        
+
         breakdown
     }
-    
+
     fn get_category_breakdown(&self) -> HashMap<String, usize> {
         let mut breakdown = HashMap::new();
-        
+
         for vulnerabilities in self.results.values() {
             for vuln in vulnerabilities {
-                *breakdown.entry(vuln.category.as_str().to_string()).or_insert(0) += 1;
+                *breakdown
+                    .entry(vuln.category.as_str().to_string())
+                    .or_insert(0) += 1;
             }
         }
-        
+
         breakdown
     }
-    
+
     fn get_severity_icon(&self, severity: &VulnerabilitySeverity) -> &str {
         match severity {
             VulnerabilitySeverity::Critical => "🚨",
@@ -405,17 +475,22 @@ impl VulnerabilityReporter {
         report.push_str("**Scanner Version**: 0.8.1\n");
         report.push_str(&format!("**Analysis Date**: {now}\n"));
         report.push_str(&format!("**Files Scanned**: {total_files}\n"));
-        report.push_str(&format!("**Total Vulnerabilities**: {total_vulnerabilities}\n\n"));
+        report.push_str(&format!(
+            "**Total Vulnerabilities**: {total_vulnerabilities}\n\n"
+        ));
 
         // Compiler Version Analysis section
         if !self.compiler_infos.is_empty() {
             report.push_str("## Compiler Version Analysis\n\n");
             report.push_str("| File | Solidity Version | Constraint | Status | Known Issues | Recommendation |\n");
-            report.push_str("|------|-----------------|------------|--------|-------------|----------------|\n");
+            report.push_str(
+                "|------|-----------------|------------|--------|-------------|----------------|\n",
+            );
             let mut sorted_infos: Vec<_> = self.compiler_infos.iter().collect();
             sorted_infos.sort_by_key(|(path, _)| (*path).clone());
             for (file_path, info) in &sorted_infos {
-                let file_display = file_path.file_name()
+                let file_display = file_path
+                    .file_name()
                     .and_then(|n| n.to_str())
                     .unwrap_or("unknown");
                 let status_icon = match info.age {
@@ -430,7 +505,8 @@ impl VulnerabilityReporter {
                 } else {
                     "Up to date".to_string()
                 };
-                report.push_str(&format!("| `{}` | {} | {} | {} | {} | {} |\n",
+                report.push_str(&format!(
+                    "| `{}` | {} | {} | {} | {} | {} |\n",
                     file_display,
                     info.version_string,
                     info.constraint,
@@ -443,7 +519,9 @@ impl VulnerabilityReporter {
         }
 
         if total_vulnerabilities == 0 {
-            report.push_str("No vulnerabilities detected. The scanned contracts passed all checks.\n\n");
+            report.push_str(
+                "No vulnerabilities detected. The scanned contracts passed all checks.\n\n",
+            );
             report.push_str("> **Note**: This is an automated scan. Consider a professional audit for production contracts.\n\n");
             report.push_str("---\n\n");
             report.push_str("## Need a Deeper Analysis?\n\n");
@@ -509,7 +587,8 @@ impl VulnerabilityReporter {
                 ("💡 Low", VulnerabilitySeverity::Low),
                 ("ℹ️  Info", VulnerabilitySeverity::Info),
             ] {
-                let matching: Vec<&Vulnerability> = vulnerabilities.iter()
+                let matching: Vec<&Vulnerability> = vulnerabilities
+                    .iter()
                     .filter(|v| v.severity == severity)
                     .collect();
                 if !matching.is_empty() {
@@ -540,16 +619,32 @@ impl VulnerabilityReporter {
                     // Priority calculation
                     let priority_label = if let Some(cvss) = vuln.cvss_score {
                         let ps = cvss * vuln.confidence_percent as f64 / 100.0;
-                        if ps >= 7.0 { "P1 - Immediate" } else if ps >= 4.0 { "P2 - Short-term" } else { "P3 - Backlog" }
-                    } else { "P3 - Backlog" };
+                        if ps >= 7.0 {
+                            "P1 - Immediate"
+                        } else if ps >= 4.0 {
+                            "P2 - Short-term"
+                        } else {
+                            "P3 - Backlog"
+                        }
+                    } else {
+                        "P3 - Backlog"
+                    };
 
-                    report.push_str(&format!("**{}.** {} — `{}`\n\n", i + 1, vuln.title, location));
+                    report.push_str(&format!(
+                        "**{}.** {} — `{}`\n\n",
+                        i + 1,
+                        vuln.title,
+                        location
+                    ));
                     report.push_str(&format!("- **Category**: {}\n", vuln.category.as_str()));
                     if let Some(cvss) = vuln.cvss_score {
                         let cvss_vec = vuln.cvss_vector.as_deref().unwrap_or("-");
                         report.push_str(&format!("- **CVSS**: {cvss:.1} (`{cvss_vec}`)\n"));
                     }
-                    report.push_str(&format!("- **Confidence**: {} ({}%)\n", confidence_str, vuln.confidence_percent));
+                    report.push_str(&format!(
+                        "- **Confidence**: {} ({}%)\n",
+                        confidence_str, vuln.confidence_percent
+                    ));
                     report.push_str(&format!("- **Priority**: {priority_label}\n"));
                     if let Some(ref swc) = vuln.swc_id {
                         report.push_str(&format!("- **SWC**: {}", swc.id));
@@ -559,7 +654,10 @@ impl VulnerabilityReporter {
                         report.push('\n');
                     }
                     if !vuln.exploit_references.is_empty() {
-                        report.push_str(&format!("- **Real-world exploits**: {}\n", vuln.exploit_references.join(", ")));
+                        report.push_str(&format!(
+                            "- **Real-world exploits**: {}\n",
+                            vuln.exploit_references.join(", ")
+                        ));
                     }
                     report.push_str(&format!("- **Description**: {}\n", vuln.description));
                     report.push_str(&format!("\n```solidity\n{}\n```\n\n", vuln.code_snippet));
@@ -583,8 +681,12 @@ impl VulnerabilityReporter {
         report.push_str("---\n\n");
         report.push_str("## Need a Deeper Analysis?\n\n");
         report.push_str("This automated scan provides a solid foundation, but complex vulnerabilities often require expert human review. ");
-        report.push_str("For a comprehensive, in-depth audit of your smart contract vulnerabilities, ");
-        report.push_str("visit **[41swara.com](https://41swara.com)** or contact our security team directly.\n");
+        report.push_str(
+            "For a comprehensive, in-depth audit of your smart contract vulnerabilities, ",
+        );
+        report.push_str(
+            "visit **[41swara.com](https://41swara.com)** or contact our security team directly.\n",
+        );
 
         report
     }

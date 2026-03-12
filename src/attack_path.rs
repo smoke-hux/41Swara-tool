@@ -5,12 +5,13 @@
 //! researchers need to understand *how* an exploit would work, not just
 //! *that* it exists.
 
-use regex::Regex;
 use crate::vulnerabilities::{Vulnerability, VulnerabilityCategory};
+use regex::Regex;
 
 /// Generate an attack path narrative for a vulnerability.
 fn generate_attack_path(vuln: &Vulnerability, content: &str) -> Option<String> {
-    let fn_name = extract_nearby_function(content, vuln.line_number).unwrap_or("targetFunction".to_string());
+    let fn_name =
+        extract_nearby_function(content, vuln.line_number).unwrap_or("targetFunction".to_string());
     let contract_name = extract_contract_name(content).unwrap_or("Contract".to_string());
 
     match &vuln.category {
@@ -219,8 +220,13 @@ mod tests {
 
     fn make_vuln(cat: VulnerabilityCategory, line: usize) -> Vulnerability {
         Vulnerability::new(
-            VulnerabilitySeverity::High, cat,
-            "Test".into(), "Test".into(), line, "code".into(), "Fix".into(),
+            VulnerabilitySeverity::High,
+            cat,
+            "Test".into(),
+            "Test".into(),
+            line,
+            "code".into(),
+            "Fix".into(),
         )
     }
 
@@ -231,7 +237,10 @@ mod tests {
         enrich_with_attack_paths(std::slice::from_mut(&mut vuln), content);
         assert!(vuln.attack_path.is_some());
         let path = vuln.attack_path.unwrap();
-        assert!(path.contains("withdraw"), "Should reference actual function name");
+        assert!(
+            path.contains("withdraw"),
+            "Should reference actual function name"
+        );
         assert!(path.contains("Vault"), "Should reference contract name");
     }
 

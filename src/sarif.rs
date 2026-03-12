@@ -1,6 +1,6 @@
+use crate::vulnerabilities::{Vulnerability, VulnerabilityCategory, VulnerabilitySeverity};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use crate::vulnerabilities::{Vulnerability, VulnerabilitySeverity, VulnerabilityCategory};
 
 /// SARIF 2.1.0 format support for CI/CD integration
 /// Specification: https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html
@@ -58,10 +58,6 @@ pub struct SarifRuleProperties {
     pub precision: String,
     #[serde(rename = "security-severity")]
     pub security_severity: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cwe: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub swc: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -109,10 +105,7 @@ pub struct SarifSnippet {
 }
 
 impl SarifReport {
-    pub fn new(
-        results: Vec<(PathBuf, Vec<Vulnerability>)>,
-        version: &str,
-    ) -> Self {
+    pub fn new(results: Vec<(PathBuf, Vec<Vulnerability>)>, version: &str) -> Self {
         let mut sarif_results = Vec::new();
         let mut rules_map = std::collections::HashMap::new();
 
@@ -123,9 +116,15 @@ impl SarifReport {
             for vuln in vulns {
                 let rule_id = category_to_rule_id(&vuln.category);
 
-                // Collect unique rules (use CVSS score if available)
+                // Collect unique rules
                 rules_map.entry(rule_id.clone()).or_insert_with(|| {
-                    create_sarif_rule(&vuln.category, &vuln.severity, &vuln.title, &vuln.description, &vuln.recommendation, vuln.cvss_score)
+                    create_sarif_rule(
+                        &vuln.category,
+                        &vuln.severity,
+                        &vuln.title,
+                        &vuln.description,
+                        &vuln.recommendation,
+                    )
                 });
 
                 sarif_results.push(SarifResult {
@@ -262,34 +261,10 @@ fn create_sarif_rule(
     title: &str,
     description: &str,
     recommendation: &str,
-    cvss_score: Option<f64>,
 ) -> SarifRule {
     let rule_id = category_to_rule_id(category);
     let level = severity_to_sarif_level(severity);
-    // Use actual CVSS score if available, otherwise fall back to severity mapping
-    let security_severity = cvss_score
-        .map(|s| format!("{s:.1}"))
-        .unwrap_or_else(|| severity_to_score(severity));
-
-    // Get SWC/CWE IDs from the category
-    let swc_id = category.get_swc_id();
-    let (swc, cwe) = match swc_id {
-        Some(ref id) => (Some(id.id.clone()), id.cwe_id.clone()),
-        None => (None, None),
-    };
-
-    // Build tags with SWC/CWE
-    let mut tags = vec![
-        "security".to_string(),
-        "smart-contract".to_string(),
-        format!("{:?}", category).to_lowercase(),
-    ];
-    if let Some(ref swc_val) = swc {
-        tags.push(swc_val.clone());
-    }
-    if let Some(ref cwe_val) = cwe {
-        tags.push(cwe_val.clone());
-    }
+    let security_severity = severity_to_score(severity);
 
     SarifRule {
         id: rule_id.clone(),
@@ -307,11 +282,13 @@ fn create_sarif_rule(
             text: format!("{}\\n\\nRecommendation: {}", description, recommendation),
         },
         properties: SarifRuleProperties {
-            tags,
+            tags: vec![
+                "security".to_string(),
+                "smart-contract".to_string(),
+                format!("{:?}", category).to_lowercase(),
+            ],
             precision: "high".to_string(),
             security_severity,
-            cwe,
-            swc,
         },
     }
 }
@@ -333,7 +310,7 @@ mod tests {
         );
 
         let results = vec![(PathBuf::from("test.sol"), vec![vuln])];
-        let report = SarifReport::new(results, "0.4.0");
+        let report = SarifReport::new(results, "0.2.0");
 
         assert_eq!(report.version, "2.1.0");
         assert_eq!(report.runs.len(), 1);

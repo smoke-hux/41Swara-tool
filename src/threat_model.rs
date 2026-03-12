@@ -24,9 +24,9 @@
 
 #![allow(dead_code)]
 
-use std::collections::HashSet;
+use crate::vulnerabilities::{Vulnerability, VulnerabilityCategory, VulnerabilitySeverity};
 use regex::Regex;
-use crate::vulnerabilities::{Vulnerability, VulnerabilitySeverity, VulnerabilityCategory};
+use std::collections::HashSet;
 
 /// Primary classification of a smart contract based on its functionality.
 ///
@@ -136,10 +136,10 @@ pub struct Threat {
 /// Severity of damage if a threat is successfully exploited.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ThreatImpact {
-    Critical,  // Complete loss of funds
-    High,      // Significant financial loss
-    Medium,    // Limited loss or degraded functionality
-    Low,       // Minor impact
+    Critical, // Complete loss of funds
+    High,     // Significant financial loss
+    Medium,   // Limited loss or degraded functionality
+    Low,      // Minor impact
 }
 
 /// Estimated probability of a threat being exploited.
@@ -148,10 +148,10 @@ pub enum ThreatImpact {
 /// TWAP oracles, voting snapshots) are detected in the contract source.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ThreatLikelihood {
-    VeryLikely,    // Easy to exploit, requires minimal skill
-    Likely,        // Moderate difficulty
-    Possible,      // Requires specific conditions
-    Unlikely,      // Requires significant effort/luck
+    VeryLikely, // Easy to exploit, requires minimal skill
+    Likely,     // Moderate difficulty
+    Possible,   // Requires specific conditions
+    Unlikely,   // Requires significant effort/luck
 }
 
 /// The complete threat model output for a single contract.
@@ -351,7 +351,8 @@ impl ThreatModelGenerator {
         // Phase 6: Trace sensitive data flows
         let data_flows = self.analyze_data_flows(content);
         // Phase 7: Generate threats using both generic and type-specific rules
-        let threats = self.generate_threats(content, &contract_type, &secondary_types, &attack_surface);
+        let threats =
+            self.generate_threats(content, &contract_type, &secondary_types, &attack_surface);
 
         // Phase 8: Aggregate threats into a risk summary
         let risk_summary = self.calculate_risk_summary(&threats);
@@ -378,15 +379,24 @@ impl ThreatModelGenerator {
         // a generic match shadowing a more precise one.
 
         // ERC4626 vault: explicit interface name or deposit/shares/assets triad
-        if content.contains("ERC4626") || (content.contains("deposit") && content.contains("shares") && content.contains("assets")) {
+        if content.contains("ERC4626")
+            || (content.contains("deposit")
+                && content.contains("shares")
+                && content.contains("assets"))
+        {
             return ContractType::ERC4626Vault;
         }
         // Lending: requires borrow + collateral + liquidation keywords together
-        if content.contains("borrow") && content.contains("collateral") && content.contains("liquidat") {
+        if content.contains("borrow")
+            && content.contains("collateral")
+            && content.contains("liquidat")
+        {
             return ContractType::LendingProtocol;
         }
         // AMM pool: swap+reserve combo or addLiquidity function
-        if (content.contains("swap") && content.contains("reserve")) || content.contains("addLiquidity") {
+        if (content.contains("swap") && content.contains("reserve"))
+            || content.contains("addLiquidity")
+        {
             return ContractType::AMMPool;
         }
         // DEX router: "Router" name with swap or path routing
@@ -394,7 +404,10 @@ impl ThreatModelGenerator {
             return ContractType::DEXRouter;
         }
         // Bridge: explicit bridge/crossChain keywords
-        if content.contains("bridge") || content.contains("Bridge") || content.contains("crossChain") {
+        if content.contains("bridge")
+            || content.contains("Bridge")
+            || content.contains("crossChain")
+        {
             return ContractType::Bridge;
         }
         // Governance: requires the propose/vote/execute lifecycle
@@ -418,31 +431,51 @@ impl ThreatModelGenerator {
             return ContractType::ERC1155MultiToken;
         }
         // ERC721: explicit interface or tokenURI+ownerOf combo
-        if content.contains("ERC721") || (content.contains("tokenURI") && content.contains("ownerOf")) {
+        if content.contains("ERC721")
+            || (content.contains("tokenURI") && content.contains("ownerOf"))
+        {
             return ContractType::ERC721NFT;
         }
         // ERC20: explicit interface or balanceOf+transfer+allowance triad
-        if content.contains("ERC20") || (content.contains("balanceOf") && content.contains("transfer") && content.contains("allowance")) {
+        if content.contains("ERC20")
+            || (content.contains("balanceOf")
+                && content.contains("transfer")
+                && content.contains("allowance"))
+        {
             return ContractType::ERC20Token;
         }
         // Multisig: explicit naming or confirmTransaction pattern
-        if content.contains("multisig") || content.contains("Multisig") || content.contains("confirmTransaction") {
+        if content.contains("multisig")
+            || content.contains("Multisig")
+            || content.contains("confirmTransaction")
+        {
             return ContractType::Multisig;
         }
         // Oracle: explicit naming or getLatestPrice function
-        if content.contains("oracle") || content.contains("Oracle") || content.contains("getLatestPrice") {
+        if content.contains("oracle")
+            || content.contains("Oracle")
+            || content.contains("getLatestPrice")
+        {
             return ContractType::Oracle;
         }
         // Factory: clone/create2 deployment or factory naming
-        if content.contains("createClone") || content.contains("create2") || content.contains("factory") {
+        if content.contains("createClone")
+            || content.contains("create2")
+            || content.contains("factory")
+        {
             return ContractType::Factory;
         }
         // Timelock: explicit naming or delay+queue combo
-        if content.contains("timelock") || content.contains("Timelock") || content.contains("delay") && content.contains("queue") {
+        if content.contains("timelock")
+            || content.contains("Timelock")
+            || content.contains("delay") && content.contains("queue")
+        {
             return ContractType::Timelock;
         }
         // PaymentSplitter: explicit naming or shares+release combo
-        if content.contains("PaymentSplitter") || content.contains("shares") && content.contains("release") {
+        if content.contains("PaymentSplitter")
+            || content.contains("shares") && content.contains("release")
+        {
             return ContractType::PaymentSplitter;
         }
 
@@ -464,17 +497,26 @@ impl ThreatModelGenerator {
         }
 
         // Check if a non-governance contract also has governance features
-        if primary != &ContractType::Governance && content.contains("vote") && content.contains("proposal") {
+        if primary != &ContractType::Governance
+            && content.contains("vote")
+            && content.contains("proposal")
+        {
             types.push(ContractType::Governance);
         }
 
         // Check if a non-vault contract also implements vault-like deposit/withdraw/shares
-        if primary != &ContractType::ERC4626Vault && content.contains("deposit") && content.contains("withdraw") && content.contains("shares") {
+        if primary != &ContractType::ERC4626Vault
+            && content.contains("deposit")
+            && content.contains("withdraw")
+            && content.contains("shares")
+        {
             types.push(ContractType::ERC4626Vault);
         }
 
         // Check if a non-proxy contract contains upgrade patterns
-        if primary != &ContractType::Proxy && (content.contains("upgradeTo") || content.contains("_IMPLEMENTATION_SLOT")) {
+        if primary != &ContractType::Proxy
+            && (content.contains("upgradeTo") || content.contains("_IMPLEMENTATION_SLOT"))
+        {
             types.push(ContractType::Proxy);
         }
 
@@ -495,11 +537,15 @@ impl ThreatModelGenerator {
         // Match functions with the `external` visibility modifier
         let external_pattern = Regex::new(r"function\s+\w+\s*\([^)]*\)\s*external").unwrap();
         // Match functions with `public` or `external` visibility
-        let public_pattern = Regex::new(r"function\s+\w+\s*\([^)]*\)\s*(?:public|external)").unwrap();
+        let public_pattern =
+            Regex::new(r"function\s+\w+\s*\([^)]*\)\s*(?:public|external)").unwrap();
         // Match functions with the `payable` modifier (accepts ETH)
         let payable_pattern = Regex::new(r"function\s+\w+\s*\([^)]*\)[^{]*payable").unwrap();
         // Match admin-like functions by common naming prefixes
-        let admin_pattern = Regex::new(r"function\s+(set|update|change|modify|withdraw|transfer|mint|burn|pause|upgrade)\w*").unwrap();
+        let admin_pattern = Regex::new(
+            r"function\s+(set|update|change|modify|withdraw|transfer|mint|burn|pause|upgrade)\w*",
+        )
+        .unwrap();
 
         let external_count = external_pattern.captures_iter(content).count();
         let public_count = public_pattern.captures_iter(content).count();
@@ -507,22 +553,32 @@ impl ThreatModelGenerator {
         let admin_count = admin_pattern.captures_iter(content).count();
 
         // Count oracle dependencies by checking for common oracle-related keywords
-        let oracle_patterns = vec!["latestRoundData", "getPrice", "oracle", "Oracle", "Chainlink"];
-        let oracle_count = oracle_patterns.iter()
+        let oracle_patterns = vec![
+            "latestRoundData",
+            "getPrice",
+            "oracle",
+            "Oracle",
+            "Chainlink",
+        ];
+        let oracle_count = oracle_patterns
+            .iter()
             .filter(|p| content.contains(*p))
             .count();
 
         // Count low-level external calls that bypass Solidity's safety checks
-        let external_call_pattern = Regex::new(r"\.call\{|\.delegatecall\(|\.staticcall\(").unwrap();
+        let external_call_pattern =
+            Regex::new(r"\.call\{|\.delegatecall\(|\.staticcall\(").unwrap();
         let external_calls = external_call_pattern.captures_iter(content).count();
 
         // Extract function names that serve as public entry points.
         // Note: This currently re-captures from the start of content for each match,
         // so it may return the same name repeatedly. Limited to 20 entries.
-        let entry_points: Vec<String> = public_pattern.captures_iter(content)
+        let entry_points: Vec<String> = public_pattern
+            .captures_iter(content)
             .filter_map(|_| {
                 let func_name_pattern = Regex::new(r"function\s+(\w+)").unwrap();
-                func_name_pattern.captures(content)
+                func_name_pattern
+                    .captures(content)
                     .and_then(|c| c.get(1))
                     .map(|m| m.as_str().to_string())
             })
@@ -550,7 +606,10 @@ impl ThreatModelGenerator {
         let mut assets = Vec::new();
 
         // Detect native ETH handling via payable/msg.value/transfer patterns
-        if content.contains("payable") || content.contains("msg.value") || content.contains(".transfer(") {
+        if content.contains("payable")
+            || content.contains("msg.value")
+            || content.contains(".transfer(")
+        {
             assets.push(Asset {
                 name: "Native Token (ETH)".to_string(),
                 asset_type: AssetType::NativeToken,
@@ -560,7 +619,10 @@ impl ThreatModelGenerator {
         }
 
         // Detect ERC20 token handling via interface references or SafeERC20 usage
-        if content.contains("IERC20") || content.contains("ERC20") || content.contains("safeTransfer") {
+        if content.contains("IERC20")
+            || content.contains("ERC20")
+            || content.contains("safeTransfer")
+        {
             assets.push(Asset {
                 name: "ERC20 Tokens".to_string(),
                 asset_type: AssetType::ERC20Token,
@@ -580,7 +642,10 @@ impl ThreatModelGenerator {
         }
 
         // Detect governance rights via voting/proposal keywords
-        if content.contains("vote") || content.contains("proposal") || content.contains("governance") {
+        if content.contains("vote")
+            || content.contains("proposal")
+            || content.contains("governance")
+        {
             assets.push(Asset {
                 name: "Governance Rights".to_string(),
                 asset_type: AssetType::GovernanceRights,
@@ -590,7 +655,10 @@ impl ThreatModelGenerator {
         }
 
         // Detect admin/owner privileges via access control modifiers
-        if content.contains("onlyOwner") || content.contains("onlyAdmin") || content.contains("onlyRole") {
+        if content.contains("onlyOwner")
+            || content.contains("onlyAdmin")
+            || content.contains("onlyRole")
+        {
             assets.push(Asset {
                 name: "Admin Privileges".to_string(),
                 asset_type: AssetType::AdminPrivilege,
@@ -607,7 +675,10 @@ impl ThreatModelGenerator {
                     name: "Vault Shares".to_string(),
                     asset_type: AssetType::ERC20Token,
                     value_estimate: "Based on underlying assets".to_string(),
-                    protection_mechanisms: vec!["Share/asset conversion".to_string(), "Deposit limits".to_string()],
+                    protection_mechanisms: vec![
+                        "Share/asset conversion".to_string(),
+                        "Deposit limits".to_string(),
+                    ],
                 });
             }
             ContractType::LendingProtocol => {
@@ -616,7 +687,10 @@ impl ThreatModelGenerator {
                     name: "Collateral".to_string(),
                     asset_type: AssetType::ERC20Token,
                     value_estimate: "Based on collateral factor".to_string(),
-                    protection_mechanisms: vec!["Health factor checks".to_string(), "Liquidation mechanism".to_string()],
+                    protection_mechanisms: vec![
+                        "Health factor checks".to_string(),
+                        "Liquidation mechanism".to_string(),
+                    ],
                 });
             }
             ContractType::AMMPool => {
@@ -625,7 +699,10 @@ impl ThreatModelGenerator {
                     name: "Liquidity Pool Tokens".to_string(),
                     asset_type: AssetType::ERC20Token,
                     value_estimate: "Based on pool reserves".to_string(),
-                    protection_mechanisms: vec!["K-value invariant".to_string(), "Slippage protection".to_string()],
+                    protection_mechanisms: vec![
+                        "K-value invariant".to_string(),
+                        "Slippage protection".to_string(),
+                    ],
                 });
             }
             _ => {}
@@ -644,26 +721,50 @@ impl ThreatModelGenerator {
 
         match asset_type {
             "ETH" => {
-                if content.contains("nonReentrant") { mechanisms.push("ReentrancyGuard".to_string()); }
-                if content.contains("require(msg.value") { mechanisms.push("Value validation".to_string()); }
-                if content.contains("onlyOwner") { mechanisms.push("Access control".to_string()); }
+                if content.contains("nonReentrant") {
+                    mechanisms.push("ReentrancyGuard".to_string());
+                }
+                if content.contains("require(msg.value") {
+                    mechanisms.push("Value validation".to_string());
+                }
+                if content.contains("onlyOwner") {
+                    mechanisms.push("Access control".to_string());
+                }
             }
             "ERC20" => {
-                if content.contains("SafeERC20") { mechanisms.push("SafeERC20".to_string()); }
-                if content.contains("approve") && content.contains("== 0") { mechanisms.push("Approval check".to_string()); }
+                if content.contains("SafeERC20") {
+                    mechanisms.push("SafeERC20".to_string());
+                }
+                if content.contains("approve") && content.contains("== 0") {
+                    mechanisms.push("Approval check".to_string());
+                }
             }
             "NFT" => {
-                if content.contains("_exists") { mechanisms.push("Existence check".to_string()); }
-                if content.contains("safeTransferFrom") { mechanisms.push("Safe transfer".to_string()); }
+                if content.contains("_exists") {
+                    mechanisms.push("Existence check".to_string());
+                }
+                if content.contains("safeTransferFrom") {
+                    mechanisms.push("Safe transfer".to_string());
+                }
             }
             "governance" => {
-                if content.contains("Timelock") { mechanisms.push("Timelock".to_string()); }
-                if content.contains("quorum") { mechanisms.push("Quorum requirement".to_string()); }
+                if content.contains("Timelock") {
+                    mechanisms.push("Timelock".to_string());
+                }
+                if content.contains("quorum") {
+                    mechanisms.push("Quorum requirement".to_string());
+                }
             }
             "admin" => {
-                if content.contains("Ownable") { mechanisms.push("Ownable pattern".to_string()); }
-                if content.contains("AccessControl") { mechanisms.push("Role-based access".to_string()); }
-                if content.contains("renounceOwnership") { mechanisms.push("Ownership renouncement".to_string()); }
+                if content.contains("Ownable") {
+                    mechanisms.push("Ownable pattern".to_string());
+                }
+                if content.contains("AccessControl") {
+                    mechanisms.push("Role-based access".to_string());
+                }
+                if content.contains("renounceOwnership") {
+                    mechanisms.push("Ownership renouncement".to_string());
+                }
             }
             _ => {}
         }
@@ -713,11 +814,18 @@ impl ThreatModelGenerator {
         }
 
         // Boundary: this chain -> other chains (cross-chain messaging)
-        if content.contains("bridge") || content.contains("crossChain") || content.contains("LayerZero") {
+        if content.contains("bridge")
+            || content.contains("crossChain")
+            || content.contains("LayerZero")
+        {
             boundaries.push(TrustBoundary {
                 name: "Cross-Chain Boundary".to_string(),
                 description: "Messages and assets crossing between chains".to_string(),
-                crossing_functions: vec!["send".to_string(), "receive".to_string(), "bridge".to_string()],
+                crossing_functions: vec![
+                    "send".to_string(),
+                    "receive".to_string(),
+                    "bridge".to_string(),
+                ],
             });
         }
 
@@ -728,7 +836,8 @@ impl ThreatModelGenerator {
     /// Returns up to 10 function names.
     fn find_external_functions(&self, content: &str) -> Vec<String> {
         let pattern = Regex::new(r"function\s+(\w+)\s*\([^)]*\)\s*(?:external|public)").unwrap();
-        pattern.captures_iter(content)
+        pattern
+            .captures_iter(content)
             .filter_map(|c| c.get(1).map(|m| m.as_str().to_string()))
             .take(10)
             .collect()
@@ -737,8 +846,10 @@ impl ThreatModelGenerator {
     /// Extract names of admin-restricted functions (those guarded by onlyOwner/onlyAdmin/onlyRole).
     /// Returns up to 10 function names.
     fn find_admin_functions(&self, content: &str) -> Vec<String> {
-        let pattern = Regex::new(r"function\s+(\w+)\s*\([^)]*\)[^{]*(onlyOwner|onlyAdmin|onlyRole)").unwrap();
-        pattern.captures_iter(content)
+        let pattern =
+            Regex::new(r"function\s+(\w+)\s*\([^)]*\)[^{]*(onlyOwner|onlyAdmin|onlyRole)").unwrap();
+        pattern
+            .captures_iter(content)
             .filter_map(|c| c.get(1).map(|m| m.as_str().to_string()))
             .take(10)
             .collect()
@@ -759,11 +870,17 @@ impl ThreatModelGenerator {
         for line in &lines {
             // Update the current function when we encounter a new function declaration
             if let Some(caps) = func_pattern.captures(line) {
-                current_function = caps.get(1).map(|m| m.as_str().to_string()).unwrap_or_default();
+                current_function = caps
+                    .get(1)
+                    .map(|m| m.as_str().to_string())
+                    .unwrap_or_default();
             }
             // If this line contains an external call, attribute it to the current function
-            if !current_function.is_empty() &&
-               (line.contains(".call") || line.contains(".transfer(") || line.contains("IERC20")) {
+            if !current_function.is_empty()
+                && (line.contains(".call")
+                    || line.contains(".transfer(")
+                    || line.contains("IERC20"))
+            {
                 if !functions.contains(&current_function) {
                     functions.push(current_function.clone());
                 }
@@ -856,7 +973,8 @@ impl ThreatModelGenerator {
             threats.push(Threat {
                 category: ThreatCategory::FinancialLoss,
                 name: "ETH Drainage".to_string(),
-                description: "Contract holds ETH that could be drained through vulnerabilities".to_string(),
+                description: "Contract holds ETH that could be drained through vulnerabilities"
+                    .to_string(),
                 attack_vectors: vec![
                     "Reentrancy attack".to_string(),
                     "Logic error in withdrawal".to_string(),
@@ -864,8 +982,16 @@ impl ThreatModelGenerator {
                 ],
                 impact: ThreatImpact::Critical,
                 // ReentrancyGuard significantly reduces reentrancy likelihood
-                likelihood: if content.contains("nonReentrant") { ThreatLikelihood::Unlikely } else { ThreatLikelihood::Likely },
-                mitigations: vec!["ReentrancyGuard".to_string(), "CEI pattern".to_string(), "Access control".to_string()],
+                likelihood: if content.contains("nonReentrant") {
+                    ThreatLikelihood::Unlikely
+                } else {
+                    ThreatLikelihood::Likely
+                },
+                mitigations: vec![
+                    "ReentrancyGuard".to_string(),
+                    "CEI pattern".to_string(),
+                    "Access control".to_string(),
+                ],
                 affected_functions: vec!["withdraw".to_string(), "transfer".to_string()],
             });
         }
@@ -883,7 +1009,11 @@ impl ThreatModelGenerator {
                 ],
                 impact: ThreatImpact::High,
                 likelihood: ThreatLikelihood::Possible,
-                mitigations: vec!["Check return values".to_string(), "Use try/catch".to_string(), "ReentrancyGuard".to_string()],
+                mitigations: vec![
+                    "Check return values".to_string(),
+                    "Use try/catch".to_string(),
+                    "ReentrancyGuard".to_string(),
+                ],
                 affected_functions: attack_surface.entry_points.clone(),
             });
         }
@@ -893,7 +1023,8 @@ impl ThreatModelGenerator {
             threats.push(Threat {
                 category: ThreatCategory::OracleManipulation,
                 name: "Oracle Price Manipulation".to_string(),
-                description: "Contract depends on external price data that could be manipulated".to_string(),
+                description: "Contract depends on external price data that could be manipulated"
+                    .to_string(),
                 attack_vectors: vec![
                     "Flash loan price manipulation".to_string(),
                     "Stale price data".to_string(),
@@ -901,8 +1032,16 @@ impl ThreatModelGenerator {
                 ],
                 impact: ThreatImpact::Critical,
                 // TWAP oracles are resistant to single-block manipulation
-                likelihood: if content.contains("TWAP") { ThreatLikelihood::Unlikely } else { ThreatLikelihood::Likely },
-                mitigations: vec!["Use TWAP".to_string(), "Multiple oracles".to_string(), "Staleness check".to_string()],
+                likelihood: if content.contains("TWAP") {
+                    ThreatLikelihood::Unlikely
+                } else {
+                    ThreatLikelihood::Likely
+                },
+                mitigations: vec![
+                    "Use TWAP".to_string(),
+                    "Multiple oracles".to_string(),
+                    "Staleness check".to_string(),
+                ],
                 affected_functions: vec!["getPrice".to_string(), "calculate".to_string()],
             });
         }
@@ -912,7 +1051,8 @@ impl ThreatModelGenerator {
             threats.push(Threat {
                 category: ThreatCategory::PrivilegeEscalation,
                 name: "Admin Key Compromise".to_string(),
-                description: "Compromised admin key could be used for malicious actions".to_string(),
+                description: "Compromised admin key could be used for malicious actions"
+                    .to_string(),
                 attack_vectors: vec![
                     "Private key theft".to_string(),
                     "Social engineering".to_string(),
@@ -920,7 +1060,11 @@ impl ThreatModelGenerator {
                 ],
                 impact: ThreatImpact::Critical,
                 likelihood: ThreatLikelihood::Possible,
-                mitigations: vec!["Multisig".to_string(), "Timelock".to_string(), "Key rotation".to_string()],
+                mitigations: vec![
+                    "Multisig".to_string(),
+                    "Timelock".to_string(),
+                    "Key rotation".to_string(),
+                ],
                 affected_functions: self.find_admin_functions(content),
             });
         }
@@ -952,7 +1096,11 @@ impl ThreatModelGenerator {
     /// - **Proxy**: Unauthorized implementation upgrade
     ///
     /// Likelihood is adjusted based on detected mitigations in the source code.
-    fn generate_type_specific_threats(&self, content: &str, contract_type: &ContractType) -> Vec<Threat> {
+    fn generate_type_specific_threats(
+        &self,
+        content: &str,
+        contract_type: &ContractType,
+    ) -> Vec<Threat> {
         let mut threats = Vec::new();
 
         match contract_type {
@@ -963,12 +1111,24 @@ impl ThreatModelGenerator {
                 threats.push(Threat {
                     category: ThreatCategory::FinancialLoss,
                     name: "First Depositor Inflation Attack".to_string(),
-                    description: "Attacker can manipulate share price for subsequent depositors".to_string(),
-                    attack_vectors: vec!["Donate assets before first deposit".to_string(), "Front-run first depositor".to_string()],
+                    description: "Attacker can manipulate share price for subsequent depositors"
+                        .to_string(),
+                    attack_vectors: vec![
+                        "Donate assets before first deposit".to_string(),
+                        "Front-run first depositor".to_string(),
+                    ],
                     impact: ThreatImpact::Critical,
                     // Virtual shares/offsets are the standard mitigation for this attack
-                    likelihood: if content.contains("virtual") && content.contains("shares") { ThreatLikelihood::Unlikely } else { ThreatLikelihood::Likely },
-                    mitigations: vec!["Virtual shares offset".to_string(), "Minimum deposit".to_string(), "Dead shares".to_string()],
+                    likelihood: if content.contains("virtual") && content.contains("shares") {
+                        ThreatLikelihood::Unlikely
+                    } else {
+                        ThreatLikelihood::Likely
+                    },
+                    mitigations: vec![
+                        "Virtual shares offset".to_string(),
+                        "Minimum deposit".to_string(),
+                        "Dead shares".to_string(),
+                    ],
                     affected_functions: vec!["deposit".to_string(), "mint".to_string()],
                 });
             }
@@ -980,10 +1140,17 @@ impl ThreatModelGenerator {
                     category: ThreatCategory::FrontRunning,
                     name: "Sandwich Attack".to_string(),
                     description: "Swaps can be sandwiched for MEV extraction".to_string(),
-                    attack_vectors: vec!["Front-run with large swap".to_string(), "Back-run to extract value".to_string()],
+                    attack_vectors: vec![
+                        "Front-run with large swap".to_string(),
+                        "Back-run to extract value".to_string(),
+                    ],
                     impact: ThreatImpact::High,
                     likelihood: ThreatLikelihood::VeryLikely,
-                    mitigations: vec!["Slippage protection".to_string(), "Deadline parameter".to_string(), "Private mempool".to_string()],
+                    mitigations: vec![
+                        "Slippage protection".to_string(),
+                        "Deadline parameter".to_string(),
+                        "Private mempool".to_string(),
+                    ],
                     affected_functions: vec!["swap".to_string(), "addLiquidity".to_string()],
                 });
             }
@@ -993,11 +1160,20 @@ impl ThreatModelGenerator {
                 threats.push(Threat {
                     category: ThreatCategory::FinancialLoss,
                     name: "Bad Debt Accumulation".to_string(),
-                    description: "Protocol could accumulate bad debt from failed liquidations".to_string(),
-                    attack_vectors: vec!["Price crash".to_string(), "Liquidation frontrunning".to_string(), "Oracle manipulation".to_string()],
+                    description: "Protocol could accumulate bad debt from failed liquidations"
+                        .to_string(),
+                    attack_vectors: vec![
+                        "Price crash".to_string(),
+                        "Liquidation frontrunning".to_string(),
+                        "Oracle manipulation".to_string(),
+                    ],
                     impact: ThreatImpact::Critical,
                     likelihood: ThreatLikelihood::Possible,
-                    mitigations: vec!["Insurance fund".to_string(), "Liquidation incentives".to_string(), "Position limits".to_string()],
+                    mitigations: vec![
+                        "Insurance fund".to_string(),
+                        "Liquidation incentives".to_string(),
+                        "Position limits".to_string(),
+                    ],
                     affected_functions: vec!["liquidate".to_string(), "borrow".to_string()],
                 });
             }
@@ -1008,12 +1184,26 @@ impl ThreatModelGenerator {
                     category: ThreatCategory::Replay,
                     name: "Cross-Chain Message Replay".to_string(),
                     description: "Messages could be replayed on different chains".to_string(),
-                    attack_vectors: vec!["Replay on another chain".to_string(), "Replay after upgrade".to_string()],
+                    attack_vectors: vec![
+                        "Replay on another chain".to_string(),
+                        "Replay after upgrade".to_string(),
+                    ],
                     impact: ThreatImpact::Critical,
                     // Including chainId in message hashes prevents cross-chain replay
-                    likelihood: if content.contains("chainId") { ThreatLikelihood::Unlikely } else { ThreatLikelihood::Likely },
-                    mitigations: vec!["Include chainId".to_string(), "Nonce tracking".to_string(), "Message hashing".to_string()],
-                    affected_functions: vec!["sendMessage".to_string(), "receiveMessage".to_string()],
+                    likelihood: if content.contains("chainId") {
+                        ThreatLikelihood::Unlikely
+                    } else {
+                        ThreatLikelihood::Likely
+                    },
+                    mitigations: vec![
+                        "Include chainId".to_string(),
+                        "Nonce tracking".to_string(),
+                        "Message hashing".to_string(),
+                    ],
+                    affected_functions: vec![
+                        "sendMessage".to_string(),
+                        "receiveMessage".to_string(),
+                    ],
                 });
             }
             ContractType::Governance => {
@@ -1023,11 +1213,25 @@ impl ThreatModelGenerator {
                     category: ThreatCategory::GovernanceAttack,
                     name: "Flash Loan Governance Attack".to_string(),
                     description: "Attacker could use flash loan to gain voting power".to_string(),
-                    attack_vectors: vec!["Borrow tokens via flash loan".to_string(), "Vote immediately".to_string(), "Repay in same transaction".to_string()],
+                    attack_vectors: vec![
+                        "Borrow tokens via flash loan".to_string(),
+                        "Vote immediately".to_string(),
+                        "Repay in same transaction".to_string(),
+                    ],
                     impact: ThreatImpact::Critical,
                     // Checkpoint/snapshot-based voting prevents same-block vote manipulation
-                    likelihood: if content.contains("checkpoint") || content.contains("getPastVotes") { ThreatLikelihood::Unlikely } else { ThreatLikelihood::Likely },
-                    mitigations: vec!["Voting snapshots".to_string(), "Time-weighted voting".to_string(), "Voting delay".to_string()],
+                    likelihood: if content.contains("checkpoint")
+                        || content.contains("getPastVotes")
+                    {
+                        ThreatLikelihood::Unlikely
+                    } else {
+                        ThreatLikelihood::Likely
+                    },
+                    mitigations: vec![
+                        "Voting snapshots".to_string(),
+                        "Time-weighted voting".to_string(),
+                        "Voting delay".to_string(),
+                    ],
                     affected_functions: vec!["propose".to_string(), "vote".to_string()],
                 });
             }
@@ -1037,13 +1241,29 @@ impl ThreatModelGenerator {
                 threats.push(Threat {
                     category: ThreatCategory::PrivilegeEscalation,
                     name: "Unauthorized Upgrade".to_string(),
-                    description: "Attacker could upgrade implementation to malicious contract".to_string(),
-                    attack_vectors: vec!["Admin key compromise".to_string(), "Selector collision".to_string(), "Uninitialized implementation".to_string()],
+                    description: "Attacker could upgrade implementation to malicious contract"
+                        .to_string(),
+                    attack_vectors: vec![
+                        "Admin key compromise".to_string(),
+                        "Selector collision".to_string(),
+                        "Uninitialized implementation".to_string(),
+                    ],
                     impact: ThreatImpact::Critical,
                     // onlyOwner guard on upgradeTo reduces but doesn't eliminate the risk
-                    likelihood: if content.contains("onlyOwner") && content.contains("upgradeTo") { ThreatLikelihood::Unlikely } else { ThreatLikelihood::Possible },
-                    mitigations: vec!["Timelock for upgrades".to_string(), "Multisig admin".to_string(), "Upgrade monitoring".to_string()],
-                    affected_functions: vec!["upgradeTo".to_string(), "upgradeToAndCall".to_string()],
+                    likelihood: if content.contains("onlyOwner") && content.contains("upgradeTo") {
+                        ThreatLikelihood::Unlikely
+                    } else {
+                        ThreatLikelihood::Possible
+                    },
+                    mitigations: vec![
+                        "Timelock for upgrades".to_string(),
+                        "Multisig admin".to_string(),
+                        "Upgrade monitoring".to_string(),
+                    ],
+                    affected_functions: vec![
+                        "upgradeTo".to_string(),
+                        "upgradeToAndCall".to_string(),
+                    ],
                 });
             }
             _ => {}
@@ -1061,10 +1281,26 @@ impl ThreatModelGenerator {
     fn calculate_risk_summary(&self, threats: &[Threat]) -> RiskSummary {
         // Count threats by severity, excluding unlikely ones from critical/high tallies
         // since mitigated threats should not inflate the overall risk assessment
-        let critical = threats.iter().filter(|t| t.impact == ThreatImpact::Critical && t.likelihood != ThreatLikelihood::Unlikely).count();
-        let high = threats.iter().filter(|t| t.impact == ThreatImpact::High && t.likelihood != ThreatLikelihood::Unlikely).count();
-        let medium = threats.iter().filter(|t| t.impact == ThreatImpact::Medium).count();
-        let low = threats.iter().filter(|t| t.impact == ThreatImpact::Low).count();
+        let critical = threats
+            .iter()
+            .filter(|t| {
+                t.impact == ThreatImpact::Critical && t.likelihood != ThreatLikelihood::Unlikely
+            })
+            .count();
+        let high = threats
+            .iter()
+            .filter(|t| {
+                t.impact == ThreatImpact::High && t.likelihood != ThreatLikelihood::Unlikely
+            })
+            .count();
+        let medium = threats
+            .iter()
+            .filter(|t| t.impact == ThreatImpact::Medium)
+            .count();
+        let low = threats
+            .iter()
+            .filter(|t| t.impact == ThreatImpact::Low)
+            .count();
 
         // Overall risk is the highest tier with at least one qualifying threat
         let overall = if critical > 0 {
@@ -1084,19 +1320,24 @@ impl ThreatModelGenerator {
             recommendations.push("URGENT: Address critical threats before deployment".to_string());
         }
         if high > 0 {
-            recommendations.push("Implement additional security controls for high-impact threats".to_string());
+            recommendations
+                .push("Implement additional security controls for high-impact threats".to_string());
         }
 
         // Call out threats that are both critical AND very likely as top priority
         for threat in threats {
-            if threat.impact == ThreatImpact::Critical && threat.likelihood == ThreatLikelihood::VeryLikely {
+            if threat.impact == ThreatImpact::Critical
+                && threat.likelihood == ThreatLikelihood::VeryLikely
+            {
                 recommendations.push(format!("Priority: Mitigate '{}' immediately", threat.name));
             }
         }
 
         // Standard recommendations that apply to all contracts
-        recommendations.push("Conduct professional security audit before mainnet deployment".to_string());
-        recommendations.push("Implement monitoring and alerting for anomalous activity".to_string());
+        recommendations
+            .push("Conduct professional security audit before mainnet deployment".to_string());
+        recommendations
+            .push("Implement monitoring and alerting for anomalous activity".to_string());
 
         RiskSummary {
             overall_risk: overall,
@@ -1131,10 +1372,16 @@ impl ThreatModelGenerator {
     /// # Arguments
     /// * `threat_model` - The generated threat model to convert
     /// * `content` - The original Solidity source code (used for line number resolution)
-    pub fn to_vulnerabilities_with_content(&self, threat_model: &ThreatModel, content: &str) -> Vec<Vulnerability> {
+    pub fn to_vulnerabilities_with_content(
+        &self,
+        threat_model: &ThreatModel,
+        content: &str,
+    ) -> Vec<Vulnerability> {
         let lines: Vec<&str> = content.lines().collect();
 
-        threat_model.threats.iter()
+        threat_model
+            .threats
+            .iter()
             // Skip threats that are already mitigated (Unlikely likelihood)
             .filter(|t| t.likelihood != ThreatLikelihood::Unlikely)
             .map(|t| {
@@ -1150,11 +1397,17 @@ impl ThreatModelGenerator {
 
                 // Resolve the line number by searching for the first affected function
                 // in the source code. Falls back to line 1 if not found.
-                let line_number = t.affected_functions.iter()
+                let line_number = t
+                    .affected_functions
+                    .iter()
                     .find_map(|func_name| {
                         let pattern = format!("function {}", func_name);
                         lines.iter().enumerate().find_map(|(idx, line)| {
-                            if line.contains(&pattern) { Some(idx + 1) } else { None }
+                            if line.contains(&pattern) {
+                                Some(idx + 1)
+                            } else {
+                                None
+                            }
                         })
                     })
                     .unwrap_or(1);
@@ -1163,10 +1416,12 @@ impl ThreatModelGenerator {
                     severity,
                     VulnerabilityCategory::LogicError,
                     format!("[Threat Model] {}", t.name),
-                    format!("{}\n\nAttack vectors: {}\nAffected functions: {}",
-                           t.description,
-                           t.attack_vectors.join(", "),
-                           t.affected_functions.join(", ")),
+                    format!(
+                        "{}\n\nAttack vectors: {}\nAffected functions: {}",
+                        t.description,
+                        t.attack_vectors.join(", "),
+                        t.affected_functions.join(", ")
+                    ),
                     line_number,
                     format!("Threat: {}", t.name),
                     format!("Mitigations: {}", t.mitigations.join(", ")),

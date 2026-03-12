@@ -3,9 +3,9 @@
 //! Coordinates the AST parser, CFG builder, and taint analyzer into a unified
 //! analysis pipeline. Produces Vulnerability structs compatible with the main scanner.
 
-use crate::ast::parser::ASTParser;
 use crate::ast::cfg::CFGBuilder;
 use crate::ast::dataflow::{DataFlowAnalyzer, TaintSink, TaintSource};
+use crate::ast::parser::ASTParser;
 use crate::vulnerabilities::{
     Vulnerability, VulnerabilityCategory, VulnerabilityConfidence, VulnerabilitySeverity,
 };
@@ -107,7 +107,10 @@ impl ASTAnalysisBridge {
     ) -> Option<Vulnerability> {
         let (severity, category, title) = match (&result.source, &result.sink) {
             // Critical: user-controlled delegatecall target
-            (TaintSource::FunctionParameter(_) | TaintSource::Calldata, TaintSink::DelegateCall) => (
+            (
+                TaintSource::FunctionParameter(_) | TaintSource::Calldata,
+                TaintSink::DelegateCall,
+            ) => (
                 VulnerabilitySeverity::Critical,
                 VulnerabilityCategory::DelegateCalls,
                 "Taint Flow: User Input to DelegateCall".to_string(),
@@ -119,7 +122,10 @@ impl ASTAnalysisBridge {
                 "Taint Flow: Unvalidated Selfdestruct".to_string(),
             ),
             // High: user-controlled external call target
-            (TaintSource::FunctionParameter(_) | TaintSource::Calldata, TaintSink::ExternalCall) => (
+            (
+                TaintSource::FunctionParameter(_) | TaintSource::Calldata,
+                TaintSink::ExternalCall,
+            ) => (
                 VulnerabilitySeverity::High,
                 VulnerabilityCategory::UnsafeExternalCalls,
                 "Taint Flow: User Input to External Call".to_string(),

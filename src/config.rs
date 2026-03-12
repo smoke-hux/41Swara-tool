@@ -12,9 +12,7 @@ use regex::Regex;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
-use crate::vulnerabilities::{
-    VulnerabilityCategory, VulnerabilityRule, VulnerabilitySeverity,
-};
+use crate::vulnerabilities::{VulnerabilityCategory, VulnerabilityRule, VulnerabilitySeverity};
 
 /// A custom vulnerability detection rule loaded from TOML config.
 #[derive(Debug, Clone, Deserialize)]
@@ -159,8 +157,7 @@ impl CustomRule {
         let pattern = Regex::new(&pattern_str)
             .map_err(|e| format!("Invalid regex '{}': {}", self.pattern, e))?;
 
-        let severity = parse_severity(&self.severity)
-            .unwrap_or(VulnerabilitySeverity::Medium);
+        let severity = parse_severity(&self.severity).unwrap_or(VulnerabilitySeverity::Medium);
 
         Ok(VulnerabilityRule {
             category: VulnerabilityCategory::LogicError,

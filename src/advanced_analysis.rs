@@ -23,9 +23,9 @@
 
 #![allow(dead_code)]
 
-use std::collections::{HashMap, HashSet};
+use crate::vulnerabilities::{Vulnerability, VulnerabilityCategory, VulnerabilitySeverity};
 use regex::Regex;
-use crate::vulnerabilities::{Vulnerability, VulnerabilitySeverity, VulnerabilityCategory};
+use std::collections::{HashMap, HashSet};
 
 /// The primary advanced analyzer that runs multi-category vulnerability detection
 /// on Solidity smart contract source code.
@@ -36,6 +36,14 @@ use crate::vulnerabilities::{Vulnerability, VulnerabilitySeverity, Vulnerability
 pub struct AdvancedAnalyzer {
     #[allow(dead_code)] // Reserved for future verbose diagnostic output
     verbose: bool,
+}
+
+#[derive(Debug, Clone)]
+struct ExtractedFunction {
+    name: String,
+    start_line: usize,
+    signature: String,
+    body: String,
 }
 
 impl AdvancedAnalyzer {
@@ -91,7 +99,8 @@ impl AdvancedAnalyzer {
 
         // Only flag .call{} as dangerous — .transfer() and .send() use 2300 gas (safe from reentrancy)
         let external_call_pattern = Regex::new(r"\.call\{").unwrap();
-        let state_change_pattern = Regex::new(r"(\w+)\s*=\s*[^=]|\w+\[.*\]\s*=\s*|\+\+|--").unwrap();
+        let state_change_pattern =
+            Regex::new(r"(\w+)\s*=\s*[^=]|\w+\[.*\]\s*=\s*|\+\+|--").unwrap();
 
         let lines: Vec<&str> = content.lines().collect();
 
@@ -103,7 +112,7 @@ impl AdvancedAnalyzer {
 
             if external_call_pattern.is_match(line) {
                 // Check if this is in a try-catch (safer pattern)
-                if idx > 0 && lines[idx-1].contains("try") {
+                if idx > 0 && lines[idx - 1].contains("try") {
                     continue;
                 }
 
@@ -167,10 +176,12 @@ impl AdvancedAnalyzer {
                         VulnerabilitySeverity::Critical,
                         VulnerabilityCategory::OracleManipulation,
                         "Flash Loan Attack Vector Detected".to_string(),
-                        "Contract relies on manipulable price sources vulnerable to flash loans".to_string(),
+                        "Contract relies on manipulable price sources vulnerable to flash loans"
+                            .to_string(),
                         idx + 1,
                         line.to_string(),
-                        "Use TWAP oracles or Chainlink price feeds instead of spot prices".to_string(),
+                        "Use TWAP oracles or Chainlink price feeds instead of spot prices"
+                            .to_string(),
                     ));
                 }
             }
@@ -265,7 +276,8 @@ impl AdvancedAnalyzer {
                                     format!("Function has cyclomatic complexity of {complexity}"),
                                     function_start,
                                     format!("function {function_name}"),
-                                    "Consider breaking down complex functions into smaller pieces".to_string(),
+                                    "Consider breaking down complex functions into smaller pieces"
+                                        .to_string(),
                                 ));
                             }
                         }
@@ -303,18 +315,35 @@ impl AdvancedAnalyzer {
 
         // Find critical functions without modifiers
         let critical_functions = vec![
-            "withdraw", "transfer", "mint", "burn", "pause", "unpause",
-            "setOwner", "changeOwner", "upgrade", "initialize", "destroy"
+            "withdraw",
+            "transfer",
+            "mint",
+            "burn",
+            "pause",
+            "unpause",
+            "setOwner",
+            "changeOwner",
+            "upgrade",
+            "initialize",
+            "destroy",
         ];
 
         // Standard ERC-20/ERC-4626 functions that are SUPPOSED to be public and
         // operate on the caller's own tokens — these don't need access control.
-        let is_erc20_or_erc4626 = content.contains("ERC20") || content.contains("ERC4626")
-            || content.contains("IERC20") || content.contains("allowance")
+        let is_erc20_or_erc4626 = content.contains("ERC20")
+            || content.contains("ERC4626")
+            || content.contains("IERC20")
+            || content.contains("allowance")
             || (content.contains("balanceOf") && content.contains("totalSupply"));
         let erc_standard_functions = vec![
-            "transfer", "transferfrom", "approve", "mint", "burn",
-            "deposit", "withdraw", "redeem",
+            "transfer",
+            "transferfrom",
+            "approve",
+            "mint",
+            "burn",
+            "deposit",
+            "withdraw",
+            "redeem",
         ];
 
         // Match the start of a function declaration (may span multiple lines)
@@ -326,7 +355,8 @@ impl AdvancedAnalyzer {
                 let function_name = captures.get(1).map_or("", |m| m.as_str());
 
                 // Check if it's a critical function
-                let is_critical = critical_functions.iter()
+                let is_critical = critical_functions
+                    .iter()
                     .any(|cf| function_name.to_lowercase().contains(cf));
                 if !is_critical {
                     continue;
@@ -343,15 +373,18 @@ impl AdvancedAnalyzer {
 
                 // Skip if function body uses msg.sender balance deduction or
                 // safeTransferFrom from the caller (ERC-4626 deposit pattern)
-                let fn_body: String = lines.iter()
+                let fn_body: String = lines
+                    .iter()
                     .skip(idx)
                     .take(20)
                     .copied()
                     .collect::<Vec<_>>()
                     .join("\n");
-                if fn_body.contains("balanceOf[msg.sender]") || fn_body.contains("balances[msg.sender]")
+                if fn_body.contains("balanceOf[msg.sender]")
+                    || fn_body.contains("balances[msg.sender]")
                     || fn_body.contains("safeTransferFrom(msg.sender")
-                    || fn_body.contains("transferFrom(msg.sender") {
+                    || fn_body.contains("transferFrom(msg.sender")
+                {
                     continue;
                 }
 
@@ -382,20 +415,27 @@ impl AdvancedAnalyzer {
                     || Regex::new(r"\bonly\w+").unwrap().is_match(&full_sig);
 
                 // Check visibility: skip private/internal functions
-                let is_private_or_internal = full_sig.contains("private") || full_sig.contains("internal");
+                let is_private_or_internal =
+                    full_sig.contains("private") || full_sig.contains("internal");
 
                 // Check if the function body uses msg.sender balance (user withdrawal, not admin)
                 let is_user_facing = {
-                    let fn_body: String = lines.iter()
+                    let fn_body: String = lines
+                        .iter()
                         .skip(idx)
                         .take(20)
                         .copied()
                         .collect::<Vec<_>>()
                         .join("\n");
-                    fn_body.contains("msg.sender") && (fn_body.contains("balances[") || fn_body.contains("balance["))
+                    fn_body.contains("msg.sender")
+                        && (fn_body.contains("balances[") || fn_body.contains("balance["))
                 };
 
-                if !has_modifier && !has_known_modifier && !is_user_facing && !is_private_or_internal {
+                if !has_modifier
+                    && !has_known_modifier
+                    && !is_user_facing
+                    && !is_private_or_internal
+                {
                     vulnerabilities.push(Vulnerability::high_confidence(
                         VulnerabilitySeverity::Critical,
                         VulnerabilityCategory::AccessControl,
@@ -403,7 +443,8 @@ impl AdvancedAnalyzer {
                         "Critical function lacks access control modifiers".to_string(),
                         idx + 1,
                         line.to_string(),
-                        "Add appropriate access control modifiers (onlyOwner, onlyRole, etc.)".to_string(),
+                        "Add appropriate access control modifiers (onlyOwner, onlyRole, etc.)"
+                            .to_string(),
                     ));
                 }
             }
@@ -450,7 +491,8 @@ impl AdvancedAnalyzer {
                     "Upgradeable contracts should not use constructors".to_string(),
                     1,
                     "constructor()".to_string(),
-                    "Use initializer functions instead of constructors in upgradeable contracts".to_string(),
+                    "Use initializer functions instead of constructors in upgradeable contracts"
+                        .to_string(),
                 ));
             }
         }
@@ -482,7 +524,10 @@ impl AdvancedAnalyzer {
         for (idx, line) in lines.iter().enumerate() {
             if loop_pattern.is_match(line) {
                 // Check next few lines for storage reads
-                for (offset, check_line) in lines[(idx + 1)..lines.len().min(idx + 5)].iter().enumerate() {
+                for (offset, check_line) in lines[(idx + 1)..lines.len().min(idx + 5)]
+                    .iter()
+                    .enumerate()
+                {
                     if storage_read_pattern.is_match(check_line) {
                         vulnerabilities.push(Vulnerability::new(
                             VulnerabilitySeverity::Low,
@@ -581,18 +626,29 @@ impl AdvancedAnalyzer {
     // when TWAP, Chainlink, and price validation are all absent.
     fn detect_price_oracle_manipulation(&self, content: &str) -> Option<Vulnerability> {
         let unsafe_price_sources = vec![
-            ("balanceOf(address(this))", "Using contract balance as price source"),
-            ("token.balanceOf(address(this))", "Using token balance as price oracle"),
+            (
+                "balanceOf(address(this))",
+                "Using contract balance as price source",
+            ),
+            (
+                "token.balanceOf(address(this))",
+                "Using token balance as price oracle",
+            ),
             (".getReserves()", "Using spot reserves without TWAP"),
             (".token0()", "Spot price from pair without protection"),
         ];
 
         for (idx, line) in content.lines().enumerate() {
             for (pattern, desc) in &unsafe_price_sources {
-                if line.contains(pattern) && (line.contains("price") || line.contains("Price") || line.contains("amount")) {
+                if line.contains(pattern)
+                    && (line.contains("price") || line.contains("Price") || line.contains("amount"))
+                {
                     // Check if there's TWAP or price validation
-                    if !content.contains("TWAP") && !content.contains("Chainlink") &&
-                       !content.contains("priceValidation") && !content.contains("minPrice") {
+                    if !content.contains("TWAP")
+                        && !content.contains("Chainlink")
+                        && !content.contains("priceValidation")
+                        && !content.contains("minPrice")
+                    {
                         return Some(Vulnerability::high_confidence(
                             VulnerabilitySeverity::Critical,
                             VulnerabilityCategory::OracleManipulation,
@@ -600,7 +656,8 @@ impl AdvancedAnalyzer {
                             format!("{desc} - vulnerable to flash loan attacks"),
                             idx + 1,
                             line.to_string(),
-                            "Use Chainlink price feeds, TWAP oracles, or multiple oracle sources".to_string(),
+                            "Use Chainlink price feeds, TWAP oracles, or multiple oracle sources"
+                                .to_string(),
                         ));
                     }
                 }
@@ -619,8 +676,11 @@ impl AdvancedAnalyzer {
         for (idx, line) in content.lines().enumerate() {
             if swap_pattern.is_match(line) {
                 // Check if function has slippage protection parameters
-                if !line.contains("minAmount") && !line.contains("amountOutMin") &&
-                   !line.contains("slippage") && !line.contains("minReturn") {
+                if !line.contains("minAmount")
+                    && !line.contains("amountOutMin")
+                    && !line.contains("slippage")
+                    && !line.contains("minReturn")
+                {
                     vulnerabilities.push(Vulnerability::new(
                         VulnerabilitySeverity::High,
                         VulnerabilityCategory::FrontRunning,
@@ -650,12 +710,16 @@ impl AdvancedAnalyzer {
             if remove_liquidity_pattern.is_match(line) && line.contains("function") {
                 // Look ahead for balance/amount checks
                 let next_lines: Vec<&str> = content.lines().skip(idx).take(15).collect();
-                let has_balance_check = next_lines.iter().any(|l|
-                    l.contains("require(amount") || l.contains("require(balance")
-                    || l.contains("if (amount") || l.contains("if (balance")
-                    || l.contains("balances[") || l.contains("_balances[")
-                    || l.contains("SafeERC20") || l.contains("safeTransfer")
-                );
+                let has_balance_check = next_lines.iter().any(|l| {
+                    l.contains("require(amount")
+                        || l.contains("require(balance")
+                        || l.contains("if (amount")
+                        || l.contains("if (balance")
+                        || l.contains("balances[")
+                        || l.contains("_balances[")
+                        || l.contains("SafeERC20")
+                        || l.contains("safeTransfer")
+                });
 
                 if !has_balance_check {
                     vulnerabilities.push(Vulnerability::new(
@@ -687,16 +751,21 @@ impl AdvancedAnalyzer {
             for (idx, line) in content.lines().enumerate() {
                 if reward_calc_pattern.is_match(line) {
                     // Check for proper precision handling
-                    if !content.contains("1e18") && !content.contains("PRECISION") &&
-                       !content.contains("MULTIPLIER") && line.contains("/") {
+                    if !content.contains("1e18")
+                        && !content.contains("PRECISION")
+                        && !content.contains("MULTIPLIER")
+                        && line.contains("/")
+                    {
                         vulnerabilities.push(Vulnerability::new(
                             VulnerabilitySeverity::Medium,
                             VulnerabilityCategory::PrecisionLoss,
                             "Reward Calculation Precision Loss".to_string(),
-                            "Reward calculations may lose precision without proper scaling".to_string(),
+                            "Reward calculations may lose precision without proper scaling"
+                                .to_string(),
                             idx + 1,
                             line.to_string(),
-                            "Use proper precision constants (e.g., 1e18) for reward calculations".to_string(),
+                            "Use proper precision constants (e.g., 1e18) for reward calculations"
+                                .to_string(),
                         ));
                     }
                 }
@@ -744,8 +813,10 @@ impl AdvancedAnalyzer {
         for (idx, line) in content.lines().enumerate() {
             if mint_pattern.is_match(line) {
                 // Check for supply cap
-                let has_supply_cap = content.contains("maxSupply") || content.contains("MAX_SUPPLY") ||
-                                    content.contains("totalSupply() <") || content.contains("require(_tokenId");
+                let has_supply_cap = content.contains("maxSupply")
+                    || content.contains("MAX_SUPPLY")
+                    || content.contains("totalSupply() <")
+                    || content.contains("require(_tokenId");
 
                 if !has_supply_cap {
                     vulnerabilities.push(Vulnerability::new(
@@ -760,8 +831,9 @@ impl AdvancedAnalyzer {
                 }
 
                 // Check for duplicate token ID protection
-                let has_exists_check = content.contains("_exists(") || content.contains("ownerOf(tokenId)") ||
-                                      content.contains("require(!_exists");
+                let has_exists_check = content.contains("_exists(")
+                    || content.contains("ownerOf(tokenId)")
+                    || content.contains("require(!_exists");
 
                 if !has_exists_check {
                     vulnerabilities.push(Vulnerability::new(
@@ -793,10 +865,12 @@ impl AdvancedAnalyzer {
                         VulnerabilitySeverity::Medium,
                         VulnerabilityCategory::UnsafeExternalCalls,
                         "Unsafe NFT Transfer".to_string(),
-                        "Using transferFrom instead of safeTransferFrom can lead to locked NFTs".to_string(),
+                        "Using transferFrom instead of safeTransferFrom can lead to locked NFTs"
+                            .to_string(),
                         idx + 1,
                         line.to_string(),
-                        "Use safeTransferFrom to ensure recipient can handle ERC721 tokens".to_string(),
+                        "Use safeTransferFrom to ensure recipient can handle ERC721 tokens"
+                            .to_string(),
                     ));
                 }
             }
@@ -818,9 +892,11 @@ impl AdvancedAnalyzer {
             if token_uri_pattern.is_match(line) {
                 // Check if metadata can be changed
                 let next_lines: Vec<&str> = content.lines().skip(idx).take(10).collect();
-                let has_mutable_metadata = next_lines.iter().any(|l|
-                    l.contains("baseURI =") || l.contains("_tokenURIs[") || l.contains("setTokenURI")
-                );
+                let has_mutable_metadata = next_lines.iter().any(|l| {
+                    l.contains("baseURI =")
+                        || l.contains("_tokenURIs[")
+                        || l.contains("setTokenURI")
+                });
 
                 if has_mutable_metadata {
                     vulnerabilities.push(Vulnerability::new(
@@ -830,7 +906,8 @@ impl AdvancedAnalyzer {
                         "Token metadata can be changed after minting".to_string(),
                         idx + 1,
                         line.to_string(),
-                        "Consider making metadata immutable or clearly document mutability risks".to_string(),
+                        "Consider making metadata immutable or clearly document mutability risks"
+                            .to_string(),
                     ));
                 }
             }
@@ -854,9 +931,10 @@ impl AdvancedAnalyzer {
                 if royalty_pattern.is_match(line) {
                     // Check for percentage validation (should not exceed 100%)
                     let next_lines: Vec<&str> = content.lines().skip(idx).take(15).collect();
-                    let has_validation = next_lines.iter().any(|l|
-                        l.contains("require(") && (l.contains("10000") || l.contains("100") || l.contains("<="))
-                    );
+                    let has_validation = next_lines.iter().any(|l| {
+                        l.contains("require(")
+                            && (l.contains("10000") || l.contains("100") || l.contains("<="))
+                    });
 
                     if !has_validation {
                         vulnerabilities.push(Vulnerability::new(
@@ -866,7 +944,8 @@ impl AdvancedAnalyzer {
                             "Royalty percentage lacks upper bound validation".to_string(),
                             idx + 1,
                             line.to_string(),
-                            "Add require() to cap royalty percentage at 100% (10000 basis points)".to_string(),
+                            "Add require() to cap royalty percentage at 100% (10000 basis points)"
+                                .to_string(),
                         ));
                     }
                 }
@@ -930,8 +1009,9 @@ impl AdvancedAnalyzer {
                         call_line = i;
                     }
                     if has_call && i > call_line {
-                        if body_line.contains("balance") && body_line.contains("=") ||
-                           body_line.contains("balances[") && body_line.contains("=") {
+                        if body_line.contains("balance") && body_line.contains("=")
+                            || body_line.contains("balances[") && body_line.contains("=")
+                        {
                             has_state_update_after = true;
                             break;
                         }
@@ -967,18 +1047,22 @@ impl AdvancedAnalyzer {
         for (idx, line) in content.lines().enumerate() {
             if delegatecall_pattern.is_match(line) {
                 // Check if address comes from function parameter or storage without validation
-                if (line.contains("msg.sender") || line.contains("_target") ||
-                    line.contains("target") || line.contains("implementation")) &&
-                   !line.contains("require(") {
-
+                if (line.contains("msg.sender")
+                    || line.contains("_target")
+                    || line.contains("target")
+                    || line.contains("implementation"))
+                    && !line.contains("require(")
+                {
                     vulnerabilities.push(Vulnerability::high_confidence(
                         VulnerabilitySeverity::Critical,
                         VulnerabilityCategory::DelegateCalls,
                         "Parity Wallet Bug Pattern".to_string(),
-                        "Delegatecall with potentially user-controlled address without validation".to_string(),
+                        "Delegatecall with potentially user-controlled address without validation"
+                            .to_string(),
                         idx + 1,
                         line.to_string(),
-                        "Whitelist allowed delegatecall targets and validate all addresses".to_string(),
+                        "Whitelist allowed delegatecall targets and validate all addresses"
+                            .to_string(),
                     ));
                 }
             }
@@ -994,21 +1078,27 @@ impl AdvancedAnalyzer {
         let mut vulnerabilities = Vec::new();
 
         // Check if this is pre-0.8.0 and has token transfer with arithmetic
-        if content.contains("pragma solidity") &&
-           (content.contains("0.4.") || content.contains("0.5.") ||
-            content.contains("0.6.") || content.contains("0.7.")) &&
-           (content.contains("balanceOf") || content.contains("transfer")) &&
-           !content.contains("SafeMath") {
-
+        if content.contains("pragma solidity")
+            && (content.contains("0.4.")
+                || content.contains("0.5.")
+                || content.contains("0.6.")
+                || content.contains("0.7."))
+            && (content.contains("balanceOf") || content.contains("transfer"))
+            && !content.contains("SafeMath")
+        {
             for (idx, line) in content.lines().enumerate() {
-                if (line.contains("balances[") || line.contains("_balances[")) &&
-                   (line.contains("+=") || line.contains("-=") || line.contains("+") || line.contains("-")) {
-
+                if (line.contains("balances[") || line.contains("_balances["))
+                    && (line.contains("+=")
+                        || line.contains("-=")
+                        || line.contains("+")
+                        || line.contains("-"))
+                {
                     vulnerabilities.push(Vulnerability::high_confidence(
                         VulnerabilitySeverity::Critical,
                         VulnerabilityCategory::ArithmeticIssues,
                         "Token Integer Overflow Risk".to_string(),
-                        "Token balance arithmetic without SafeMath in pre-0.8.0 Solidity".to_string(),
+                        "Token balance arithmetic without SafeMath in pre-0.8.0 Solidity"
+                            .to_string(),
                         idx + 1,
                         line.to_string(),
                         "Use SafeMath library or upgrade to Solidity 0.8.0+".to_string(),
@@ -1026,10 +1116,15 @@ impl AdvancedAnalyzer {
         let mut vulnerabilities = Vec::new();
 
         for (idx, line) in content.lines().enumerate() {
-            if line.contains(".call(") || line.contains(".delegatecall(") || line.contains(".staticcall(") {
+            if line.contains(".call(")
+                || line.contains(".delegatecall(")
+                || line.contains(".staticcall(")
+            {
                 // Check if return value is checked
-                let is_checked = line.contains("(bool") || line.contains("require(") ||
-                                line.contains("if (") || line.contains("if(");
+                let is_checked = line.contains("(bool")
+                    || line.contains("require(")
+                    || line.contains("if (")
+                    || line.contains("if(");
 
                 // Check next line too
                 let lines_vec: Vec<&str> = content.lines().collect();
@@ -1091,28 +1186,30 @@ impl AdvancedAnalyzer {
         let mut vulnerabilities = Vec::new();
 
         // Check for proxy pattern
-        let is_proxy = content.contains("TransparentUpgradeableProxy") ||
-                       content.contains("UUPSUpgradeable") ||
-                       content.contains("Proxy") ||
-                       content.contains("implementation");
+        let is_proxy = content.contains("TransparentUpgradeableProxy")
+            || content.contains("UUPSUpgradeable")
+            || content.contains("Proxy")
+            || content.contains("implementation");
 
         if !is_proxy {
             return vulnerabilities;
         }
 
         // Critical: transferOwnership without access control in proxy context
-        let transfer_ownership_pattern = Regex::new(
-            r"function\s+transferOwnership\s*\([^)]*\)\s+(external|public)\s*\{"
-        ).unwrap();
+        let transfer_ownership_pattern =
+            Regex::new(r"function\s+transferOwnership\s*\([^)]*\)\s+(external|public)\s*\{")
+                .unwrap();
 
         for (idx, line) in content.lines().enumerate() {
             if transfer_ownership_pattern.is_match(line) {
                 // Check for access control in next 5 lines
                 let next_lines: Vec<&str> = content.lines().skip(idx).take(5).collect();
-                let has_access_control = next_lines.iter().any(|l|
-                    l.contains("onlyOwner") || l.contains("onlyAdmin") ||
-                    l.contains("require(msg.sender") || l.contains("onlyRole")
-                );
+                let has_access_control = next_lines.iter().any(|l| {
+                    l.contains("onlyOwner")
+                        || l.contains("onlyAdmin")
+                        || l.contains("require(msg.sender")
+                        || l.contains("onlyRole")
+                });
 
                 if !has_access_control {
                     vulnerabilities.push(Vulnerability::high_confidence(
@@ -1135,9 +1232,11 @@ impl AdvancedAnalyzer {
             for (idx, line) in content.lines().enumerate() {
                 if set_oracle_pattern.is_match(line) {
                     let next_lines: Vec<&str> = content.lines().skip(idx).take(5).collect();
-                    let has_protection = next_lines.iter().any(|l|
-                        l.contains("onlyOwner") || l.contains("timelock") || l.contains("governance")
-                    );
+                    let has_protection = next_lines.iter().any(|l| {
+                        l.contains("onlyOwner")
+                            || l.contains("timelock")
+                            || l.contains("governance")
+                    });
 
                     if !has_protection {
                         vulnerabilities.push(Vulnerability::high_confidence(
@@ -1169,24 +1268,26 @@ impl AdvancedAnalyzer {
         }
 
         // Check for ReentrancyGuard
-        let has_reentrancy_guard = content.contains("ReentrancyGuard") ||
-                                   content.contains("nonReentrant");
+        let has_reentrancy_guard =
+            content.contains("ReentrancyGuard") || content.contains("nonReentrant");
 
         // Critical pattern: State-changing functions using safeTransferFrom
         let lines: Vec<&str> = content.lines().collect();
 
         for (idx, line) in lines.iter().enumerate() {
             // Look for functions that borrow, lend, mint, or modify balances
-            if line.contains("function") && (
-                line.contains("borrow") || line.contains("lend") ||
-                line.contains("mint") || line.contains("stake") ||
-                line.contains("deposit")
-            ) {
+            if line.contains("function")
+                && (line.contains("borrow")
+                    || line.contains("lend")
+                    || line.contains("mint")
+                    || line.contains("stake")
+                    || line.contains("deposit"))
+            {
                 // Check if function uses safeTransferFrom within it
                 let func_body: Vec<&str> = lines.iter().skip(idx).take(30).map(|s| *s).collect();
-                let uses_safe_transfer = func_body.iter().any(|l|
-                    l.contains("safeTransferFrom") || l.contains("_safeMint")
-                );
+                let uses_safe_transfer = func_body
+                    .iter()
+                    .any(|l| l.contains("safeTransferFrom") || l.contains("_safeMint"));
 
                 if uses_safe_transfer && !has_reentrancy_guard {
                     // Check if state changes happen after the transfer
@@ -1194,13 +1295,18 @@ impl AdvancedAnalyzer {
                     let mut state_change_after = false;
 
                     for (i, body_line) in func_body.iter().enumerate() {
-                        if body_line.contains("safeTransferFrom") || body_line.contains("_safeMint") {
+                        if body_line.contains("safeTransferFrom") || body_line.contains("_safeMint")
+                        {
                             transfer_idx = i;
                         }
                         if i > transfer_idx && transfer_idx > 0 {
-                            if body_line.contains("=") && !body_line.contains("==") &&
-                               (body_line.contains("balance") || body_line.contains("amount") ||
-                                body_line.contains("debt") || body_line.contains("collateral")) {
+                            if body_line.contains("=")
+                                && !body_line.contains("==")
+                                && (body_line.contains("balance")
+                                    || body_line.contains("amount")
+                                    || body_line.contains("debt")
+                                    || body_line.contains("collateral"))
+                            {
                                 state_change_after = true;
                                 break;
                             }
@@ -1233,9 +1339,9 @@ impl AdvancedAnalyzer {
         // Only flag `bytes calldata` (arbitrary raw data) without validation.
         // Typed calldata params (uint256 calldata, address[] calldata) are standard
         // and safe - the ABI decoder validates their structure automatically.
-        let calldata_pattern = Regex::new(
-            r"function\s+(\w+)\s*\([^)]*bytes\s+calldata[^)]*\)\s+(external|public)"
-        ).unwrap();
+        let calldata_pattern =
+            Regex::new(r"function\s+(\w+)\s*\([^)]*bytes\s+calldata[^)]*\)\s+(external|public)")
+                .unwrap();
 
         for (idx, line) in content.lines().enumerate() {
             if let Some(captures) = calldata_pattern.captures(line) {
@@ -1243,11 +1349,14 @@ impl AdvancedAnalyzer {
 
                 // Check if there's validation in next 10 lines
                 let next_lines: Vec<&str> = content.lines().skip(idx + 1).take(10).collect();
-                let has_validation = next_lines.iter().any(|l|
-                    l.contains("require(") || l.contains("if (") || l.contains("if(")
-                    || l.contains("revert") || l.contains("assert(")
-                    || l.contains("abi.decode")
-                );
+                let has_validation = next_lines.iter().any(|l| {
+                    l.contains("require(")
+                        || l.contains("if (")
+                        || l.contains("if(")
+                        || l.contains("revert")
+                        || l.contains("assert(")
+                        || l.contains("abi.decode")
+                });
 
                 if !has_validation {
                     vulnerabilities.push(Vulnerability::high_confidence(
@@ -1264,9 +1373,9 @@ impl AdvancedAnalyzer {
         }
 
         // Array parameter without length checks
-        let array_pattern = Regex::new(
-            r"function\s+(\w+)\s*\([^)]*\[\]\s+(\w+)[^)]*\)\s+(external|public)"
-        ).unwrap();
+        let array_pattern =
+            Regex::new(r"function\s+(\w+)\s*\([^)]*\[\]\s+(\w+)[^)]*\)\s+(external|public)")
+                .unwrap();
 
         for (idx, line) in content.lines().enumerate() {
             if let Some(captures) = array_pattern.captures(line) {
@@ -1274,16 +1383,17 @@ impl AdvancedAnalyzer {
                 let array_param = captures.get(2).map_or("", |m| m.as_str());
 
                 let next_lines: Vec<&str> = content.lines().skip(idx).take(10).collect();
-                let has_length_check = next_lines.iter().any(|l|
-                    l.contains(&format!("{array_param}.length")) && l.contains("require")
-                );
+                let has_length_check = next_lines
+                    .iter()
+                    .any(|l| l.contains(&format!("{array_param}.length")) && l.contains("require"));
 
                 if !has_length_check {
                     vulnerabilities.push(Vulnerability::new(
                         VulnerabilitySeverity::High,
                         VulnerabilityCategory::InputValidationFailure,
                         format!("Missing Array Length Validation in {func_name}"),
-                        "Array parameter without length validation - enables DoS and manipulation".to_string(),
+                        "Array parameter without length validation - enables DoS and manipulation"
+                            .to_string(),
                         idx + 1,
                         line.to_string(),
                         "Add require(array.length > 0 && array.length <= MAX_LENGTH)".to_string(),
@@ -1311,28 +1421,35 @@ impl AdvancedAnalyzer {
         for (idx, line) in content.lines().enumerate() {
             if ecrecover_pattern.is_match(line) {
                 // Check for nonce in the signature verification function
-                let func_body: Vec<&str> = content.lines().skip(idx.saturating_sub(15)).take(30).collect();
-                let uses_nonce = func_body.iter().any(|l|
-                    l.contains("nonce") && (l.contains("++") || l.contains("+="))
-                );
+                let func_body: Vec<&str> = content
+                    .lines()
+                    .skip(idx.saturating_sub(15))
+                    .take(30)
+                    .collect();
+                let uses_nonce = func_body
+                    .iter()
+                    .any(|l| l.contains("nonce") && (l.contains("++") || l.contains("+=")));
 
                 if !has_nonce_mapping || !uses_nonce {
                     vulnerabilities.push(Vulnerability::high_confidence(
                         VulnerabilitySeverity::Critical,
                         VulnerabilityCategory::SignatureReplay,
                         "Signature Replay Attack Risk".to_string(),
-                        "Signature verification without nonce tracking allows replay attacks".to_string(),
+                        "Signature verification without nonce tracking allows replay attacks"
+                            .to_string(),
                         idx + 1,
                         line.to_string(),
-                        "Implement nonce mapping and increment after each signature use".to_string(),
+                        "Implement nonce mapping and increment after each signature use"
+                            .to_string(),
                     ));
                 }
 
                 // Missing chain ID — check both local context AND the whole file
                 // (DOMAIN_SEPARATOR with chainid may be defined elsewhere in the contract)
-                let uses_chainid = func_body.iter().any(|l|
+                let uses_chainid = func_body.iter().any(|l| {
                     l.contains("chainid") || l.contains("chainId") || l.contains("block.chainid")
-                ) || content.contains("block.chainid") || content.contains("DOMAIN_SEPARATOR");
+                }) || content.contains("block.chainid")
+                    || content.contains("DOMAIN_SEPARATOR");
 
                 if !uses_chainid {
                     vulnerabilities.push(Vulnerability::high_confidence(
@@ -1360,8 +1477,9 @@ impl AdvancedAnalyzer {
 
         for (idx, line) in content.lines().enumerate() {
             if swap_pattern.is_match(line) {
-                let has_slippage = line.contains("minAmount") || line.contains("amountOutMin") ||
-                                  line.contains("slippage");
+                let has_slippage = line.contains("minAmount")
+                    || line.contains("amountOutMin")
+                    || line.contains("slippage");
                 let has_deadline = line.contains("deadline");
 
                 if !has_slippage || !has_deadline {
@@ -1379,16 +1497,19 @@ impl AdvancedAnalyzer {
         }
 
         // Public liquidation functions (MEV hotspot)
-        let liquidate_pattern = Regex::new(r"function\s+liquidate\w*\([^)]*\)\s+(external|public)").unwrap();
+        let liquidate_pattern =
+            Regex::new(r"function\s+liquidate\w*\([^)]*\)\s+(external|public)").unwrap();
 
         for (idx, line) in content.lines().enumerate() {
             if liquidate_pattern.is_match(line) {
                 // Check if there's MEV protection
                 let func_body: Vec<&str> = content.lines().skip(idx).take(20).collect();
-                let has_mev_protection = func_body.iter().any(|l|
-                    l.contains("Flashbots") || l.contains("private") ||
-                    l.contains("commit") || l.contains("reveal")
-                );
+                let has_mev_protection = func_body.iter().any(|l| {
+                    l.contains("Flashbots")
+                        || l.contains("private")
+                        || l.contains("commit")
+                        || l.contains("reveal")
+                });
 
                 if !has_mev_protection {
                     vulnerabilities.push(Vulnerability::new(
@@ -1423,17 +1544,18 @@ impl AdvancedAnalyzer {
                 VulnerabilitySeverity::Critical,
                 VulnerabilityCategory::DecimalPrecisionMismatch,
                 "CRITICAL: Mixed Decimal Precision (Aevo Pattern)".to_string(),
-                "Contract mixes 1e18 and 1e8 decimals - exact Aevo $2.7M exploit pattern".to_string(),
+                "Contract mixes 1e18 and 1e8 decimals - exact Aevo $2.7M exploit pattern"
+                    .to_string(),
                 1,
                 "Multiple decimal standards detected".to_string(),
-                "Normalize ALL values to single precision (preferably 1e18) before any operations".to_string(),
+                "Normalize ALL values to single precision (preferably 1e18) before any operations"
+                    .to_string(),
             ));
         }
 
         // Division before multiplication in pricing (precision loss)
-        let price_calc_pattern = Regex::new(
-            r"(price|Price|value|Value|rate|Rate)\w*\s*=\s*[^=]*\/[^=]*\*"
-        ).unwrap();
+        let price_calc_pattern =
+            Regex::new(r"(price|Price|value|Value|rate|Rate)\w*\s*=\s*[^=]*\/[^=]*\*").unwrap();
 
         for (idx, line) in content.lines().enumerate() {
             if price_calc_pattern.is_match(line) {
@@ -1441,7 +1563,8 @@ impl AdvancedAnalyzer {
                     VulnerabilitySeverity::High,
                     VulnerabilityCategory::PrecisionLoss,
                     "Precision Loss in Price Calculation".to_string(),
-                    "Division before multiplication loses precision in price/value calculations".to_string(),
+                    "Division before multiplication loses precision in price/value calculations"
+                        .to_string(),
                     idx + 1,
                     line.to_string(),
                     "Always multiply before dividing: (a * b) / c not (a / c) * b".to_string(),
@@ -1530,22 +1653,27 @@ impl AdvancedAnalyzer {
 
         // Check for flash loan callback without proper validation
         let callback_pattern = Regex::new(
-            r"function\s+(executeOperation|onFlashLoan|uniswapV\d+Call|pancakeCall)\s*\([^)]*\)"
-        ).unwrap();
+            r"function\s+(executeOperation|onFlashLoan|uniswapV\d+Call|pancakeCall)\s*\([^)]*\)",
+        )
+        .unwrap();
 
         for (idx, line) in content.lines().enumerate() {
             if callback_pattern.is_match(line) {
                 let func_body: Vec<&str> = content.lines().skip(idx).take(30).collect();
 
                 // Check for initiator validation
-                let has_initiator_check = func_body.iter().any(|l|
-                    l.contains("initiator") && (l.contains("require") || l.contains("==") || l.contains("if"))
-                );
+                let has_initiator_check = func_body.iter().any(|l| {
+                    l.contains("initiator")
+                        && (l.contains("require") || l.contains("==") || l.contains("if"))
+                });
 
                 // Check for msg.sender validation (lending pool)
-                let has_sender_check = func_body.iter().any(|l|
-                    l.contains("msg.sender") && (l.contains("POOL") || l.contains("lendingPool") || l.contains("require"))
-                );
+                let has_sender_check = func_body.iter().any(|l| {
+                    l.contains("msg.sender")
+                        && (l.contains("POOL")
+                            || l.contains("lendingPool")
+                            || l.contains("require"))
+                });
 
                 if !has_initiator_check || !has_sender_check {
                     vulnerabilities.push(Vulnerability::high_confidence(
@@ -1562,10 +1690,14 @@ impl AdvancedAnalyzer {
         }
 
         // Detect price manipulation via balance queries
-        let balance_price_pattern = Regex::new(r"balanceOf\([^)]*\).*price|price.*balanceOf").unwrap();
+        let balance_price_pattern =
+            Regex::new(r"balanceOf\([^)]*\).*price|price.*balanceOf").unwrap();
 
         for (idx, line) in content.lines().enumerate() {
-            if balance_price_pattern.is_match(line) && !content.contains("TWAP") && !content.contains("Chainlink") {
+            if balance_price_pattern.is_match(line)
+                && !content.contains("TWAP")
+                && !content.contains("Chainlink")
+            {
                 vulnerabilities.push(Vulnerability::high_confidence(
                     VulnerabilitySeverity::Critical,
                     VulnerabilityCategory::FlashLoanAttack,
@@ -1587,38 +1719,43 @@ impl AdvancedAnalyzer {
 
         // First depositor attack in vaults
         if content.contains("ERC4626") || content.contains("Vault") {
-            let has_virtual_shares = content.contains("INITIAL_SHARES") ||
-                                     content.contains("_decimalsOffset") ||
-                                     content.contains("MIN_SHARES") ||
-                                     content.contains("MIN_ASSETS") ||
-                                     content.contains("MIN_DEPOSIT") ||
-                                     content.contains("INITIAL_DEPOSIT") ||
-                                     content.contains("10 **");
+            let has_virtual_shares = content.contains("INITIAL_SHARES")
+                || content.contains("_decimalsOffset")
+                || content.contains("MIN_SHARES")
+                || content.contains("MIN_ASSETS")
+                || content.contains("MIN_DEPOSIT")
+                || content.contains("INITIAL_DEPOSIT")
+                || content.contains("10 **");
 
             let mint_pattern = Regex::new(r"function\s+deposit\s*\(").unwrap();
 
             for (idx, line) in content.lines().enumerate() {
                 // Skip import statements and comments
                 let trimmed = line.trim();
-                if trimmed.starts_with("import") || trimmed.starts_with("//") || trimmed.starts_with("*") {
+                if trimmed.starts_with("import")
+                    || trimmed.starts_with("//")
+                    || trimmed.starts_with("*")
+                {
                     continue;
                 }
 
                 if mint_pattern.is_match(line) {
                     let func_body: Vec<&str> = content.lines().skip(idx).take(20).collect();
-                    let has_zero_check = func_body.iter().any(|l|
+                    let has_zero_check = func_body.iter().any(|l| {
                         l.contains("totalSupply") && (l.contains("== 0") || l.contains("> 0"))
-                    );
+                    });
 
                     if has_zero_check && !has_virtual_shares {
                         vulnerabilities.push(Vulnerability::high_confidence(
                             VulnerabilitySeverity::Critical,
                             VulnerabilityCategory::LogicError,
                             "First Depositor Attack Vector (Vault)".to_string(),
-                            "Vault has zero-supply special case without virtual shares protection".to_string(),
+                            "Vault has zero-supply special case without virtual shares protection"
+                                .to_string(),
                             idx + 1,
                             line.to_string(),
-                            "Add virtual shares offset: shares = assets + INITIAL_OFFSET".to_string(),
+                            "Add virtual shares offset: shares = assets + INITIAL_OFFSET"
+                                .to_string(),
                         ));
                     }
                 }
@@ -1633,7 +1770,11 @@ impl AdvancedAnalyzer {
         let lines: Vec<&str> = content.lines().collect();
         for (idx, line) in lines.iter().enumerate() {
             // Skip comments
-            if line.trim().starts_with("//") || line.trim().starts_with("*") || line.trim().starts_with("/*") || line.trim().starts_with("///") {
+            if line.trim().starts_with("//")
+                || line.trim().starts_with("*")
+                || line.trim().starts_with("/*")
+                || line.trim().starts_with("///")
+            {
                 continue;
             }
             if transfer_pattern.is_match(line) {
@@ -1643,22 +1784,27 @@ impl AdvancedAnalyzer {
                     if future_line.trim() == "}" {
                         break;
                     }
-                    if state_update_pattern.is_match(future_line) &&
-                       !future_line.contains("==") &&
-                       !future_line.contains("memory") &&
-                       (future_line.contains("balance") || future_line.contains("amount") ||
-                        future_line.contains("shares") || future_line.contains("debt")) {
-
+                    if state_update_pattern.is_match(future_line)
+                        && !future_line.contains("==")
+                        && !future_line.contains("memory")
+                        && (future_line.contains("balance")
+                            || future_line.contains("amount")
+                            || future_line.contains("shares")
+                            || future_line.contains("debt"))
+                    {
                         // Check if there's a reentrancy guard
-                        if !content.contains("nonReentrant") && !content.contains("ReentrancyGuard") {
+                        if !content.contains("nonReentrant") && !content.contains("ReentrancyGuard")
+                        {
                             vulnerabilities.push(Vulnerability::high_confidence(
                                 VulnerabilitySeverity::Critical,
                                 VulnerabilityCategory::LogicError,
                                 "CEI Violation - State After External Call".to_string(),
-                                "State modification after external call without reentrancy guard".to_string(),
+                                "State modification after external call without reentrancy guard"
+                                    .to_string(),
                                 idx + 1,
                                 line.to_string(),
-                                "Move state updates before external calls or add ReentrancyGuard".to_string(),
+                                "Move state updates before external calls or add ReentrancyGuard"
+                                    .to_string(),
                             ));
                             break;
                         }
@@ -1683,13 +1829,13 @@ impl AdvancedAnalyzer {
                 if execute_pattern.is_match(line) {
                     let func_body: Vec<&str> = content.lines().skip(idx).take(25).collect();
 
-                    let has_signature_check = func_body.iter().any(|l|
+                    let has_signature_check = func_body.iter().any(|l| {
                         l.contains("ecrecover") || l.contains("ECDSA") || l.contains("verify")
-                    );
+                    });
 
-                    let has_nonce_increment = func_body.iter().any(|l|
-                        l.contains("nonce") && (l.contains("++") || l.contains("+= 1"))
-                    );
+                    let has_nonce_increment = func_body
+                        .iter()
+                        .any(|l| l.contains("nonce") && (l.contains("++") || l.contains("+= 1")));
 
                     if !has_signature_check {
                         vulnerabilities.push(Vulnerability::high_confidence(
@@ -1708,10 +1854,12 @@ impl AdvancedAnalyzer {
                             VulnerabilitySeverity::High,
                             VulnerabilityCategory::MetaTransactionVulnerability,
                             "Meta-Transaction Replay Risk".to_string(),
-                            "Execute function doesn't increment nonce - enables replay attacks".to_string(),
+                            "Execute function doesn't increment nonce - enables replay attacks"
+                                .to_string(),
                             idx + 1,
                             line.to_string(),
-                            "Increment nonce after successful execution: _nonces[from]++".to_string(),
+                            "Increment nonce after successful execution: _nonces[from]++"
+                                .to_string(),
                         ));
                     }
                 }
@@ -1747,8 +1895,9 @@ impl AdvancedAnalyzer {
 
         // Check for custom safe math implementations
         let custom_math_pattern = Regex::new(
-            r"function\s+\w*(safe|checked|overflow)\w*(Add|Sub|Mul|Div|Shl|Shr)\w*\s*\("
-        ).unwrap();
+            r"function\s+\w*(safe|checked|overflow)\w*(Add|Sub|Mul|Div|Shl|Shr)\w*\s*\(",
+        )
+        .unwrap();
 
         for (idx, line) in content.lines().enumerate() {
             if custom_math_pattern.is_match(line) {
@@ -1756,34 +1905,41 @@ impl AdvancedAnalyzer {
                     VulnerabilitySeverity::High,
                     VulnerabilityCategory::UncheckedMathOperation,
                     "Custom Safe Math Implementation (Audit Required)".to_string(),
-                    "Custom overflow checks found - Cetus $223M used flawed custom checks".to_string(),
+                    "Custom overflow checks found - Cetus $223M used flawed custom checks"
+                        .to_string(),
                     idx + 1,
                     line.to_string(),
-                    "Use battle-tested libraries (OpenZeppelin) or Solidity 0.8+ built-ins".to_string(),
+                    "Use battle-tested libraries (OpenZeppelin) or Solidity 0.8+ built-ins"
+                        .to_string(),
                 ));
             }
         }
 
         // Check for bit shift operations in critical calculations
-        let shift_in_calc_pattern = Regex::new(
-            r"(liquidity|price|amount|value|shares)\w*\s*=.*<<|>>\s*\d+"
-        ).unwrap();
+        let shift_in_calc_pattern =
+            Regex::new(r"(liquidity|price|amount|value|shares)\w*\s*=.*<<|>>\s*\d+").unwrap();
 
         for (idx, line) in content.lines().enumerate() {
             if shift_in_calc_pattern.is_match(line) {
                 // Check if it's in unchecked block
                 let prev_lines: Vec<&str> = content.lines().take(idx).collect();
-                let in_unchecked = prev_lines.iter().rev().take(10).any(|l| l.contains("unchecked"));
+                let in_unchecked = prev_lines
+                    .iter()
+                    .rev()
+                    .take(10)
+                    .any(|l| l.contains("unchecked"));
 
                 if in_unchecked {
                     vulnerabilities.push(Vulnerability::high_confidence(
                         VulnerabilitySeverity::Critical,
                         VulnerabilityCategory::UncheckedMathOperation,
                         "CRITICAL: Unchecked Bit Shift (Cetus Pattern)".to_string(),
-                        "Bit shift in unchecked block - exact Cetus $223M vulnerability".to_string(),
+                        "Bit shift in unchecked block - exact Cetus $223M vulnerability"
+                            .to_string(),
                         idx + 1,
                         line.to_string(),
-                        "Move bit shifts outside unchecked or add explicit bounds validation".to_string(),
+                        "Move bit shifts outside unchecked or add explicit bounds validation"
+                            .to_string(),
                     ));
                 }
             }
@@ -1795,17 +1951,23 @@ impl AdvancedAnalyzer {
         for (idx, line) in content.lines().enumerate() {
             if complex_math.is_match(line) {
                 let prev_lines: Vec<&str> = content.lines().take(idx).collect();
-                let in_unchecked = prev_lines.iter().rev().take(10).any(|l| l.contains("unchecked"));
+                let in_unchecked = prev_lines
+                    .iter()
+                    .rev()
+                    .take(10)
+                    .any(|l| l.contains("unchecked"));
 
                 if in_unchecked {
                     vulnerabilities.push(Vulnerability::new(
                         VulnerabilitySeverity::High,
                         VulnerabilityCategory::UncheckedMathOperation,
                         "Complex Math in Unchecked Block".to_string(),
-                        "sqrt/exp/pow operations in unchecked block can silently overflow".to_string(),
+                        "sqrt/exp/pow operations in unchecked block can silently overflow"
+                            .to_string(),
                         idx + 1,
                         line.to_string(),
-                        "Validate input bounds before complex math, add explicit overflow checks".to_string(),
+                        "Validate input bounds before complex math, add explicit overflow checks"
+                            .to_string(),
                     ));
                 }
             }
@@ -1826,14 +1988,16 @@ impl AdvancedAnalyzer {
                 let func_body: Vec<&str> = content.lines().skip(idx).take(20).collect();
 
                 // Check for flash loan protection
-                let has_snapshot = func_body.iter().any(|l|
-                    l.contains("snapshot") || l.contains("checkpoint") ||
-                    l.contains("getPastVotes") || l.contains("block.number - 1")
-                );
+                let has_snapshot = func_body.iter().any(|l| {
+                    l.contains("snapshot")
+                        || l.contains("checkpoint")
+                        || l.contains("getPastVotes")
+                        || l.contains("block.number - 1")
+                });
 
-                let has_timelock = content.contains("TimelockController") ||
-                                   content.contains("timelock") ||
-                                   content.contains("delay");
+                let has_timelock = content.contains("TimelockController")
+                    || content.contains("timelock")
+                    || content.contains("delay");
 
                 if !has_snapshot && !has_timelock {
                     vulnerabilities.push(Vulnerability::high_confidence(
@@ -1850,19 +2014,20 @@ impl AdvancedAnalyzer {
         }
 
         // Check for emergency functions
-        let emergency_pattern = Regex::new(r"function\s+emergency\w*\s*\([^)]*\)\s+(external|public)").unwrap();
+        let emergency_pattern =
+            Regex::new(r"function\s+emergency\w*\s*\([^)]*\)\s+(external|public)").unwrap();
 
         for (idx, line) in content.lines().enumerate() {
             if emergency_pattern.is_match(line) {
                 let func_body: Vec<&str> = content.lines().skip(idx).take(10).collect();
 
-                let has_multisig = func_body.iter().any(|l|
+                let has_multisig = func_body.iter().any(|l| {
                     l.contains("multisig") || l.contains("onlyOwner") || l.contains("onlyRole")
-                );
+                });
 
-                let has_timelock = func_body.iter().any(|l|
+                let has_timelock = func_body.iter().any(|l| {
                     l.contains("timelock") || l.contains("delay") || l.contains("cooldown")
-                );
+                });
 
                 if !has_multisig || !has_timelock {
                     vulnerabilities.push(Vulnerability::new(
@@ -1887,51 +2052,60 @@ impl AdvancedAnalyzer {
 
         // Check for cross-chain message handlers
         let message_handler = Regex::new(
-            r"function\s+(lzReceive|_nonblockingLzReceive|receiveWormholeMessages?|_execute)\s*\("
-        ).unwrap();
+            r"function\s+(lzReceive|_nonblockingLzReceive|receiveWormholeMessages?|_execute)\s*\(",
+        )
+        .unwrap();
 
         for (idx, line) in content.lines().enumerate() {
             if message_handler.is_match(line) {
                 let func_body: Vec<&str> = content.lines().skip(idx).take(25).collect();
 
                 // Check for source chain validation
-                let has_chain_check = func_body.iter().any(|l|
-                    l.contains("srcChainId") || l.contains("sourceChain") ||
-                    l.contains("trustedRemote") || l.contains("_srcChainId")
-                );
+                let has_chain_check = func_body.iter().any(|l| {
+                    l.contains("srcChainId")
+                        || l.contains("sourceChain")
+                        || l.contains("trustedRemote")
+                        || l.contains("_srcChainId")
+                });
 
                 // Check for source address validation
-                let has_address_check = func_body.iter().any(|l|
-                    l.contains("srcAddress") || l.contains("_srcAddress") ||
-                    l.contains("trustedRemote[")
-                );
+                let has_address_check = func_body.iter().any(|l| {
+                    l.contains("srcAddress")
+                        || l.contains("_srcAddress")
+                        || l.contains("trustedRemote[")
+                });
 
                 if !has_chain_check || !has_address_check {
                     vulnerabilities.push(Vulnerability::high_confidence(
                         VulnerabilitySeverity::Critical,
                         VulnerabilityCategory::BridgeVulnerability,
                         "Bridge Source Validation Missing".to_string(),
-                        "Cross-chain message handler lacks source chain/address verification".to_string(),
+                        "Cross-chain message handler lacks source chain/address verification"
+                            .to_string(),
                         idx + 1,
                         line.to_string(),
-                        "Validate srcChainId AND trustedRemote[srcChainId] == srcAddress".to_string(),
+                        "Validate srcChainId AND trustedRemote[srcChainId] == srcAddress"
+                            .to_string(),
                     ));
                 }
             }
         }
 
         // Check for bridge claim functions
-        let claim_pattern = Regex::new(r"function\s+\w*(claim|withdraw|redeem)\w*\s*\([^)]*proof").unwrap();
+        let claim_pattern =
+            Regex::new(r"function\s+\w*(claim|withdraw|redeem)\w*\s*\([^)]*proof").unwrap();
 
         for (idx, line) in content.lines().enumerate() {
             if claim_pattern.is_match(line) {
                 let func_body: Vec<&str> = content.lines().skip(idx).take(20).collect();
 
                 // Check for replay protection
-                let has_replay_check = func_body.iter().any(|l|
-                    l.contains("claimed[") || l.contains("processed[") ||
-                    l.contains("used[") || l.contains("nonce")
-                );
+                let has_replay_check = func_body.iter().any(|l| {
+                    l.contains("claimed[")
+                        || l.contains("processed[")
+                        || l.contains("used[")
+                        || l.contains("nonce")
+                });
 
                 if !has_replay_check {
                     vulnerabilities.push(Vulnerability::high_confidence(
@@ -1977,28 +2151,33 @@ impl AdvancedAnalyzer {
         let mut vulnerabilities = Vec::new();
 
         // Check if this is an ERC4626 vault
-        if !content.contains("ERC4626") && !content.contains("Vault") &&
-           !content.contains("convertToShares") && !content.contains("convertToAssets") {
+        if !content.contains("ERC4626")
+            && !content.contains("Vault")
+            && !content.contains("convertToShares")
+            && !content.contains("convertToAssets")
+        {
             return vulnerabilities;
         }
 
         // Check for virtual shares/assets offset (protection)
-        let has_virtual_offset = content.contains("_decimalsOffset") ||
-                                 content.contains("INITIAL_SHARES") ||
-                                 content.contains("VIRTUAL_OFFSET") ||
-                                 content.contains("10 ** _decimalsOffset()");
+        let has_virtual_offset = content.contains("_decimalsOffset")
+            || content.contains("INITIAL_SHARES")
+            || content.contains("VIRTUAL_OFFSET")
+            || content.contains("10 ** _decimalsOffset()");
 
         // Check for minimum deposit/shares requirement (including jDola-style MIN_SHARES/MIN_ASSETS)
-        let has_min_deposit = content.contains("MIN_DEPOSIT") ||
-                             content.contains("minDeposit") ||
-                             content.contains("MIN_SHARES") ||
-                             content.contains("MIN_ASSETS") ||
-                             content.contains("INITIAL_DEPOSIT") ||
-                             (content.contains("require(assets") && content.contains(">="));
+        let has_min_deposit = content.contains("MIN_DEPOSIT")
+            || content.contains("minDeposit")
+            || content.contains("MIN_SHARES")
+            || content.contains("MIN_ASSETS")
+            || content.contains("INITIAL_DEPOSIT")
+            || (content.contains("require(assets") && content.contains(">="));
 
         // Look for share calculation without protection
-        let share_calc_pattern = Regex::new(r"shares\s*=\s*assets\s*\*\s*totalSupply\s*/\s*totalAssets").unwrap();
-        let asset_calc_pattern = Regex::new(r"assets\s*=\s*shares\s*\*\s*totalAssets\s*/\s*totalSupply").unwrap();
+        let share_calc_pattern =
+            Regex::new(r"shares\s*=\s*assets\s*\*\s*totalSupply\s*/\s*totalAssets").unwrap();
+        let asset_calc_pattern =
+            Regex::new(r"assets\s*=\s*shares\s*\*\s*totalAssets\s*/\s*totalSupply").unwrap();
 
         for (idx, line) in content.lines().enumerate() {
             if share_calc_pattern.is_match(line) || asset_calc_pattern.is_match(line) {
@@ -2024,25 +2203,30 @@ impl AdvancedAnalyzer {
                 let func_body: Vec<&str> = content.lines().skip(idx).take(15).collect();
 
                 // Check if there's division that could round to zero
-                let has_unsafe_div = func_body.iter().any(|l|
-                    l.contains("/ totalSupply") || l.contains("/ totalAssets") ||
-                    l.contains("/ supply") || l.contains("/ assets")
-                );
+                let has_unsafe_div = func_body.iter().any(|l| {
+                    l.contains("/ totalSupply")
+                        || l.contains("/ totalAssets")
+                        || l.contains("/ supply")
+                        || l.contains("/ assets")
+                });
 
-                let has_zero_check = func_body.iter().any(|l|
-                    l.contains("supply == 0") || l.contains("totalSupply() == 0") ||
-                    l.contains("supply > 0")
-                );
+                let has_zero_check = func_body.iter().any(|l| {
+                    l.contains("supply == 0")
+                        || l.contains("totalSupply() == 0")
+                        || l.contains("supply > 0")
+                });
 
                 if has_unsafe_div && has_zero_check && !has_virtual_offset {
                     vulnerabilities.push(Vulnerability::high_confidence(
                         VulnerabilitySeverity::Critical,
                         VulnerabilityCategory::LogicError,
                         "ERC4626 Zero Supply Edge Case".to_string(),
-                        "Special case for zero supply can be exploited via donation attack".to_string(),
+                        "Special case for zero supply can be exploited via donation attack"
+                            .to_string(),
                         idx + 1,
                         line.to_string(),
-                        "Use virtual shares offset instead of special-casing zero supply".to_string(),
+                        "Use virtual shares offset instead of special-casing zero supply"
+                            .to_string(),
                     ));
                 }
             }
@@ -2058,8 +2242,12 @@ impl AdvancedAnalyzer {
 
         // Check for external calls that can trigger callbacks
         let callback_triggers = [
-            "safeTransferFrom", "safeTransfer", "_safeMint",
-            ".call{", "IUniswapV3Pool", "ICurvePool",
+            "safeTransferFrom",
+            "safeTransfer",
+            "_safeMint",
+            ".call{",
+            "IUniswapV3Pool",
+            "ICurvePool",
         ];
 
         let has_callback_trigger = callback_triggers.iter().any(|t| content.contains(t));
@@ -2079,14 +2267,22 @@ impl AdvancedAnalyzer {
 
         // Dangerous view functions that read pool state
         let dangerous_views = [
-            "getPrice", "getRate", "get_virtual_price", "totalSupply",
-            "balanceOf", "getReserves", "slot0", "liquidity",
-            "convertToAssets", "convertToShares", "exchangeRate",
+            "getPrice",
+            "getRate",
+            "get_virtual_price",
+            "totalSupply",
+            "balanceOf",
+            "getReserves",
+            "slot0",
+            "liquidity",
+            "convertToAssets",
+            "convertToShares",
+            "exchangeRate",
         ];
 
         // Check if contract has ReentrancyGuard
-        let has_reentrancy_guard = content.contains("ReentrancyGuard") ||
-                                   content.contains("nonReentrant");
+        let has_reentrancy_guard =
+            content.contains("ReentrancyGuard") || content.contains("nonReentrant");
 
         // Look for state-reading patterns that could be exploited
         let lines: Vec<&str> = content.lines().collect();
@@ -2153,36 +2349,40 @@ impl AdvancedAnalyzer {
         let mut vulnerabilities = Vec::new();
 
         // Check if Permit2 is used
-        if !content.contains("Permit2") && !content.contains("ISignatureTransfer") &&
-           !content.contains("IAllowanceTransfer") && !content.contains("permit2") {
+        if !content.contains("Permit2")
+            && !content.contains("ISignatureTransfer")
+            && !content.contains("IAllowanceTransfer")
+            && !content.contains("permit2")
+        {
             return vulnerabilities;
         }
 
         // Check for signature-based transfers
-        let permit_transfer_pattern = Regex::new(
-            r"(permitTransferFrom|permitWitnessTransferFrom|permit\s*\()"
-        ).unwrap();
+        let permit_transfer_pattern =
+            Regex::new(r"(permitTransferFrom|permitWitnessTransferFrom|permit\s*\()").unwrap();
 
         for (idx, line) in content.lines().enumerate() {
             if permit_transfer_pattern.is_match(line) {
                 let func_body: Vec<&str> = content.lines().skip(idx).take(15).collect();
 
                 // Check for deadline validation
-                let has_deadline_check = func_body.iter().any(|l|
-                    l.contains("deadline") && (l.contains("require") || l.contains("if") || l.contains("<="))
-                );
+                let has_deadline_check = func_body.iter().any(|l| {
+                    l.contains("deadline")
+                        && (l.contains("require") || l.contains("if") || l.contains("<="))
+                });
 
                 // Check for nonce validation
-                let has_nonce_check = func_body.iter().any(|l|
-                    l.contains("nonce") && (l.contains("++") || l.contains("invalidate"))
-                );
+                let has_nonce_check = func_body
+                    .iter()
+                    .any(|l| l.contains("nonce") && (l.contains("++") || l.contains("invalidate")));
 
                 if !has_deadline_check {
                     vulnerabilities.push(Vulnerability::new(
                         VulnerabilitySeverity::High,
                         VulnerabilityCategory::SignatureReplay,
                         "Permit2 Missing Deadline Check".to_string(),
-                        "Permit2 signature without deadline validation enables indefinite replay".to_string(),
+                        "Permit2 signature without deadline validation enables indefinite replay"
+                            .to_string(),
                         idx + 1,
                         line.to_string(),
                         "Verify permit.deadline >= block.timestamp before processing".to_string(),
@@ -2194,7 +2394,8 @@ impl AdvancedAnalyzer {
                         VulnerabilitySeverity::High,
                         VulnerabilityCategory::SignatureReplay,
                         "Permit2 Nonce Not Invalidated".to_string(),
-                        "SignatureTransfer nonce may allow replay if not properly tracked".to_string(),
+                        "SignatureTransfer nonce may allow replay if not properly tracked"
+                            .to_string(),
                         idx + 1,
                         line.to_string(),
                         "Use unique nonces and verify they're consumed".to_string(),
@@ -2208,7 +2409,9 @@ impl AdvancedAnalyzer {
             let approve_pattern = Regex::new(r"approve\s*\([^)]*Permit2").unwrap();
 
             for (idx, line) in content.lines().enumerate() {
-                if approve_pattern.is_match(line) || (line.contains("approve") && content.contains("Permit2")) {
+                if approve_pattern.is_match(line)
+                    || (line.contains("approve") && content.contains("Permit2"))
+                {
                     // Check for amount validation
                     if line.contains("type(uint160).max") || line.contains("type(uint256).max") {
                         vulnerabilities.push(Vulnerability::new(
@@ -2234,35 +2437,41 @@ impl AdvancedAnalyzer {
         let mut vulnerabilities = Vec::new();
 
         // Check if LayerZero is used
-        if !content.contains("LayerZero") && !content.contains("lzReceive") &&
-           !content.contains("LzApp") && !content.contains("ILayerZeroEndpoint") {
+        if !content.contains("LayerZero")
+            && !content.contains("lzReceive")
+            && !content.contains("LzApp")
+            && !content.contains("ILayerZeroEndpoint")
+        {
             return vulnerabilities;
         }
 
         // Check _lzReceive implementation
-        let lz_receive_pattern = Regex::new(
-            r"function\s+(_lzReceive|lzReceive|_nonblockingLzReceive)\s*\("
-        ).unwrap();
+        let lz_receive_pattern =
+            Regex::new(r"function\s+(_lzReceive|lzReceive|_nonblockingLzReceive)\s*\(").unwrap();
 
         for (idx, line) in content.lines().enumerate() {
             if lz_receive_pattern.is_match(line) {
                 let func_body: Vec<&str> = content.lines().skip(idx).take(30).collect();
 
                 // Check for source chain ID validation
-                let has_chain_id_check = func_body.iter().any(|l|
-                    l.contains("_srcChainId") && (l.contains("require") || l.contains("if") || l.contains("trustedRemote"))
-                );
+                let has_chain_id_check = func_body.iter().any(|l| {
+                    l.contains("_srcChainId")
+                        && (l.contains("require")
+                            || l.contains("if")
+                            || l.contains("trustedRemote"))
+                });
 
                 // Check for source address validation
-                let has_source_check = func_body.iter().any(|l|
-                    l.contains("trustedRemoteLookup") || l.contains("trustedRemote[") ||
-                    (l.contains("_srcAddress") && l.contains("require"))
-                );
+                let has_source_check = func_body.iter().any(|l| {
+                    l.contains("trustedRemoteLookup")
+                        || l.contains("trustedRemote[")
+                        || (l.contains("_srcAddress") && l.contains("require"))
+                });
 
                 // Check for payload length validation
-                let has_payload_check = func_body.iter().any(|l|
+                let has_payload_check = func_body.iter().any(|l| {
                     l.contains("_payload.length") && (l.contains("require") || l.contains(">="))
-                );
+                });
 
                 if !has_chain_id_check {
                     vulnerabilities.push(Vulnerability::high_confidence(
@@ -2296,7 +2505,8 @@ impl AdvancedAnalyzer {
                         "Cross-chain payload not validated before decoding".to_string(),
                         idx + 1,
                         line.to_string(),
-                        "Validate payload length before abi.decode to prevent out-of-bounds".to_string(),
+                        "Validate payload length before abi.decode to prevent out-of-bounds"
+                            .to_string(),
                     ));
                 }
             }
@@ -2309,16 +2519,17 @@ impl AdvancedAnalyzer {
             if set_trusted_pattern.is_match(line) {
                 let func_body: Vec<&str> = content.lines().skip(idx).take(5).collect();
 
-                let has_access_control = func_body.iter().any(|l|
+                let has_access_control = func_body.iter().any(|l| {
                     l.contains("onlyOwner") || l.contains("onlyRole") || l.contains("onlyAdmin")
-                );
+                });
 
                 if !has_access_control {
                     vulnerabilities.push(Vulnerability::high_confidence(
                         VulnerabilitySeverity::Critical,
                         VulnerabilityCategory::AccessControl,
                         "Unprotected setTrustedRemote".to_string(),
-                        "Anyone can change trusted remote addresses, enabling cross-chain attack".to_string(),
+                        "Anyone can change trusted remote addresses, enabling cross-chain attack"
+                            .to_string(),
                         idx + 1,
                         line.to_string(),
                         "Add onlyOwner or appropriate access control modifier".to_string(),
@@ -2336,9 +2547,12 @@ impl AdvancedAnalyzer {
         let mut vulnerabilities = Vec::new();
 
         // Check if this is an EIP-4337 related contract
-        if !content.contains("UserOperation") && !content.contains("IAccount") &&
-           !content.contains("IEntryPoint") && !content.contains("validateUserOp") &&
-           !content.contains("IPaymaster") {
+        if !content.contains("UserOperation")
+            && !content.contains("IAccount")
+            && !content.contains("IEntryPoint")
+            && !content.contains("validateUserOp")
+            && !content.contains("IPaymaster")
+        {
             return vulnerabilities;
         }
 
@@ -2350,28 +2564,32 @@ impl AdvancedAnalyzer {
                 let func_body: Vec<&str> = content.lines().skip(idx).take(30).collect();
 
                 // Check for signature validation
-                let has_sig_check = func_body.iter().any(|l|
-                    l.contains("ecrecover") || l.contains("ECDSA") ||
-                    l.contains("isValidSignature") || l.contains("SignatureChecker")
-                );
+                let has_sig_check = func_body.iter().any(|l| {
+                    l.contains("ecrecover")
+                        || l.contains("ECDSA")
+                        || l.contains("isValidSignature")
+                        || l.contains("SignatureChecker")
+                });
 
                 // Check for nonce validation
-                let has_nonce_check = func_body.iter().any(|l|
-                    l.contains("userOp.nonce") || l.contains("nonce")
-                );
+                let has_nonce_check = func_body
+                    .iter()
+                    .any(|l| l.contains("userOp.nonce") || l.contains("nonce"));
 
                 // Check for gas validation
-                let has_gas_check = func_body.iter().any(|l|
-                    l.contains("prefund") || l.contains("missingAccountFunds") ||
-                    l.contains("validationData")
-                );
+                let has_gas_check = func_body.iter().any(|l| {
+                    l.contains("prefund")
+                        || l.contains("missingAccountFunds")
+                        || l.contains("validationData")
+                });
 
                 if !has_sig_check {
                     vulnerabilities.push(Vulnerability::high_confidence(
                         VulnerabilitySeverity::Critical,
                         VulnerabilityCategory::AccessControl,
                         "EIP-4337: Missing Signature Validation".to_string(),
-                        "validateUserOp doesn't verify signature - anyone can execute operations".to_string(),
+                        "validateUserOp doesn't verify signature - anyone can execute operations"
+                            .to_string(),
                         idx + 1,
                         line.to_string(),
                         "Add ECDSA signature verification against owner".to_string(),
@@ -2412,14 +2630,14 @@ impl AdvancedAnalyzer {
                 let func_body: Vec<&str> = content.lines().skip(idx).take(25).collect();
 
                 // Check for proper return value
-                let _has_context = func_body.iter().any(|l|
-                    l.contains("context") && l.contains("return")
-                );
+                let _has_context = func_body
+                    .iter()
+                    .any(|l| l.contains("context") && l.contains("return"));
 
                 // Check for sender validation
-                let has_sender_check = func_body.iter().any(|l|
+                let has_sender_check = func_body.iter().any(|l| {
                     l.contains("userOp.sender") && (l.contains("require") || l.contains("if"))
-                );
+                });
 
                 if !has_sender_check {
                     vulnerabilities.push(Vulnerability::new(
@@ -2444,9 +2662,12 @@ impl AdvancedAnalyzer {
         let mut vulnerabilities = Vec::new();
 
         // Check if transient storage is used
-        if !content.contains("tstore") && !content.contains("tload") &&
-           !content.contains("TSTORE") && !content.contains("TLOAD") &&
-           !content.contains("transient") {
+        if !content.contains("tstore")
+            && !content.contains("tload")
+            && !content.contains("TSTORE")
+            && !content.contains("TLOAD")
+            && !content.contains("transient")
+        {
             return vulnerabilities;
         }
 
@@ -2466,7 +2687,8 @@ impl AdvancedAnalyzer {
                         VulnerabilitySeverity::Low,
                         VulnerabilityCategory::StateVariable,
                         "Transient Storage Write Without Read".to_string(),
-                        "TSTORE used but TLOAD not found - verify transient value is consumed".to_string(),
+                        "TSTORE used but TLOAD not found - verify transient value is consumed"
+                            .to_string(),
                         idx + 1,
                         line.to_string(),
                         "Ensure transient storage is read within same transaction".to_string(),
@@ -2475,9 +2697,8 @@ impl AdvancedAnalyzer {
 
                 // Check for slot collision risk
                 if has_tstore || has_tload {
-                    let uses_dynamic_slot = asm_body.iter().any(|l|
-                        (l.contains("tstore") || l.contains("tload")) &&
-                        !l.contains("0x") // Not a constant slot
+                    let uses_dynamic_slot = asm_body.iter().any(
+                        |l| (l.contains("tstore") || l.contains("tload")) && !l.contains("0x"), // Not a constant slot
                     );
 
                     if uses_dynamic_slot {
@@ -2485,10 +2706,12 @@ impl AdvancedAnalyzer {
                             VulnerabilitySeverity::Medium,
                             VulnerabilityCategory::StateVariable,
                             "Dynamic Transient Storage Slot".to_string(),
-                            "Transient storage with dynamic slot may collide with other uses".to_string(),
+                            "Transient storage with dynamic slot may collide with other uses"
+                                .to_string(),
                             idx + 1,
                             line.to_string(),
-                            "Use constant slots or namespaced keys to prevent collision".to_string(),
+                            "Use constant slots or namespaced keys to prevent collision"
+                                .to_string(),
                         ));
                     }
                 }
@@ -2505,9 +2728,9 @@ impl AdvancedAnalyzer {
                     // Look for matching reset
                     let func_body: Vec<&str> = content.lines().skip(idx).take(30).collect();
 
-                    let has_reset = func_body.iter().any(|l|
-                        l.contains("tstore") && (l.contains("0") || l.contains("false"))
-                    );
+                    let has_reset = func_body
+                        .iter()
+                        .any(|l| l.contains("tstore") && (l.contains("0") || l.contains("false")));
 
                     if !has_reset {
                         vulnerabilities.push(Vulnerability::new(
@@ -2533,8 +2756,10 @@ impl AdvancedAnalyzer {
         let mut vulnerabilities = Vec::new();
 
         // Check if CREATE2 is used
-        if !content.contains("create2") && !content.contains("CREATE2") &&
-           !content.contains("Create2") {
+        if !content.contains("create2")
+            && !content.contains("CREATE2")
+            && !content.contains("Create2")
+        {
             return vulnerabilities;
         }
 
@@ -2543,22 +2768,29 @@ impl AdvancedAnalyzer {
         for (idx, line) in content.lines().enumerate() {
             if create2_pattern.is_match(line) || line.contains("Create2.deploy") {
                 // Check if salt is user-controlled
-                let func_context: Vec<&str> = content.lines().skip(idx.saturating_sub(15)).take(30).collect();
+                let func_context: Vec<&str> = content
+                    .lines()
+                    .skip(idx.saturating_sub(15))
+                    .take(30)
+                    .collect();
 
-                let salt_from_param = func_context.iter().any(|l|
-                    l.contains("bytes32 salt") || l.contains("_salt") ||
-                    (l.contains("salt") && l.contains("calldata"))
-                );
+                let salt_from_param = func_context.iter().any(|l| {
+                    l.contains("bytes32 salt")
+                        || l.contains("_salt")
+                        || (l.contains("salt") && l.contains("calldata"))
+                });
 
                 if salt_from_param {
                     vulnerabilities.push(Vulnerability::new(
                         VulnerabilitySeverity::Medium,
                         VulnerabilityCategory::LogicError,
                         "User-Controlled CREATE2 Salt".to_string(),
-                        "User-controlled salt enables address prediction and potential griefing".to_string(),
+                        "User-controlled salt enables address prediction and potential griefing"
+                            .to_string(),
                         idx + 1,
                         line.to_string(),
-                        "Include msg.sender in salt computation to prevent address squatting".to_string(),
+                        "Include msg.sender in salt computation to prevent address squatting"
+                            .to_string(),
                     ));
                 }
 
@@ -2583,10 +2815,11 @@ impl AdvancedAnalyzer {
                 if line.contains("implementation") && line.contains("=") {
                     let func_body: Vec<&str> = content.lines().skip(idx).take(10).collect();
 
-                    let has_code_check = func_body.iter().any(|l|
-                        l.contains("extcodesize") || l.contains("code.length") ||
-                        l.contains("isContract")
-                    );
+                    let has_code_check = func_body.iter().any(|l| {
+                        l.contains("extcodesize")
+                            || l.contains("code.length")
+                            || l.contains("isContract")
+                    });
 
                     if !has_code_check {
                         vulnerabilities.push(Vulnerability::new(
@@ -2596,7 +2829,8 @@ impl AdvancedAnalyzer {
                             "Implementation address set without verifying code exists".to_string(),
                             idx + 1,
                             line.to_string(),
-                            "Verify implementation has code: require(impl.code.length > 0)".to_string(),
+                            "Verify implementation has code: require(impl.code.length > 0)"
+                                .to_string(),
                         ));
                     }
                 }
@@ -2612,8 +2846,11 @@ impl AdvancedAnalyzer {
         let mut vulnerabilities = Vec::new();
 
         // Check if Merkle proofs are used
-        if !content.contains("merkle") && !content.contains("Merkle") &&
-           !content.contains("proof") && !content.contains("MerkleProof") {
+        if !content.contains("merkle")
+            && !content.contains("Merkle")
+            && !content.contains("proof")
+            && !content.contains("MerkleProof")
+        {
             return vulnerabilities;
         }
 
@@ -2621,60 +2858,73 @@ impl AdvancedAnalyzer {
         let verify_pattern = Regex::new(r"(verify|processProof)\s*\(").unwrap();
 
         for (idx, line) in content.lines().enumerate() {
-            if verify_pattern.is_match(line) &&
-               (line.contains("merkle") || line.contains("Merkle") || line.contains("proof")) {
-
-                let func_body: Vec<&str> = content.lines().skip(idx.saturating_sub(10)).take(25).collect();
+            if verify_pattern.is_match(line)
+                && (line.contains("merkle") || line.contains("Merkle") || line.contains("proof"))
+            {
+                let func_body: Vec<&str> = content
+                    .lines()
+                    .skip(idx.saturating_sub(10))
+                    .take(25)
+                    .collect();
 
                 // Check for leaf construction with multiple values
-                let leaf_construction = func_body.iter().any(|l|
-                    l.contains("keccak256") && l.contains("abi.encode")
-                );
+                let leaf_construction = func_body
+                    .iter()
+                    .any(|l| l.contains("keccak256") && l.contains("abi.encode"));
 
                 // Check if leaf includes sender/claimer
-                let includes_sender = func_body.iter().any(|l|
-                    l.contains("msg.sender") || l.contains("_claimer") ||
-                    l.contains("_account") || l.contains("_user")
-                );
+                let includes_sender = func_body.iter().any(|l| {
+                    l.contains("msg.sender")
+                        || l.contains("_claimer")
+                        || l.contains("_account")
+                        || l.contains("_user")
+                });
 
                 if leaf_construction && !includes_sender {
                     vulnerabilities.push(Vulnerability::high_confidence(
                         VulnerabilitySeverity::Critical,
                         VulnerabilityCategory::AccessControl,
                         "CRITICAL: Merkle Proof Without Address Binding".to_string(),
-                        "Merkle leaf doesn't include msg.sender - proofs can be stolen/replayed".to_string(),
+                        "Merkle leaf doesn't include msg.sender - proofs can be stolen/replayed"
+                            .to_string(),
                         idx + 1,
                         line.to_string(),
-                        "Include msg.sender in leaf: keccak256(abi.encode(msg.sender, amount))".to_string(),
+                        "Include msg.sender in leaf: keccak256(abi.encode(msg.sender, amount))"
+                            .to_string(),
                     ));
                 }
 
                 // Check for second preimage attack (leaf vs node)
-                let has_leaf_encoding = func_body.iter().any(|l|
-                    l.contains("abi.encodePacked") && l.contains("keccak256")
-                );
+                let has_leaf_encoding = func_body
+                    .iter()
+                    .any(|l| l.contains("abi.encodePacked") && l.contains("keccak256"));
 
-                let has_double_hash = func_body.iter().any(|l|
-                    l.contains("keccak256(keccak256") ||
-                    (l.contains("keccak256") && l.contains("bytes32"))
-                );
+                let has_double_hash = func_body.iter().any(|l| {
+                    l.contains("keccak256(keccak256")
+                        || (l.contains("keccak256") && l.contains("bytes32"))
+                });
 
                 if has_leaf_encoding && !has_double_hash {
                     // Check if using abi.encodePacked with multiple dynamic values
-                    let packed_dynamic = func_body.iter().any(|l|
-                        l.contains("abi.encodePacked") &&
-                        (l.matches("string").count() + l.matches("bytes ").count() + l.matches("bytes,").count()) > 1
-                    );
+                    let packed_dynamic = func_body.iter().any(|l| {
+                        l.contains("abi.encodePacked")
+                            && (l.matches("string").count()
+                                + l.matches("bytes ").count()
+                                + l.matches("bytes,").count())
+                                > 1
+                    });
 
                     if packed_dynamic {
                         vulnerabilities.push(Vulnerability::new(
                             VulnerabilitySeverity::High,
                             VulnerabilityCategory::AccessControl,
                             "Merkle Tree Hash Collision Risk".to_string(),
-                            "abi.encodePacked with multiple dynamic types enables hash collision".to_string(),
+                            "abi.encodePacked with multiple dynamic types enables hash collision"
+                                .to_string(),
                             idx + 1,
                             line.to_string(),
-                            "Use abi.encode instead of abi.encodePacked for leaf hashing".to_string(),
+                            "Use abi.encode instead of abi.encodePacked for leaf hashing"
+                                .to_string(),
                         ));
                     }
                 }
@@ -2689,15 +2939,17 @@ impl AdvancedAnalyzer {
                 if claim_pattern.is_match(line) {
                     let func_body: Vec<&str> = content.lines().skip(idx).take(20).collect();
 
-                    let has_claimed_check = func_body.iter().any(|l|
-                        l.contains("claimed[") || l.contains("hasClaimed[") ||
-                        l.contains("used[") || l.contains("redeemed[")
-                    );
+                    let has_claimed_check = func_body.iter().any(|l| {
+                        l.contains("claimed[")
+                            || l.contains("hasClaimed[")
+                            || l.contains("used[")
+                            || l.contains("redeemed[")
+                    });
 
-                    let has_claimed_update = func_body.iter().any(|l|
-                        (l.contains("claimed[") || l.contains("hasClaimed[")) &&
-                        l.contains("= true")
-                    );
+                    let has_claimed_update = func_body.iter().any(|l| {
+                        (l.contains("claimed[") || l.contains("hasClaimed["))
+                            && l.contains("= true")
+                    });
 
                     if !has_claimed_check || !has_claimed_update {
                         vulnerabilities.push(Vulnerability::high_confidence(
@@ -2743,13 +2995,13 @@ impl AdvancedAnalyzer {
         let mut vulnerabilities = Vec::new();
 
         // Check if using Chainlink on L2
-        let uses_chainlink = content.contains("AggregatorV3Interface") ||
-                            content.contains("latestRoundData") ||
-                            content.contains("priceFeed");
+        let uses_chainlink = content.contains("AggregatorV3Interface")
+            || content.contains("latestRoundData")
+            || content.contains("priceFeed");
 
-        let is_l2_aware = content.contains("sequencer") ||
-                         content.contains("Sequencer") ||
-                         content.contains("L2_SEQUENCER");
+        let is_l2_aware = content.contains("sequencer")
+            || content.contains("Sequencer")
+            || content.contains("L2_SEQUENCER");
 
         if uses_chainlink && !is_l2_aware {
             // Look for price feed usage without sequencer check
@@ -2772,21 +3024,25 @@ impl AdvancedAnalyzer {
 
         // Check for grace period after sequencer recovery
         if is_l2_aware {
-            let has_grace_period = content.contains("GRACE_PERIOD") ||
-                                  content.contains("gracePeriod") ||
-                                  content.contains("3600"); // 1 hour is common
+            let has_grace_period = content.contains("GRACE_PERIOD")
+                || content.contains("gracePeriod")
+                || content.contains("3600"); // 1 hour is common
 
             if !has_grace_period {
                 for (idx, line) in content.lines().enumerate() {
-                    if line.contains("sequencer") && (line.contains("isSequencerUp") || line.contains("answer")) {
+                    if line.contains("sequencer")
+                        && (line.contains("isSequencerUp") || line.contains("answer"))
+                    {
                         vulnerabilities.push(Vulnerability::new(
                             VulnerabilitySeverity::High,
                             VulnerabilityCategory::L2SequencerDowntime,
                             "L2 Sequencer Check Missing Grace Period".to_string(),
-                            "Sequencer uptime checked but no grace period after recovery".to_string(),
+                            "Sequencer uptime checked but no grace period after recovery"
+                                .to_string(),
                             idx + 1,
                             line.to_string(),
-                            "Add grace period: require(block.timestamp - startedAt > GRACE_PERIOD)".to_string(),
+                            "Add grace period: require(block.timestamp - startedAt > GRACE_PERIOD)"
+                                .to_string(),
                         ));
                         break;
                     }
@@ -2802,10 +3058,10 @@ impl AdvancedAnalyzer {
         let mut vulnerabilities = Vec::new();
 
         // Check for L1 gas price dependencies
-        let uses_l1_gas = content.contains("l1GasPrice") ||
-                         content.contains("L1_GAS") ||
-                         content.contains("getL1Fee") ||
-                         content.contains("OVM_GasPriceOracle");
+        let uses_l1_gas = content.contains("l1GasPrice")
+            || content.contains("L1_GAS")
+            || content.contains("getL1Fee")
+            || content.contains("OVM_GasPriceOracle");
 
         if uses_l1_gas {
             let oracle_pattern = Regex::new(r"(l1GasPrice|getL1Fee|L1_GAS)\s*\(?\s*\)?").unwrap();
@@ -2813,13 +3069,19 @@ impl AdvancedAnalyzer {
             for (idx, line) in content.lines().enumerate() {
                 if oracle_pattern.is_match(line) {
                     // Check for manipulation protection
-                    let func_body: Vec<&str> = content.lines().skip(idx.saturating_sub(5)).take(15).collect();
+                    let func_body: Vec<&str> = content
+                        .lines()
+                        .skip(idx.saturating_sub(5))
+                        .take(15)
+                        .collect();
 
-                    let has_bounds_check = func_body.iter().any(|l|
-                        l.contains("maxL1Gas") || l.contains("MAX_L1") ||
-                        l.contains("< ") || l.contains("> ") ||
-                        l.contains("require(") && l.contains("gas")
-                    );
+                    let has_bounds_check = func_body.iter().any(|l| {
+                        l.contains("maxL1Gas")
+                            || l.contains("MAX_L1")
+                            || l.contains("< ")
+                            || l.contains("> ")
+                            || l.contains("require(") && l.contains("gas")
+                    });
 
                     if !has_bounds_check {
                         vulnerabilities.push(Vulnerability::new(
@@ -2844,10 +3106,12 @@ impl AdvancedAnalyzer {
                         VulnerabilitySeverity::Low,
                         VulnerabilityCategory::L2GasOracle,
                         "block.basefee on L2".to_string(),
-                        "block.basefee behaves differently on L2 - may not reflect true gas costs".to_string(),
+                        "block.basefee behaves differently on L2 - may not reflect true gas costs"
+                            .to_string(),
                         idx + 1,
                         line.to_string(),
-                        "Consider using L2-specific gas oracle for accurate fee estimation".to_string(),
+                        "Consider using L2-specific gas oracle for accurate fee estimation"
+                            .to_string(),
                     ));
                 }
             }
@@ -2861,34 +3125,35 @@ impl AdvancedAnalyzer {
         let mut vulnerabilities = Vec::new();
 
         // Check for Base/Optimism bridge patterns
-        let is_bridge_related = content.contains("CrossDomainMessenger") ||
-                               content.contains("L1StandardBridge") ||
-                               content.contains("L2StandardBridge") ||
-                               content.contains("OptimismPortal");
+        let is_bridge_related = content.contains("CrossDomainMessenger")
+            || content.contains("L1StandardBridge")
+            || content.contains("L2StandardBridge")
+            || content.contains("OptimismPortal");
 
         if !is_bridge_related {
             return vulnerabilities;
         }
 
         // Check for xDomainMessageSender validation
-        let message_pattern = Regex::new(r"function\s+\w+\s*\([^)]*\)\s+(external|public)").unwrap();
+        let message_pattern =
+            Regex::new(r"function\s+\w+\s*\([^)]*\)\s+(external|public)").unwrap();
 
         for (idx, line) in content.lines().enumerate() {
             if message_pattern.is_match(line) {
                 let func_body: Vec<&str> = content.lines().skip(idx).take(15).collect();
 
-                let uses_cross_domain = func_body.iter().any(|l|
+                let uses_cross_domain = func_body.iter().any(|l| {
                     l.contains("xDomainMessageSender") || l.contains("CrossDomainMessenger")
-                );
+                });
 
                 if uses_cross_domain {
-                    let has_sender_check = func_body.iter().any(|l|
-                        l.contains("require(") && l.contains("xDomainMessageSender")
-                    );
+                    let has_sender_check = func_body
+                        .iter()
+                        .any(|l| l.contains("require(") && l.contains("xDomainMessageSender"));
 
-                    let has_messenger_check = func_body.iter().any(|l|
-                        l.contains("msg.sender") && l.contains("messenger")
-                    );
+                    let has_messenger_check = func_body
+                        .iter()
+                        .any(|l| l.contains("msg.sender") && l.contains("messenger"));
 
                     if !has_sender_check || !has_messenger_check {
                         vulnerabilities.push(Vulnerability::high_confidence(
@@ -2907,9 +3172,9 @@ impl AdvancedAnalyzer {
 
         // Check for finalization period awareness
         if content.contains("finalize") || content.contains("Finalize") {
-            let has_delay_check = content.contains("FINALIZATION_PERIOD") ||
-                                 content.contains("finalizationPeriod") ||
-                                 content.contains("7 days");
+            let has_delay_check = content.contains("FINALIZATION_PERIOD")
+                || content.contains("finalizationPeriod")
+                || content.contains("7 days");
 
             if !has_delay_check {
                 for (idx, line) in content.lines().enumerate() {
@@ -2918,7 +3183,8 @@ impl AdvancedAnalyzer {
                             VulnerabilitySeverity::Medium,
                             VulnerabilityCategory::BaseBridgeSecurity,
                             "Bridge Finalization Period Not Enforced".to_string(),
-                            "Optimistic rollup requires 7-day finalization for withdrawals".to_string(),
+                            "Optimistic rollup requires 7-day finalization for withdrawals"
+                                .to_string(),
                             idx + 1,
                             line.to_string(),
                             "Enforce finalization period before processing withdrawals".to_string(),
@@ -2946,10 +3212,13 @@ impl AdvancedAnalyzer {
 
                     // PUSH0 was introduced in 0.8.20
                     if version_str.starts_with("0.8.") {
-                        if let Ok(minor) = version_str.split('.').nth(2).unwrap_or("0").parse::<u32>() {
+                        if let Ok(minor) =
+                            version_str.split('.').nth(2).unwrap_or("0").parse::<u32>()
+                        {
                             if minor >= 20 {
                                 // Only suppress if contract explicitly mentions Shanghai-compatible deployment
-                                let explicitly_shanghai = content.contains("// evm-version: shanghai")
+                                let explicitly_shanghai = content
+                                    .contains("// evm-version: shanghai")
                                     || content.contains("// shanghai")
                                     || content.contains("evm_version = \"shanghai\"");
 
@@ -2981,37 +3250,42 @@ impl AdvancedAnalyzer {
         let mut vulnerabilities = Vec::new();
 
         // Check if this is a Uniswap V4 hook
-        if !content.contains("IHooks") && !content.contains("BaseHook") &&
-           !content.contains("beforeSwap") && !content.contains("afterSwap") {
+        if !content.contains("IHooks")
+            && !content.contains("BaseHook")
+            && !content.contains("beforeSwap")
+            && !content.contains("afterSwap")
+        {
             return vulnerabilities;
         }
 
         // Check hook implementations
-        let hook_pattern = Regex::new(
-            r"function\s+(before|after)(Swap|AddLiquidity|RemoveLiquidity|Donate)\s*\("
-        ).unwrap();
+        let hook_pattern =
+            Regex::new(r"function\s+(before|after)(Swap|AddLiquidity|RemoveLiquidity|Donate)\s*\(")
+                .unwrap();
 
         for (idx, line) in content.lines().enumerate() {
             if hook_pattern.is_match(line) {
                 let func_body: Vec<&str> = content.lines().skip(idx).take(25).collect();
 
                 // Check for reentrancy protection
-                let has_lock = func_body.iter().any(|l|
+                let has_lock = func_body.iter().any(|l| {
                     l.contains("nonReentrant") || l.contains("lock") || l.contains("_lock")
-                );
+                });
 
                 // Check for caller validation
-                let has_caller_check = func_body.iter().any(|l|
-                    l.contains("PoolManager") || l.contains("poolManager") ||
-                    l.contains("msg.sender") && l.contains("require")
-                );
+                let has_caller_check = func_body.iter().any(|l| {
+                    l.contains("PoolManager")
+                        || l.contains("poolManager")
+                        || l.contains("msg.sender") && l.contains("require")
+                });
 
                 if !has_caller_check {
                     vulnerabilities.push(Vulnerability::high_confidence(
                         VulnerabilitySeverity::Critical,
                         VulnerabilityCategory::UniswapV4HookExploit,
                         "Uniswap V4 Hook Missing Caller Validation".to_string(),
-                        "Hook function can be called by any contract, not just PoolManager".to_string(),
+                        "Hook function can be called by any contract, not just PoolManager"
+                            .to_string(),
                         idx + 1,
                         line.to_string(),
                         "Validate: require(msg.sender == address(poolManager))".to_string(),
@@ -3031,7 +3305,11 @@ impl AdvancedAnalyzer {
                 }
 
                 // Check for state modifications in view hooks
-                if line.contains("view") && func_body.iter().any(|l| l.contains("=") && !l.contains("==")) {
+                if line.contains("view")
+                    && func_body
+                        .iter()
+                        .any(|l| l.contains("=") && !l.contains("=="))
+                {
                     vulnerabilities.push(Vulnerability::new(
                         VulnerabilitySeverity::Medium,
                         VulnerabilityCategory::UniswapV4HookExploit,
@@ -3053,8 +3331,10 @@ impl AdvancedAnalyzer {
         let mut vulnerabilities = Vec::new();
 
         // Check if CCIP is used
-        if !content.contains("ccipReceive") && !content.contains("CCIPReceiver") &&
-           !content.contains("IRouterClient") {
+        if !content.contains("ccipReceive")
+            && !content.contains("CCIPReceiver")
+            && !content.contains("IRouterClient")
+        {
             return vulnerabilities;
         }
 
@@ -3066,15 +3346,16 @@ impl AdvancedAnalyzer {
                 let func_body: Vec<&str> = content.lines().skip(idx).take(25).collect();
 
                 // Check for source chain validation
-                let has_chain_check = func_body.iter().any(|l|
+                let has_chain_check = func_body.iter().any(|l| {
                     l.contains("sourceChainSelector") && (l.contains("require") || l.contains("if"))
-                );
+                });
 
                 // Check for sender validation
-                let has_sender_check = func_body.iter().any(|l|
-                    l.contains("allowlistedSender") || l.contains("trustedSender") ||
-                    (l.contains("sender") && l.contains("require"))
-                );
+                let has_sender_check = func_body.iter().any(|l| {
+                    l.contains("allowlistedSender")
+                        || l.contains("trustedSender")
+                        || (l.contains("sender") && l.contains("require"))
+                });
 
                 if !has_chain_check {
                     vulnerabilities.push(Vulnerability::high_confidence(
@@ -3110,8 +3391,11 @@ impl AdvancedAnalyzer {
         let mut vulnerabilities = Vec::new();
 
         // Check if EigenLayer related
-        if !content.contains("EigenLayer") && !content.contains("restake") &&
-           !content.contains("AVS") && !content.contains("StrategyManager") {
+        if !content.contains("EigenLayer")
+            && !content.contains("restake")
+            && !content.contains("AVS")
+            && !content.contains("StrategyManager")
+        {
             return vulnerabilities;
         }
 
@@ -3123,15 +3407,16 @@ impl AdvancedAnalyzer {
                 let func_body: Vec<&str> = content.lines().skip(idx).take(20).collect();
 
                 // Check for withdrawal delay
-                let has_delay = func_body.iter().any(|l|
-                    l.contains("withdrawalDelay") || l.contains("WITHDRAWAL_DELAY") ||
-                    l.contains("minWithdrawalDelay")
-                );
+                let has_delay = func_body.iter().any(|l| {
+                    l.contains("withdrawalDelay")
+                        || l.contains("WITHDRAWAL_DELAY")
+                        || l.contains("minWithdrawalDelay")
+                });
 
                 // Check for slashing protection
-                let has_slashing_check = content.contains("slashingCondition") ||
-                                        content.contains("canSlash") ||
-                                        content.contains("isSlashed");
+                let has_slashing_check = content.contains("slashingCondition")
+                    || content.contains("canSlash")
+                    || content.contains("isSlashed");
 
                 if !has_delay {
                     vulnerabilities.push(Vulnerability::new(
@@ -3195,27 +3480,25 @@ impl AdvancedAnalyzer {
         let mut vulnerabilities = Vec::new();
 
         // Check for ERC-777 usage
-        let has_erc777 = content.contains("IERC777") ||
-                         content.contains("ERC777") ||
-                         content.contains("tokensReceived") ||
-                         content.contains("tokensToSend") ||
-                         content.contains("ERC777TokensSender") ||
-                         content.contains("ERC777TokensRecipient");
+        let has_erc777 = content.contains("IERC777")
+            || content.contains("ERC777")
+            || content.contains("tokensReceived")
+            || content.contains("tokensToSend")
+            || content.contains("ERC777TokensSender")
+            || content.contains("ERC777TokensRecipient");
 
         if !has_erc777 {
             return vulnerabilities;
         }
 
         // Check for reentrancy protection
-        let has_protection = content.contains("ReentrancyGuard") ||
-                            content.contains("nonReentrant") ||
-                            content.contains("_status");
+        let has_protection = content.contains("ReentrancyGuard")
+            || content.contains("nonReentrant")
+            || content.contains("_status");
 
         if !has_protection {
             // Find where ERC-777 is used
-            let erc777_pattern = Regex::new(
-                r"IERC777|ERC777|tokensReceived|tokensToSend"
-            ).unwrap();
+            let erc777_pattern = Regex::new(r"IERC777|ERC777|tokensReceived|tokensToSend").unwrap();
 
             for (idx, line) in content.lines().enumerate() {
                 if erc777_pattern.is_match(line) {
@@ -3240,9 +3523,12 @@ impl AdvancedAnalyzer {
                 // Look for state changes after the transfer
                 for future_idx in (idx + 1)..lines.len().min(idx + 10) {
                     let future_line = lines[future_idx];
-                    if (future_line.contains("=") && !future_line.contains("==")) &&
-                       (future_line.contains("balance") || future_line.contains("total") ||
-                        future_line.contains("amount") || future_line.contains("debt")) {
+                    if (future_line.contains("=") && !future_line.contains("=="))
+                        && (future_line.contains("balance")
+                            || future_line.contains("total")
+                            || future_line.contains("amount")
+                            || future_line.contains("debt"))
+                    {
                         if !has_protection {
                             vulnerabilities.push(Vulnerability::high_confidence(
                                 VulnerabilitySeverity::Critical,
@@ -3269,22 +3555,23 @@ impl AdvancedAnalyzer {
         let mut vulnerabilities = Vec::new();
 
         // Check for receive/fallback payable
-        let can_receive = content.contains("receive()") && content.contains("payable") ||
-                         content.contains("fallback()") && content.contains("payable") ||
-                         Regex::new(r"function\s+\w+\([^)]*\)\s+(external|public)\s+payable")
-                             .unwrap().is_match(content);
+        let can_receive = content.contains("receive()") && content.contains("payable")
+            || content.contains("fallback()") && content.contains("payable")
+            || Regex::new(r"function\s+\w+\([^)]*\)\s+(external|public)\s+payable")
+                .unwrap()
+                .is_match(content);
 
         if !can_receive {
             return vulnerabilities;
         }
 
         // Check for withdrawal mechanism
-        let has_withdraw = content.contains("withdraw") ||
-                          content.contains("transfer(") ||
-                          content.contains(".send(") ||
-                          content.contains(".call{value:") ||
-                          content.contains("payable(") ||
-                          content.contains("selfdestruct");
+        let has_withdraw = content.contains("withdraw")
+            || content.contains("transfer(")
+            || content.contains(".send(")
+            || content.contains(".call{value:")
+            || content.contains("payable(")
+            || content.contains("selfdestruct");
 
         if !has_withdraw {
             // Find the payable function
@@ -3317,9 +3604,12 @@ impl AdvancedAnalyzer {
         let mut vulnerabilities = Vec::new();
 
         // Check if this is a rewards/staking contract
-        let is_rewards_contract = content.contains("reward") || content.contains("Reward") ||
-                                  content.contains("stake") || content.contains("Stake") ||
-                                  content.contains("farm") || content.contains("Farm");
+        let is_rewards_contract = content.contains("reward")
+            || content.contains("Reward")
+            || content.contains("stake")
+            || content.contains("Stake")
+            || content.contains("farm")
+            || content.contains("Farm");
 
         if !is_rewards_contract {
             return vulnerabilities;
@@ -3327,8 +3617,9 @@ impl AdvancedAnalyzer {
 
         // Look for claiming functions
         let claim_pattern = Regex::new(
-            r"function\s+(claim|harvest|getReward|collectFee|collectReward)\w*\s*\([^)]*\)"
-        ).unwrap();
+            r"function\s+(claim|harvest|getReward|collectFee|collectReward)\w*\s*\([^)]*\)",
+        )
+        .unwrap();
 
         for (idx, line) in content.lines().enumerate() {
             if claim_pattern.is_match(line) {
@@ -3336,21 +3627,23 @@ impl AdvancedAnalyzer {
                 let func_body: Vec<&str> = content.lines().skip(idx).take(30).collect();
 
                 // Check for reward debt pattern (proper protection)
-                let has_debt_tracking = func_body.iter().any(|l|
-                    l.contains("rewardDebt") || l.contains("claimedAmount") ||
-                    l.contains("userRewardPaid") || l.contains("_rewardPaid")
-                );
+                let has_debt_tracking = func_body.iter().any(|l| {
+                    l.contains("rewardDebt")
+                        || l.contains("claimedAmount")
+                        || l.contains("userRewardPaid")
+                        || l.contains("_rewardPaid")
+                });
 
                 // Check for balance-based reward calculation (vulnerable)
-                let uses_balance_for_reward = func_body.iter().any(|l|
-                    (l.contains("balanceOf") || l.contains("_balances[")) &&
-                    (l.contains("reward") || l.contains("*"))
-                );
+                let uses_balance_for_reward = func_body.iter().any(|l| {
+                    (l.contains("balanceOf") || l.contains("_balances["))
+                        && (l.contains("reward") || l.contains("*"))
+                });
 
                 // Check for transfer hooks that reset claims
-                let has_transfer_hook = content.contains("_beforeTokenTransfer") ||
-                                       content.contains("_afterTokenTransfer") ||
-                                       content.contains("_transfer");
+                let has_transfer_hook = content.contains("_beforeTokenTransfer")
+                    || content.contains("_afterTokenTransfer")
+                    || content.contains("_transfer");
 
                 if uses_balance_for_reward && !has_debt_tracking {
                     vulnerabilities.push(Vulnerability::high_confidence(
@@ -3372,7 +3665,8 @@ impl AdvancedAnalyzer {
                         "LP tokens can be transferred without resetting reward claims".to_string(),
                         idx + 1,
                         line.to_string(),
-                        "Implement _beforeTokenTransfer to claim/reset rewards before LP transfers".to_string(),
+                        "Implement _beforeTokenTransfer to claim/reset rewards before LP transfers"
+                            .to_string(),
                     ));
                 }
             }
@@ -3387,19 +3681,30 @@ impl AdvancedAnalyzer {
         let mut vulnerabilities = Vec::new();
 
         // Check if this is a DeFi contract with critical operations
-        let defi_operations = vec!["swap", "deposit", "withdraw", "stake", "unstake", "borrow", "repay", "liquidate"];
-        let is_defi = defi_operations.iter().any(|op| content.to_lowercase().contains(op));
+        let defi_operations = vec![
+            "swap",
+            "deposit",
+            "withdraw",
+            "stake",
+            "unstake",
+            "borrow",
+            "repay",
+            "liquidate",
+        ];
+        let is_defi = defi_operations
+            .iter()
+            .any(|op| content.to_lowercase().contains(op));
 
         if !is_defi {
             return vulnerabilities;
         }
 
         // Check for pausable pattern
-        let has_pausable = content.contains("Pausable") ||
-                          content.contains("whenNotPaused") ||
-                          content.contains("paused()") ||
-                          content.contains("_pause") ||
-                          content.contains("isPaused");
+        let has_pausable = content.contains("Pausable")
+            || content.contains("whenNotPaused")
+            || content.contains("paused()")
+            || content.contains("_pause")
+            || content.contains("isPaused");
 
         if !has_pausable {
             // Find critical DeFi functions without pause
@@ -3432,35 +3737,36 @@ impl AdvancedAnalyzer {
         let mut vulnerabilities = Vec::new();
 
         // Check for signature verification code
-        let has_sig_verification = content.contains("ecrecover") ||
-                                   content.contains("ECDSA.recover") ||
-                                   content.contains("SignatureChecker") ||
-                                   content.contains("verifySignature") ||
-                                   content.contains("verify_signature");
+        let has_sig_verification = content.contains("ecrecover")
+            || content.contains("ECDSA.recover")
+            || content.contains("SignatureChecker")
+            || content.contains("verifySignature")
+            || content.contains("verify_signature");
 
         if !has_sig_verification {
             return vulnerabilities;
         }
 
         // Look for custom verification functions (higher risk)
-        let custom_verify_pattern = Regex::new(
-            r"function\s+verify\w*[Ss]ignature\w*\s*\([^)]*\)"
-        ).unwrap();
+        let custom_verify_pattern =
+            Regex::new(r"function\s+verify\w*[Ss]ignature\w*\s*\([^)]*\)").unwrap();
 
         for (idx, line) in content.lines().enumerate() {
             if custom_verify_pattern.is_match(line) {
                 let func_body: Vec<&str> = content.lines().skip(idx).take(30).collect();
 
                 // Check for proper account validation
-                let has_account_validation = func_body.iter().any(|l|
-                    (l.contains("require") || l.contains("if")) &&
-                    (l.contains("account") || l.contains("signer") || l.contains("address(0)"))
-                );
+                let has_account_validation = func_body.iter().any(|l| {
+                    (l.contains("require") || l.contains("if"))
+                        && (l.contains("account")
+                            || l.contains("signer")
+                            || l.contains("address(0)"))
+                });
 
                 // Check for message hash validation
-                let has_message_validation = func_body.iter().any(|l|
-                    l.contains("keccak256") || l.contains("hash") || l.contains("digest")
-                );
+                let has_message_validation = func_body
+                    .iter()
+                    .any(|l| l.contains("keccak256") || l.contains("hash") || l.contains("digest"));
 
                 if !has_account_validation {
                     vulnerabilities.push(Vulnerability::high_confidence(
@@ -3479,10 +3785,12 @@ impl AdvancedAnalyzer {
                         VulnerabilitySeverity::High,
                         VulnerabilityCategory::SignatureVerificationBypass,
                         "Signature Verification Missing Message Hash".to_string(),
-                        "Signature verification without message hash validation can be exploited".to_string(),
+                        "Signature verification without message hash validation can be exploited"
+                            .to_string(),
                         idx + 1,
                         line.to_string(),
-                        "Use structured message hashing (EIP-712) with domain separator".to_string(),
+                        "Use structured message hashing (EIP-712) with domain separator"
+                            .to_string(),
                     ));
                 }
             }
@@ -3496,20 +3804,23 @@ impl AdvancedAnalyzer {
                 let surrounding: Vec<&str> = content.lines().skip(start).take(30).collect();
 
                 // Check if result is validated (recoveredAddress != address(0), etc.)
-                let has_zero_check = surrounding.iter().any(|l|
-                    (l.contains("address(0)") && (l.contains("!=") || l.contains("require") || l.contains("if")))
-                    || l.contains("!= 0") || l.contains("> 0")
-                    || l.contains("recoveredAddress != address(0)")
-                    || l.contains("recovered != address(0)")
-                    || l.contains("signer != address(0)")
-                );
+                let has_zero_check = surrounding.iter().any(|l| {
+                    (l.contains("address(0)")
+                        && (l.contains("!=") || l.contains("require") || l.contains("if")))
+                        || l.contains("!= 0")
+                        || l.contains("> 0")
+                        || l.contains("recoveredAddress != address(0)")
+                        || l.contains("recovered != address(0)")
+                        || l.contains("signer != address(0)")
+                });
 
                 if !has_zero_check {
                     vulnerabilities.push(Vulnerability::high_confidence(
                         VulnerabilitySeverity::Critical,
                         VulnerabilityCategory::SignatureVerificationBypass,
                         "ecrecover Result Not Validated".to_string(),
-                        "ecrecover returns address(0) for invalid signatures - must be checked".to_string(),
+                        "ecrecover returns address(0) for invalid signatures - must be checked"
+                            .to_string(),
                         idx + 1,
                         line.to_string(),
                         "Add: require(recovered != address(0), 'Invalid signature')".to_string(),
@@ -3517,9 +3828,11 @@ impl AdvancedAnalyzer {
                 }
 
                 // FN-7: Check for s-value malleability protection
-                let uses_ecdsa_lib = content.contains("ECDSA.recover") || content.contains("ECDSA.tryRecover");
+                let uses_ecdsa_lib =
+                    content.contains("ECDSA.recover") || content.contains("ECDSA.tryRecover");
                 if !uses_ecdsa_lib {
-                    let surrounding: Vec<&str> = content.lines()
+                    let surrounding: Vec<&str> = content
+                        .lines()
                         .skip(idx.saturating_sub(20))
                         .take(40)
                         .collect();
@@ -3584,9 +3897,8 @@ impl AdvancedAnalyzer {
         }
 
         // Check if this contract could be inherited (has state variables)
-        let state_var_pattern = Regex::new(
-            r"^\s+(uint\d*|int\d*|address|bool|bytes\d*|string|mapping)\s+"
-        ).unwrap();
+        let state_var_pattern =
+            Regex::new(r"^\s+(uint\d*|int\d*|address|bool|bytes\d*|string|mapping)\s+").unwrap();
 
         let has_state_vars = content.lines().any(|line| state_var_pattern.is_match(line));
 
@@ -3621,8 +3933,11 @@ impl AdvancedAnalyzer {
         let mut vulnerabilities = Vec::new();
 
         // Skip if contract already uses a timelock
-        if content.contains("TimelockController") || content.contains("Timelock")
-            || content.contains("timelock") || content.contains("delay") && content.contains("queue") {
+        if content.contains("TimelockController")
+            || content.contains("Timelock")
+            || content.contains("timelock")
+            || content.contains("delay") && content.contains("queue")
+        {
             return vulnerabilities;
         }
 
@@ -3635,11 +3950,19 @@ impl AdvancedAnalyzer {
             if admin_fn_pattern.is_match(line) {
                 // Check if there's a delay mechanism in the next 20 lines
                 let end = (idx + 20).min(content.lines().count());
-                let func_body: String = content.lines().skip(idx).take(end - idx).collect::<Vec<_>>().join("\n");
+                let func_body: String = content
+                    .lines()
+                    .skip(idx)
+                    .take(end - idx)
+                    .collect::<Vec<_>>()
+                    .join("\n");
 
-                let has_delay = func_body.contains("delay") || func_body.contains("pending")
-                    || func_body.contains("queue") || func_body.contains("timelock")
-                    || func_body.contains("block.timestamp +") || func_body.contains("block.timestamp >=");
+                let has_delay = func_body.contains("delay")
+                    || func_body.contains("pending")
+                    || func_body.contains("queue")
+                    || func_body.contains("timelock")
+                    || func_body.contains("block.timestamp +")
+                    || func_body.contains("block.timestamp >=");
 
                 if !has_delay {
                     vulnerabilities.push(Vulnerability::new(
@@ -3674,8 +3997,19 @@ impl AdvancedAnalyzer {
             r"\b(uint(?:8|16|32|48|64|96|128)|int(?:8|16|32|48|64|96|128))\s*\(\s*(\w+(?:\.\w+|\[\w+\])*)\s*\)"
         ).unwrap();
 
-        let financial_vars = ["amount", "balance", "supply", "reserve", "liquidity",
-            "price", "fee", "reward", "deposit", "value", "totalSupply"];
+        let financial_vars = [
+            "amount",
+            "balance",
+            "supply",
+            "reserve",
+            "liquidity",
+            "price",
+            "fee",
+            "reward",
+            "deposit",
+            "value",
+            "totalSupply",
+        ];
 
         for (idx, line) in content.lines().enumerate() {
             if line.trim().starts_with("//") || line.trim().starts_with("*") {
@@ -3684,7 +4018,10 @@ impl AdvancedAnalyzer {
             if let Some(caps) = downcast_pattern.captures(line) {
                 let var_name = caps.get(2).map_or("", |m| m.as_str());
                 // Only flag if it's a financial-looking variable
-                if financial_vars.iter().any(|fv| var_name.to_lowercase().contains(fv)) {
+                if financial_vars
+                    .iter()
+                    .any(|fv| var_name.to_lowercase().contains(fv))
+                {
                     vulnerabilities.push(Vulnerability::new(
                         VulnerabilitySeverity::Medium,
                         VulnerabilityCategory::UnsafeDowncast,
@@ -3712,16 +4049,20 @@ impl AdvancedAnalyzer {
 
         // Check if contract implements NFT interfaces (NOT ERC-20 — ERC-20 doesn't need ERC-165)
         // _mint( was removed because ERC-20 also uses _mint(). tokenURI is NFT-specific.
-        let is_nft = content.contains("ERC721") || content.contains("ERC1155")
-            || content.contains("onERC721Received") || content.contains("onERC1155Received")
-            || content.contains("tokenURI") || content.contains("safeTransferFrom(address,address,uint256,bytes");
+        let is_nft = content.contains("ERC721")
+            || content.contains("ERC1155")
+            || content.contains("onERC721Received")
+            || content.contains("onERC1155Received")
+            || content.contains("tokenURI")
+            || content.contains("safeTransferFrom(address,address,uint256,bytes");
 
         if !is_nft {
             return vulnerabilities;
         }
 
         // Check if supportsInterface is implemented
-        let has_erc165 = content.contains("supportsInterface") || content.contains("ERC165")
+        let has_erc165 = content.contains("supportsInterface")
+            || content.contains("ERC165")
             || content.contains("IERC165");
 
         if !has_erc165 {
@@ -3755,9 +4096,8 @@ impl AdvancedAnalyzer {
         let mut vulnerabilities = Vec::new();
 
         // Check for initialize function
-        let init_pattern = Regex::new(
-            r"function\s+initialize\s*\([^)]*\)\s+(?:external|public)"
-        ).unwrap();
+        let init_pattern =
+            Regex::new(r"function\s+initialize\s*\([^)]*\)\s+(?:external|public)").unwrap();
 
         let lines: Vec<&str> = content.lines().collect();
         for (idx, line) in lines.iter().enumerate() {
@@ -3777,14 +4117,17 @@ impl AdvancedAnalyzer {
 
                         // Skip if function has access control modifier AND re-init guards
                         let has_access_control = full_sig.contains("onlyOwner")
-                            || full_sig.contains("onlyGov") || full_sig.contains("onlyAdmin")
-                            || full_sig.contains("onlyRole") || full_sig.contains("auth")
+                            || full_sig.contains("onlyGov")
+                            || full_sig.contains("onlyAdmin")
+                            || full_sig.contains("onlyRole")
+                            || full_sig.contains("auth")
                             || Regex::new(r"\bonly\w+").unwrap().is_match(&full_sig);
 
                         // Check function body for re-init guard (require(x == 0))
                         let func_end = (idx + 15).min(lines.len());
                         let func_body: String = lines[idx..func_end].join("\n");
-                        let has_reinit_guard = func_body.contains("require(") && func_body.contains("== 0")
+                        let has_reinit_guard = func_body.contains("require(")
+                            && func_body.contains("== 0")
                             || func_body.contains("initialized");
 
                         if has_access_control && has_reinit_guard {
@@ -3827,9 +4170,11 @@ impl AdvancedAnalyzer {
         }
 
         // Check for state variables
-        let has_state = Regex::new(r"^\s+(?:uint|int|address|bool|bytes|string|mapping)\w*\s+(?:public|private|internal)")
-            .unwrap()
-            .is_match(content);
+        let has_state = Regex::new(
+            r"^\s+(?:uint|int|address|bool|bytes|string|mapping)\w*\s+(?:public|private|internal)",
+        )
+        .unwrap()
+        .is_match(content);
 
         if has_state {
             for (idx, line) in content.lines().enumerate() {
@@ -3874,6 +4219,7 @@ impl AdvancedAnalyzer {
         vulns.extend(self.detect_unprotected_admin_sweep(content));
         vulns.extend(self.detect_unvalidated_crosschain_receiver(content));
         vulns.extend(self.detect_avs_slashing_risk(content));
+        vulns.extend(self.detect_erc4626_slash_liability_drift(content));
         vulns.extend(self.detect_clmm_math_overflow(content));
         vulns.extend(self.detect_inconsistent_rounding(content));
         vulns.extend(self.detect_donation_attack(content));
@@ -3887,18 +4233,24 @@ impl AdvancedAnalyzer {
 
     fn detect_multicall_state_reset(&self, content: &str) -> Vec<Vulnerability> {
         let mut vulns = Vec::new();
-        let multicall_re = Regex::new(
-            r"(?i)function\s+(cook|multicall|batch|multiCall|batchCall)\s*\("
-        ).unwrap();
+        let multicall_re =
+            Regex::new(r"(?i)function\s+(cook|multicall|batch|multiCall|batchCall)\s*\(").unwrap();
         let flag_reset_re = Regex::new(
-            r"(solvent|accrue|status|_status|locked)\s*=\s*(true|false|0|1|_NOT_ENTERED)"
-        ).unwrap();
+            r"(solvent|accrue|status|_status|locked)\s*=\s*(true|false|0|1|_NOT_ENTERED)",
+        )
+        .unwrap();
 
         for (idx, line) in content.lines().enumerate() {
             if multicall_re.is_match(line) {
                 let end = (idx + 40).min(content.lines().count());
-                let body: String = content.lines().skip(idx).take(end - idx).collect::<Vec<_>>().join("\n");
-                if flag_reset_re.is_match(&body) && (body.contains("for") || body.contains("while")) {
+                let body: String = content
+                    .lines()
+                    .skip(idx)
+                    .take(end - idx)
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if flag_reset_re.is_match(&body) && (body.contains("for") || body.contains("while"))
+                {
                     vulns.push(Vulnerability::high_confidence(
                         VulnerabilitySeverity::Critical,
                         VulnerabilityCategory::MulticallStateReset,
@@ -3919,15 +4271,19 @@ impl AdvancedAnalyzer {
 
     fn detect_inconsistent_state_reset(&self, content: &str) -> Vec<Vulnerability> {
         let mut vulns = Vec::new();
-        let total_reset_re = Regex::new(
-            r"totalSupply\s*=\s*0|_totalSupply\s*=\s*0|totalShares\s*=\s*0"
-        ).unwrap();
+        let total_reset_re =
+            Regex::new(r"totalSupply\s*=\s*0|_totalSupply\s*=\s*0|totalShares\s*=\s*0").unwrap();
 
         for (idx, line) in content.lines().enumerate() {
             if total_reset_re.is_match(line) {
                 let start = idx.saturating_sub(5);
                 let end = (idx + 20).min(content.lines().count());
-                let context: String = content.lines().skip(start).take(end - start).collect::<Vec<_>>().join("\n");
+                let context: String = content
+                    .lines()
+                    .skip(start)
+                    .take(end - start)
+                    .collect::<Vec<_>>()
+                    .join("\n");
 
                 let clears_balances = context.contains("delete balances")
                     || context.contains("balances[") && context.contains("= 0")
@@ -3955,9 +4311,8 @@ impl AdvancedAnalyzer {
 
     fn detect_eip7702_txorigin_bypass(&self, content: &str) -> Vec<Vulnerability> {
         let mut vulns = Vec::new();
-        let txorigin_check_re = Regex::new(
-            r"(require|assert|if)\s*\(.*tx\.origin\s*==\s*msg\.sender"
-        ).unwrap();
+        let txorigin_check_re =
+            Regex::new(r"(require|assert|if)\s*\(.*tx\.origin\s*==\s*msg\.sender").unwrap();
 
         for (idx, line) in content.lines().enumerate() {
             if line.trim().starts_with("//") || line.trim().starts_with("*") {
@@ -3983,8 +4338,10 @@ impl AdvancedAnalyzer {
 
     fn detect_transient_storage_gas_reentrancy(&self, content: &str) -> Vec<Vulnerability> {
         let mut vulns = Vec::new();
-        let has_transient = content.contains("tstore") || content.contains("tload")
-            || content.contains("TSTORE") || content.contains("TLOAD")
+        let has_transient = content.contains("tstore")
+            || content.contains("tload")
+            || content.contains("TSTORE")
+            || content.contains("TLOAD")
             || content.contains("transient");
         if !has_transient {
             return vulns;
@@ -3992,7 +4349,9 @@ impl AdvancedAnalyzer {
 
         let transfer_send_re = Regex::new(r"\.(transfer|send)\s*\(").unwrap();
         for (idx, line) in content.lines().enumerate() {
-            if line.trim().starts_with("//") { continue; }
+            if line.trim().starts_with("//") {
+                continue;
+            }
             if transfer_send_re.is_match(line) {
                 vulns.push(Vulnerability::new(
                     VulnerabilitySeverity::High,
@@ -4020,9 +4379,8 @@ impl AdvancedAnalyzer {
         let view_fn_re = Regex::new(
             r"(?i)function\s+(\w*(?:price|rate|share|value|balance|total|getRate|getPrice|convertToAssets|convertToShares)\w*)\s*\([^)]*\)\s*(?:external|public)\s+view"
         ).unwrap();
-        let external_call_re = Regex::new(
-            r"\.(call|transfer|send)\s*[\({]|\.safeTransfer\(|\.withdraw\("
-        ).unwrap();
+        let external_call_re =
+            Regex::new(r"\.(call|transfer|send)\s*[\({]|\.safeTransfer\(|\.withdraw\(").unwrap();
 
         if !external_call_re.is_match(content) {
             return vulns;
@@ -4049,8 +4407,8 @@ impl AdvancedAnalyzer {
 
     fn detect_erc2771_multicall_spoofing(&self, content: &str) -> Vec<Vulnerability> {
         let mut vulns = Vec::new();
-        let has_erc2771 = content.contains("ERC2771") || content.contains("_msgSender")
-            && content.contains("trustedForwarder");
+        let has_erc2771 = content.contains("ERC2771")
+            || content.contains("_msgSender") && content.contains("trustedForwarder");
         let has_multicall = content.contains("Multicall") || content.contains("multicall");
         if !has_erc2771 || !has_multicall {
             return vulns;
@@ -4084,14 +4442,17 @@ impl AdvancedAnalyzer {
 
     fn detect_multicall_msg_value_reuse(&self, content: &str) -> Vec<Vulnerability> {
         let mut vulns = Vec::new();
-        let multicall_re = Regex::new(
-            r"(?i)function\s+(multicall|batch|aggregate)\s*\("
-        ).unwrap();
+        let multicall_re = Regex::new(r"(?i)function\s+(multicall|batch|aggregate)\s*\(").unwrap();
 
         for (idx, line) in content.lines().enumerate() {
             if multicall_re.is_match(line) {
                 let end = (idx + 30).min(content.lines().count());
-                let body: String = content.lines().skip(idx).take(end - idx).collect::<Vec<_>>().join("\n");
+                let body: String = content
+                    .lines()
+                    .skip(idx)
+                    .take(end - idx)
+                    .collect::<Vec<_>>()
+                    .join("\n");
                 let has_delegatecall = body.contains("delegatecall");
                 let has_payable = line.contains("payable") || body.contains("msg.value");
                 if has_delegatecall && has_payable {
@@ -4115,27 +4476,42 @@ impl AdvancedAnalyzer {
 
     fn detect_fee_on_transfer(&self, content: &str) -> Vec<Vulnerability> {
         let mut vulns = Vec::new();
-        let transfer_from_re = Regex::new(
-            r"\.transferFrom\s*\([^,]+,\s*[^,]+,\s*(\w+)\s*\)"
-        ).unwrap();
+        let transfer_from_re =
+            Regex::new(r"\.transferFrom\s*\([^,]+,\s*[^,]+,\s*(\w+)\s*\)").unwrap();
 
         for (idx, line) in content.lines().enumerate() {
-            if line.trim().starts_with("//") { continue; }
+            if line.trim().starts_with("//") {
+                continue;
+            }
             if let Some(caps) = transfer_from_re.captures(line) {
                 let amount_var = caps.get(1).map_or("", |m| m.as_str());
                 let start = idx.saturating_sub(5);
                 let end = (idx + 8).min(content.lines().count());
-                let context: String = content.lines().skip(start).take(end - start).collect::<Vec<_>>().join("\n");
+                let context: String = content
+                    .lines()
+                    .skip(start)
+                    .take(end - start)
+                    .collect::<Vec<_>>()
+                    .join("\n");
                 let has_balance_diff = context.contains("balanceBefore")
                     || context.contains("balanceOf") && context.contains("- ")
                     || context.contains("_before")
                     || context.contains("received =");
                 if !has_balance_diff && !amount_var.is_empty() {
-                    let after: String = content.lines().skip(idx + 1).take(5).collect::<Vec<_>>().join("\n");
+                    let after: String = content
+                        .lines()
+                        .skip(idx + 1)
+                        .take(5)
+                        .collect::<Vec<_>>()
+                        .join("\n");
                     let uses_amount_directly = after.contains(amount_var)
-                        && (after.contains("+=") || after.contains("alances[") || after.contains("mint")
-                            || after.contains("shares") || after.contains("deposit")
-                            || after.contains("credit") || after.contains("supply"));
+                        && (after.contains("+=")
+                            || after.contains("alances[")
+                            || after.contains("mint")
+                            || after.contains("shares")
+                            || after.contains("deposit")
+                            || after.contains("credit")
+                            || after.contains("supply"));
                     if uses_amount_directly {
                         vulns.push(Vulnerability::new(
                             VulnerabilitySeverity::Medium,
@@ -4160,8 +4536,11 @@ impl AdvancedAnalyzer {
 
     fn detect_unprotected_admin_sweep(&self, content: &str) -> Vec<Vulnerability> {
         let mut vulns = Vec::new();
-        if content.contains("TimelockController") || content.contains("Timelock")
-            || (content.contains("delay") && content.contains("queue") && content.contains("execute"))
+        if content.contains("TimelockController")
+            || content.contains("Timelock")
+            || (content.contains("delay")
+                && content.contains("queue")
+                && content.contains("execute"))
         {
             return vulns;
         }
@@ -4169,14 +4548,18 @@ impl AdvancedAnalyzer {
         let sweep_re = Regex::new(
             r"function\s+(sweep|recover|rescue|emergencyWithdraw|drain|withdrawAll|withdrawToken|recoverToken|recoverERC20)\s*\("
         ).unwrap();
-        let admin_mod_re = Regex::new(
-            r"(onlyOwner|onlyAdmin|onlyRole|onlyGovernance|auth)"
-        ).unwrap();
+        let admin_mod_re =
+            Regex::new(r"(onlyOwner|onlyAdmin|onlyRole|onlyGovernance|auth)").unwrap();
 
         for (idx, line) in content.lines().enumerate() {
             if sweep_re.is_match(line) {
                 let end = (idx + 5).min(content.lines().count());
-                let func_header: String = content.lines().skip(idx).take(end - idx).collect::<Vec<_>>().join(" ");
+                let func_header: String = content
+                    .lines()
+                    .skip(idx)
+                    .take(end - idx)
+                    .collect::<Vec<_>>()
+                    .join(" ");
                 if admin_mod_re.is_match(&func_header) {
                     vulns.push(Vulnerability::new(
                         VulnerabilitySeverity::High,
@@ -4203,17 +4586,59 @@ impl AdvancedAnalyzer {
         ).unwrap();
 
         for (idx, line) in content.lines().enumerate() {
-            if line.trim().starts_with("//") { continue; }
+            if line.trim().starts_with("//") {
+                continue;
+            }
             if receiver_re.is_match(line) {
                 let end = (idx + 20).min(content.lines().count());
-                let body: String = content.lines().skip(idx).take(end - idx).collect::<Vec<_>>().join("\n");
-                let has_validation = body.contains("sourceChain")
-                    || body.contains("srcChainId")
-                    || body.contains("trustedRemote")
-                    || body.contains("allowedSender")
-                    || body.contains("require") && (body.contains("sender") || body.contains("source"))
-                    || body.contains("onlyRelayer")
-                    || body.contains("onlyBridge");
+                let body: String = content
+                    .lines()
+                    .skip(idx)
+                    .take(end - idx)
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let body_lower = body.to_lowercase();
+                let line_lower = line.to_lowercase();
+
+                let has_crosschain_context = line.contains("_nonblockingLzReceive")
+                    || line.contains("_ccipReceive")
+                    || line.contains("CrossChain")
+                    || line.contains("FromChain")
+                    || body_lower.contains("sourcechain")
+                    || body_lower.contains("srcchain")
+                    || body_lower.contains("trustedremote")
+                    || body_lower.contains("bridge")
+                    || body_lower.contains("layerzero")
+                    || body_lower.contains("wormhole")
+                    || body_lower.contains("ccip")
+                    || body_lower.contains("endpoint")
+                    || body_lower.contains("router")
+                    || body_lower.contains("remote")
+                    || body_lower.contains("_srcaddress")
+                    || body_lower.contains("_origin")
+                    || body_lower.contains("origin.sender")
+                    || line_lower.contains("message")
+                        && (body_lower.contains("bridge")
+                            || body_lower.contains("router")
+                            || body_lower.contains("remote"));
+
+                if !has_crosschain_context {
+                    continue;
+                }
+
+                let has_validation = body_lower.contains("sourcechain")
+                    || body_lower.contains("srcchainid")
+                    || body_lower.contains("trustedremote")
+                    || body_lower.contains("allowedsender")
+                    || body_lower.contains("onlyrelayer")
+                    || body_lower.contains("onlybridge")
+                    || body_lower.contains("onlyrouter")
+                    || body_lower.contains("trusted sender")
+                    || body_lower.contains("trusted_sender")
+                    || body_lower.contains("require")
+                        && (body_lower.contains("sender")
+                            || body_lower.contains("source")
+                            || body_lower.contains("remote"));
                 if !has_validation {
                     vulns.push(Vulnerability::high_confidence(
                         VulnerabilitySeverity::Critical,
@@ -4241,16 +4666,25 @@ impl AdvancedAnalyzer {
         }
 
         let slash_re = Regex::new(
-            r"function\s+(slash|freezeOperator|penalize|slashOperator|slashStaker)\s*\("
-        ).unwrap();
+            r"function\s+(slash|freezeOperator|penalize|slashOperator|slashStaker)\s*\(",
+        )
+        .unwrap();
 
         for (idx, line) in content.lines().enumerate() {
             if slash_re.is_match(line) {
                 let end = (idx + 15).min(content.lines().count());
-                let body: String = content.lines().skip(idx).take(end - idx).collect::<Vec<_>>().join("\n");
-                let has_delay = body.contains("delay") || body.contains("timelock")
-                    || body.contains("dispute") || body.contains("cooldown")
-                    || body.contains("vetoable") || body.contains("queue");
+                let body: String = content
+                    .lines()
+                    .skip(idx)
+                    .take(end - idx)
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let has_delay = body.contains("delay")
+                    || body.contains("timelock")
+                    || body.contains("dispute")
+                    || body.contains("cooldown")
+                    || body.contains("vetoable")
+                    || body.contains("queue");
                 if !has_delay {
                     vulns.push(Vulnerability::new(
                         VulnerabilitySeverity::High,
@@ -4270,27 +4704,171 @@ impl AdvancedAnalyzer {
         vulns
     }
 
+    fn detect_erc4626_slash_liability_drift(&self, content: &str) -> Vec<Vulnerability> {
+        let mut vulns = Vec::new();
+        let content_lower = content.to_lowercase();
+        let has_loss_hook = content_lower.contains("slash")
+            || content_lower.contains("penal")
+            || content_lower.contains("seize")
+            || content_lower.contains("loss");
+        if !content.contains("totalAssets") || !has_loss_hook {
+            return vulns;
+        }
+
+        let functions = self.extract_functions(content);
+        let Some(total_assets_fn) = functions.iter().find(|func| func.name == "totalAssets") else {
+            return vulns;
+        };
+
+        let balance_expr_re = Regex::new(
+            r"(?:\w+\s*\.\s*)?balanceOf\s*\(\s*address\s*\(\s*this\s*\)\s*\)|address\s*\(\s*this\s*\)\s*\.\s*balance"
+        ).unwrap();
+        if !balance_expr_re.is_match(&total_assets_fn.body) {
+            return vulns;
+        }
+
+        let state_vars = self.extract_state_variable_names(content);
+        let liability_name_re = Regex::new(
+            r"(?i)(revenue|liabil|debt|pending|accru|fee|fees|reserve|owed|obligation|claim|escrow|buffer)"
+        ).unwrap();
+        let alias_assign_re = Regex::new(r"(?:\w+\s+)?([A-Za-z_]\w*)\s*=\s*.+").unwrap();
+        let subtraction_re = Regex::new(r"-\s*([A-Za-z_]\w*)").unwrap();
+        let mut balance_aliases: HashSet<String> = HashSet::new();
+        let mut liability_vars: HashSet<String> = HashSet::new();
+
+        for line in total_assets_fn.body.lines() {
+            if balance_expr_re.is_match(line) {
+                if let Some(caps) = alias_assign_re.captures(line) {
+                    if let Some(alias) = caps.get(1) {
+                        balance_aliases.insert(alias.as_str().to_string());
+                    }
+                }
+            }
+        }
+
+        for line in total_assets_fn.body.lines() {
+            let line_trimmed = line.trim();
+            let references_balance = balance_expr_re.is_match(line_trimmed)
+                || balance_aliases.iter().any(|alias| {
+                    line_trimmed.contains(&format!("{alias} -"))
+                        || line_trimmed.contains(&format!("{alias}-"))
+                });
+            if !references_balance {
+                continue;
+            }
+
+            for caps in subtraction_re.captures_iter(line_trimmed) {
+                if let Some(candidate) = caps.get(1) {
+                    let candidate = candidate.as_str().to_string();
+                    if state_vars.contains(&candidate) {
+                        liability_vars.insert(candidate);
+                    }
+                }
+            }
+        }
+
+        if liability_vars.is_empty() {
+            return vulns;
+        }
+
+        let slash_like_re = Regex::new(
+            r"(?i)(slash|penali[sz]e|confiscat|seize|socializeLoss|reportLoss|handleLoss)",
+        )
+        .unwrap();
+        let asset_loss_re = Regex::new(
+            r"\.(?:safeTransfer|transfer|burn|safeTransferFrom)\s*\(|\b(?:_?burn|withdraw|redeem)\s*\("
+        ).unwrap();
+        let writer_hint_re =
+            Regex::new(r"(?i)(buy|accru|collect|deposit|mint|harvest|fee)").unwrap();
+
+        for slash_fn in functions
+            .iter()
+            .filter(|func| slash_like_re.is_match(&func.name))
+        {
+            if !asset_loss_re.is_match(&slash_fn.body) {
+                continue;
+            }
+
+            for liability_var in &liability_vars {
+                if slash_fn.body.contains(liability_var) {
+                    continue;
+                }
+
+                let escaped_var = regex::escape(liability_var);
+                let write_re = Regex::new(&format!(r"\b{escaped_var}\b\s*(?:\+=|-=|=)")).unwrap();
+                let has_liability_writer = functions.iter().any(|func| {
+                    if func.name == "totalAssets" || func.name == slash_fn.name {
+                        return false;
+                    }
+                    let is_view =
+                        func.signature.contains(" view") || func.signature.contains(" pure");
+                    !is_view && func.body.contains(liability_var) && write_re.is_match(&func.body)
+                });
+
+                let name_looks_like_liability = liability_name_re.is_match(liability_var)
+                    || functions.iter().any(|func| {
+                        func.name != "totalAssets"
+                            && func.name != slash_fn.name
+                            && func.body.contains(liability_var)
+                            && writer_hint_re.is_match(&func.name)
+                    });
+
+                if !has_liability_writer || !name_looks_like_liability {
+                    continue;
+                }
+
+                vulns.push(Vulnerability::high_confidence(
+                    VulnerabilitySeverity::Critical,
+                    VulnerabilityCategory::LogicError,
+                    "ERC4626 Liability Drift After Slash".to_string(),
+                    format!(
+                        "slash-like function reduces real vault assets, but totalAssets() still subtracts the liability variable `{}`. If `{}` is left unchanged after slashing, totalAssets() can underflow/revert once liabilities exceed the post-slash balance, bricking share accounting.",
+                        liability_var, liability_var
+                    ),
+                    slash_fn.start_line,
+                    slash_fn.signature.clone(),
+                    format!(
+                        "Update `{}` whenever slashing reduces backing assets, or clamp totalAssets() so liabilities cannot exceed live assets.",
+                        liability_var
+                    ),
+                ));
+                break;
+            }
+        }
+
+        vulns
+    }
+
     fn detect_clmm_math_overflow(&self, content: &str) -> Vec<Vulnerability> {
         let mut vulns = Vec::new();
-        let has_clmm_context = content.contains("sqrtPrice") || content.contains("liquidity")
-            || content.contains("tickMath") || content.contains("TickMath")
-            || content.contains("SqrtPrice") || content.contains("concentrated");
+        let has_clmm_context = content.contains("sqrtPrice")
+            || content.contains("liquidity")
+            || content.contains("tickMath")
+            || content.contains("TickMath")
+            || content.contains("SqrtPrice")
+            || content.contains("concentrated");
         if !has_clmm_context {
             return vulns;
         }
 
         let bitshift_re = Regex::new(r"(<<|>>)\s*\d+").unwrap();
         for (idx, line) in content.lines().enumerate() {
-            if line.trim().starts_with("//") { continue; }
+            if line.trim().starts_with("//") {
+                continue;
+            }
             if bitshift_re.is_match(line) {
                 let is_in_unchecked = {
-                    let before: String = content.lines().take(idx + 1).collect::<Vec<_>>().join("\n");
+                    let before: String =
+                        content.lines().take(idx + 1).collect::<Vec<_>>().join("\n");
                     before.matches("unchecked {").count() + before.matches("unchecked{").count() > 0
                 };
                 let line_lower = line.to_lowercase();
-                let is_math_context = line_lower.contains("sqrt") || line_lower.contains("price")
-                    || line_lower.contains("liquidity") || line_lower.contains("tick")
-                    || line_lower.contains("amount") || line_lower.contains("ratio");
+                let is_math_context = line_lower.contains("sqrt")
+                    || line_lower.contains("price")
+                    || line_lower.contains("liquidity")
+                    || line_lower.contains("tick")
+                    || line_lower.contains("amount")
+                    || line_lower.contains("ratio");
                 if is_math_context && (is_in_unchecked || !content.contains("SafeMath")) {
                     vulns.push(Vulnerability::high_confidence(
                         VulnerabilitySeverity::Critical,
@@ -4330,10 +4908,12 @@ impl AdvancedAnalyzer {
                 brace_depth -= line.matches('}').count() as i32;
                 if brace_depth <= 0 && idx > func_start {
                     let func_body: String = lines[func_start..=idx].join("\n");
-                    let has_mul_down = func_body.contains("mulDown") || func_body.contains("mulDivDown");
+                    let has_mul_down =
+                        func_body.contains("mulDown") || func_body.contains("mulDivDown");
                     let has_div_up = func_body.contains("divUp") || func_body.contains("mulDivUp");
                     let has_mul_up = func_body.contains("mulUp") || func_body.contains("mulDivUp");
-                    let has_div_down = func_body.contains("divDown") || func_body.contains("mulDivDown");
+                    let has_div_down =
+                        func_body.contains("divDown") || func_body.contains("mulDivDown");
                     if (has_mul_down && has_div_up) || (has_mul_up && has_div_down) {
                         vulns.push(Vulnerability::high_confidence(
                             VulnerabilitySeverity::Critical,
@@ -4357,25 +4937,38 @@ impl AdvancedAnalyzer {
 
     fn detect_donation_attack(&self, content: &str) -> Vec<Vulnerability> {
         let mut vulns = Vec::new();
-        let balance_of_this_re = Regex::new(
-            r"balanceOf\s*\(\s*address\s*\(\s*this\s*\)\s*\)"
-        ).unwrap();
+        let balance_of_this_re =
+            Regex::new(r"balanceOf\s*\(\s*address\s*\(\s*this\s*\)\s*\)").unwrap();
 
         for (idx, line) in content.lines().enumerate() {
-            if line.trim().starts_with("//") { continue; }
+            if line.trim().starts_with("//") {
+                continue;
+            }
             if balance_of_this_re.is_match(line) {
                 let start = idx.saturating_sub(3);
                 let end = (idx + 4).min(content.lines().count());
-                let context: String = content.lines().skip(start).take(end - start).collect::<Vec<_>>().join("\n");
+                let context: String = content
+                    .lines()
+                    .skip(start)
+                    .take(end - start)
+                    .collect::<Vec<_>>()
+                    .join("\n");
                 let ctx_lower = context.to_lowercase();
-                let is_price_context = ctx_lower.contains("price") || ctx_lower.contains("rate")
-                    || ctx_lower.contains("share") || ctx_lower.contains("exchange")
-                    || ctx_lower.contains("convert") || ctx_lower.contains("per")
-                    || ctx_lower.contains(" / total") || ctx_lower.contains("/ _total");
+                let is_price_context = ctx_lower.contains("price")
+                    || ctx_lower.contains("rate")
+                    || ctx_lower.contains("share")
+                    || ctx_lower.contains("exchange")
+                    || ctx_lower.contains("convert")
+                    || ctx_lower.contains("per")
+                    || ctx_lower.contains(" / total")
+                    || ctx_lower.contains("/ _total");
                 if is_price_context {
-                    let has_offset = context.contains("+ 1") || context.contains("+1")
-                        || context.contains("virtualAssets") || context.contains("_decimalsOffset")
-                        || context.contains("OFFSET") || context.contains("INITIAL_DEPOSIT");
+                    let has_offset = context.contains("+ 1")
+                        || context.contains("+1")
+                        || context.contains("virtualAssets")
+                        || context.contains("_decimalsOffset")
+                        || context.contains("OFFSET")
+                        || context.contains("INITIAL_DEPOSIT");
                     if !has_offset {
                         vulns.push(Vulnerability::new(
                             VulnerabilitySeverity::High,
@@ -4400,20 +4993,30 @@ impl AdvancedAnalyzer {
         let mut vulns = Vec::new();
         // Only flag swap/liquidity operations that actually involve price-sensitive exchanges.
         // Plain deposit() and stake() functions just transfer tokens at 1:1, no slippage risk.
-        let swap_fn_re = Regex::new(
-            r"function\s+(swap|addLiquidity|removeLiquidity|zap)\s*\(([^)]*)\)"
-        ).unwrap();
+        let swap_fn_re =
+            Regex::new(r"function\s+(swap|addLiquidity|removeLiquidity|zap)\s*\(([^)]*)\)")
+                .unwrap();
 
         for (idx, line) in content.lines().enumerate() {
-            if line.trim().starts_with("//") { continue; }
+            if line.trim().starts_with("//") {
+                continue;
+            }
             if let Some(caps) = swap_fn_re.captures(line) {
                 let fn_name = caps.get(1).map_or("", |m| m.as_str());
                 let params = caps.get(2).map_or("", |m| m.as_str()).to_lowercase();
-                let has_slippage = params.contains("min") || params.contains("slippage")
-                    || params.contains("deadline") || params.contains("amountoutmin")
-                    || params.contains("minout") || params.contains("minamount");
+                let has_slippage = params.contains("min")
+                    || params.contains("slippage")
+                    || params.contains("deadline")
+                    || params.contains("amountoutmin")
+                    || params.contains("minout")
+                    || params.contains("minamount");
                 let end = (idx + 3).min(content.lines().count());
-                let header: String = content.lines().skip(idx).take(end - idx).collect::<Vec<_>>().join(" ");
+                let header: String = content
+                    .lines()
+                    .skip(idx)
+                    .take(end - idx)
+                    .collect::<Vec<_>>()
+                    .join(" ");
                 if header.contains("internal") || header.contains("private") {
                     continue;
                 }
@@ -4446,7 +5049,9 @@ impl AdvancedAnalyzer {
         ).unwrap();
 
         for (idx, line) in lines.iter().enumerate() {
-            if line.trim().starts_with("//") { continue; }
+            if line.trim().starts_with("//") {
+                continue;
+            }
             if callback_re.is_match(line) {
                 let end = (idx + 10).min(lines.len());
                 let after_callback: String = lines[(idx + 1)..end].join("\n");
@@ -4474,19 +5079,28 @@ impl AdvancedAnalyzer {
 
     fn detect_iscontract_post_pectra(&self, content: &str) -> Vec<Vulnerability> {
         let mut vulns = Vec::new();
-        let iscontract_re = Regex::new(
-            r"(extcodesize|isContract|\.code\.length)\s*"
-        ).unwrap();
+        let iscontract_re = Regex::new(r"(extcodesize|isContract|\.code\.length)\s*").unwrap();
 
         for (idx, line) in content.lines().enumerate() {
-            if line.trim().starts_with("//") || line.trim().starts_with("*") { continue; }
+            if line.trim().starts_with("//") || line.trim().starts_with("*") {
+                continue;
+            }
             if iscontract_re.is_match(line) {
                 let start = idx.saturating_sub(2);
                 let end = (idx + 3).min(content.lines().count());
-                let context: String = content.lines().skip(start).take(end - start).collect::<Vec<_>>().join("\n");
-                let is_access_control = context.contains("require") || context.contains("if")
-                    || context.contains("revert") || context.contains("assert");
-                if line.contains("function isContract") { continue; }
+                let context: String = content
+                    .lines()
+                    .skip(start)
+                    .take(end - start)
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let is_access_control = context.contains("require")
+                    || context.contains("if")
+                    || context.contains("revert")
+                    || context.contains("assert");
+                if line.contains("function isContract") {
+                    continue;
+                }
                 if is_access_control {
                     vulns.push(Vulnerability::new(
                         VulnerabilitySeverity::Medium,
@@ -4508,14 +5122,17 @@ impl AdvancedAnalyzer {
 
     fn detect_unsafe_multicall_delegatecall(&self, content: &str) -> Vec<Vulnerability> {
         let mut vulns = Vec::new();
-        let multicall_re = Regex::new(
-            r"(?i)function\s+(multicall|batch|aggregate)\s*\("
-        ).unwrap();
+        let multicall_re = Regex::new(r"(?i)function\s+(multicall|batch|aggregate)\s*\(").unwrap();
 
         for (idx, line) in content.lines().enumerate() {
             if multicall_re.is_match(line) {
                 let end = (idx + 30).min(content.lines().count());
-                let body: String = content.lines().skip(idx).take(end - idx).collect::<Vec<_>>().join("\n");
+                let body: String = content
+                    .lines()
+                    .skip(idx)
+                    .take(end - idx)
+                    .collect::<Vec<_>>()
+                    .join("\n");
                 if body.contains("delegatecall") {
                     let has_value_tracking = body.contains("remainingValue")
                         || body.contains("valueConsumed")
@@ -4540,6 +5157,71 @@ impl AdvancedAnalyzer {
             }
         }
         vulns
+    }
+
+    fn extract_functions(&self, content: &str) -> Vec<ExtractedFunction> {
+        let lines: Vec<&str> = content.lines().collect();
+        let fn_re = Regex::new(r"^\s*function\s+([A-Za-z_]\w*)\b").unwrap();
+        let mut functions = Vec::new();
+        let mut idx = 0;
+
+        while idx < lines.len() {
+            let line = lines[idx];
+            let Some(caps) = fn_re.captures(line) else {
+                idx += 1;
+                continue;
+            };
+
+            let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
+            let start_line = idx + 1;
+            let signature = line.trim().to_string();
+            let mut body = String::new();
+            let mut brace_depth: i32 = 0;
+            let mut saw_open_brace = false;
+            let mut end_idx = idx;
+
+            for (scan_idx, scan_line) in lines.iter().enumerate().skip(idx) {
+                body.push_str(scan_line);
+                body.push('\n');
+                brace_depth += scan_line.matches('{').count() as i32;
+                if scan_line.contains('{') {
+                    saw_open_brace = true;
+                }
+                brace_depth -= scan_line.matches('}').count() as i32;
+                end_idx = scan_idx;
+
+                if saw_open_brace && brace_depth <= 0 {
+                    break;
+                }
+            }
+
+            functions.push(ExtractedFunction {
+                name,
+                start_line,
+                signature,
+                body,
+            });
+            idx = end_idx + 1;
+        }
+
+        functions
+    }
+
+    fn extract_state_variable_names(&self, content: &str) -> HashSet<String> {
+        let mut vars = HashSet::new();
+        let var_re = Regex::new(
+            r"^\s*(?:mapping\s*\([^)]+\)|address|uint\d*|int\d*|bool|bytes\d*|string|bytes)\s+(?:(?:public|private|internal|constant|immutable)\s+)*([A-Za-z_]\w*)\b"
+        ).unwrap();
+
+        for line in content.lines() {
+            if let Some(caps) = var_re.captures(line) {
+                if let Some(name) = caps.get(1) {
+                    vars.insert(name.as_str().to_string());
+                }
+            }
+        }
+
+        vars
     }
 }
 

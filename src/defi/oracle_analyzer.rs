@@ -5,8 +5,8 @@
 
 #![allow(dead_code)]
 
+use crate::vulnerabilities::{Vulnerability, VulnerabilityCategory, VulnerabilitySeverity};
 use regex::Regex;
-use crate::vulnerabilities::{Vulnerability, VulnerabilitySeverity, VulnerabilityCategory};
 
 /// Oracle security analyzer
 pub struct OracleAnalyzer {
@@ -67,10 +67,11 @@ impl OracleAnalyzer {
                 let func_context = self.get_function_context(content, idx);
 
                 // Check for updatedAt validation
-                if !func_context.contains("updatedAt") ||
-                   (!func_context.contains("block.timestamp") &&
-                    !func_context.contains("heartbeat") &&
-                    !func_context.contains("STALENESS")) {
+                if !func_context.contains("updatedAt")
+                    || (!func_context.contains("block.timestamp")
+                        && !func_context.contains("heartbeat")
+                        && !func_context.contains("STALENESS"))
+                {
                     vulnerabilities.push(Vulnerability::high_confidence(
                         VulnerabilitySeverity::Critical,
                         VulnerabilityCategory::OracleManipulation,
@@ -83,8 +84,7 @@ impl OracleAnalyzer {
                 }
 
                 // Check for roundId validation
-                if !func_context.contains("roundId") ||
-                   !func_context.contains("answeredInRound") {
+                if !func_context.contains("roundId") || !func_context.contains("answeredInRound") {
                     vulnerabilities.push(Vulnerability::new(
                         VulnerabilitySeverity::High,
                         VulnerabilityCategory::OracleManipulation,
@@ -97,8 +97,10 @@ impl OracleAnalyzer {
                 }
 
                 // Check for price > 0 validation
-                if !func_context.contains("> 0") && !func_context.contains("!= 0") &&
-                   !func_context.contains(">0") {
+                if !func_context.contains("> 0")
+                    && !func_context.contains("!= 0")
+                    && !func_context.contains(">0")
+                {
                     vulnerabilities.push(Vulnerability::new(
                         VulnerabilitySeverity::High,
                         VulnerabilityCategory::OracleManipulation,
@@ -120,16 +122,17 @@ impl OracleAnalyzer {
         let mut vulnerabilities = Vec::new();
 
         // Detect if this is for L2
-        let is_l2_context = content.contains("Arbitrum") ||
-                           content.contains("Optimism") ||
-                           content.contains("L2") ||
-                           content.contains("rollup");
+        let is_l2_context = content.contains("Arbitrum")
+            || content.contains("Optimism")
+            || content.contains("L2")
+            || content.contains("rollup");
 
         if is_l2_context && self.chainlink_pattern.is_match(content) {
             // Check for sequencer uptime feed
-            if !content.contains("sequencerUptimeFeed") &&
-               !content.contains("SEQUENCER") &&
-               !content.contains("isSequencerUp") {
+            if !content.contains("sequencerUptimeFeed")
+                && !content.contains("SEQUENCER")
+                && !content.contains("isSequencerUp")
+            {
                 vulnerabilities.push(Vulnerability::high_confidence(
                     VulnerabilitySeverity::Critical,
                     VulnerabilityCategory::OracleManipulation,
@@ -142,8 +145,10 @@ impl OracleAnalyzer {
             }
 
             // Check for grace period after sequencer comes back up
-            if content.contains("sequencer") && !content.contains("GRACE_PERIOD") &&
-               !content.contains("gracePeriod") {
+            if content.contains("sequencer")
+                && !content.contains("GRACE_PERIOD")
+                && !content.contains("gracePeriod")
+            {
                 for (idx, line) in content.lines().enumerate() {
                     if line.contains("sequencer") {
                         vulnerabilities.push(Vulnerability::new(
@@ -174,10 +179,13 @@ impl OracleAnalyzer {
                     let func_context = self.get_function_context(content, idx);
 
                     // Check for minimum window
-                    if !func_context.contains("MIN_TWAP") && !func_context.contains("minWindow") &&
-                       !func_context.contains("WINDOW") {
+                    if !func_context.contains("MIN_TWAP")
+                        && !func_context.contains("minWindow")
+                        && !func_context.contains("WINDOW")
+                    {
                         // Try to find the window value
-                        let window_pattern = Regex::new(r"(\d+)\s*(seconds?|minutes?|hours?)").unwrap();
+                        let window_pattern =
+                            Regex::new(r"(\d+)\s*(seconds?|minutes?|hours?)").unwrap();
                         if let Some(caps) = window_pattern.captures(&func_context) {
                             let value: u64 = caps.get(1).unwrap().as_str().parse().unwrap_or(0);
                             let unit = caps.get(2).unwrap().as_str();
@@ -245,8 +253,8 @@ impl OracleAnalyzer {
         // Single oracle without fallback
         if oracle_count == 1 && !content.contains("fallback") && !content.contains("Fallback") {
             // Check for try-catch around oracle calls
-            let has_try_catch = content.contains("try") &&
-                               (content.contains("latestRoundData") || content.contains("getPrice"));
+            let has_try_catch = content.contains("try")
+                && (content.contains("latestRoundData") || content.contains("getPrice"));
 
             if !has_try_catch {
                 vulnerabilities.push(Vulnerability::new(
@@ -286,18 +294,22 @@ impl OracleAnalyzer {
         let mut vulnerabilities = Vec::new();
 
         // Check if protocol uses prices for critical operations
-        let critical_price_usage = content.contains("liquidat") ||
-                                   content.contains("collateral") ||
-                                   content.contains("borrow") ||
-                                   content.contains("swap") ||
-                                   content.contains("exchange");
+        let critical_price_usage = content.contains("liquidat")
+            || content.contains("collateral")
+            || content.contains("borrow")
+            || content.contains("swap")
+            || content.contains("exchange");
 
-        if critical_price_usage && (self.chainlink_pattern.is_match(content) ||
-                                    self.twap_pattern.is_match(content)) {
+        if critical_price_usage
+            && (self.chainlink_pattern.is_match(content) || self.twap_pattern.is_match(content))
+        {
             // Check for deviation circuit breaker
-            if !content.contains("deviation") && !content.contains("Deviation") &&
-               !content.contains("priceDiff") && !content.contains("circuitBreaker") &&
-               !content.contains("maxChange") {
+            if !content.contains("deviation")
+                && !content.contains("Deviation")
+                && !content.contains("priceDiff")
+                && !content.contains("circuitBreaker")
+                && !content.contains("maxChange")
+            {
                 vulnerabilities.push(Vulnerability::new(
                     VulnerabilitySeverity::Medium,
                     VulnerabilityCategory::OracleManipulation,
@@ -326,10 +338,16 @@ impl OracleAnalyzer {
                 let func_context = self.get_function_context(content, idx);
 
                 // Look for division by price without zero check
-                if func_context.contains("/ price") || func_context.contains("/price") ||
-                   func_context.contains("/ rate") || func_context.contains("/rate") {
-                    if !func_context.contains("> 0") && !func_context.contains("!= 0") &&
-                       !func_context.contains(">0") && !func_context.contains("!=0") {
+                if func_context.contains("/ price")
+                    || func_context.contains("/price")
+                    || func_context.contains("/ rate")
+                    || func_context.contains("/rate")
+                {
+                    if !func_context.contains("> 0")
+                        && !func_context.contains("!= 0")
+                        && !func_context.contains(">0")
+                        && !func_context.contains("!=0")
+                    {
                         vulnerabilities.push(Vulnerability::new(
                             VulnerabilitySeverity::High,
                             VulnerabilityCategory::ArithmeticIssues,
@@ -360,16 +378,21 @@ impl OracleAnalyzer {
 
         if decimal_count > 1 {
             // Check for explicit decimal normalization
-            if !content.contains("decimals()") && !content.contains("_decimals") &&
-               !content.contains("normaliz") && !content.contains("scale") {
+            if !content.contains("decimals()")
+                && !content.contains("_decimals")
+                && !content.contains("normaliz")
+                && !content.contains("scale")
+            {
                 vulnerabilities.push(Vulnerability::high_confidence(
                     VulnerabilitySeverity::Critical,
                     VulnerabilityCategory::DecimalPrecisionMismatch,
                     "Mixed Decimals Without Normalization".to_string(),
-                    "Contract mixes different decimal precisions without explicit normalization".to_string(),
+                    "Contract mixes different decimal precisions without explicit normalization"
+                        .to_string(),
                     1,
                     "Multiple decimal standards detected".to_string(),
-                    "Normalize all prices to same decimal precision before arithmetic operations".to_string(),
+                    "Normalize all prices to same decimal precision before arithmetic operations"
+                        .to_string(),
                 ));
             }
         }

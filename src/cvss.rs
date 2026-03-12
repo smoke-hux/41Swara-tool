@@ -12,22 +12,44 @@ use crate::vulnerabilities::{Vulnerability, VulnerabilityCategory};
 
 #[derive(Debug, Clone, Copy)]
 #[allow(dead_code)]
-pub enum AttackVector { Network, Adjacent, Local, Physical }
+pub enum AttackVector {
+    Network,
+    Adjacent,
+    Local,
+    Physical,
+}
 
 #[derive(Debug, Clone, Copy)]
-pub enum AttackComplexity { Low, High }
+pub enum AttackComplexity {
+    Low,
+    High,
+}
 
 #[derive(Debug, Clone, Copy)]
-pub enum PrivilegesRequired { None, Low, High }
+pub enum PrivilegesRequired {
+    None,
+    Low,
+    High,
+}
 
 #[derive(Debug, Clone, Copy)]
-pub enum UserInteraction { None, Required }
+pub enum UserInteraction {
+    None,
+    Required,
+}
 
 #[derive(Debug, Clone, Copy)]
-pub enum Scope { Unchanged, Changed }
+pub enum Scope {
+    Unchanged,
+    Changed,
+}
 
 #[derive(Debug, Clone, Copy)]
-pub enum Impact { None, Low, High }
+pub enum Impact {
+    None,
+    Low,
+    High,
+}
 
 /// Full CVSS 3.1 base metric vector.
 #[derive(Debug, Clone)]
@@ -47,33 +69,53 @@ impl CvssVector {
     /// AV:N/AC:L/PR:N/UI:N/S:C — Critical: scope-changed, no barriers
     fn nlc(i: Impact, a: Impact) -> Self {
         Self {
-            av: AttackVector::Network, ac: AttackComplexity::Low,
-            pr: PrivilegesRequired::None, ui: UserInteraction::None,
-            s: Scope::Changed, c: Impact::None, i, a,
+            av: AttackVector::Network,
+            ac: AttackComplexity::Low,
+            pr: PrivilegesRequired::None,
+            ui: UserInteraction::None,
+            s: Scope::Changed,
+            c: Impact::None,
+            i,
+            a,
         }
     }
     /// AV:N/AC:H/PR:N/UI:N/S:C — Critical but complex
     fn nhc(i: Impact, a: Impact) -> Self {
         Self {
-            av: AttackVector::Network, ac: AttackComplexity::High,
-            pr: PrivilegesRequired::None, ui: UserInteraction::None,
-            s: Scope::Changed, c: Impact::None, i, a,
+            av: AttackVector::Network,
+            ac: AttackComplexity::High,
+            pr: PrivilegesRequired::None,
+            ui: UserInteraction::None,
+            s: Scope::Changed,
+            c: Impact::None,
+            i,
+            a,
         }
     }
     /// AV:N/AC:L/PR:N/UI:N/S:U — High: scope-unchanged, no barriers
     fn nlu(i: Impact, a: Impact) -> Self {
         Self {
-            av: AttackVector::Network, ac: AttackComplexity::Low,
-            pr: PrivilegesRequired::None, ui: UserInteraction::None,
-            s: Scope::Unchanged, c: Impact::None, i, a,
+            av: AttackVector::Network,
+            ac: AttackComplexity::Low,
+            pr: PrivilegesRequired::None,
+            ui: UserInteraction::None,
+            s: Scope::Unchanged,
+            c: Impact::None,
+            i,
+            a,
         }
     }
     /// AV:N/AC:H/PR:N/UI:N/S:U — Medium: scope-unchanged, complex
     fn nhu(i: Impact, a: Impact) -> Self {
         Self {
-            av: AttackVector::Network, ac: AttackComplexity::High,
-            pr: PrivilegesRequired::None, ui: UserInteraction::None,
-            s: Scope::Unchanged, c: Impact::None, i, a,
+            av: AttackVector::Network,
+            ac: AttackComplexity::High,
+            pr: PrivilegesRequired::None,
+            ui: UserInteraction::None,
+            s: Scope::Unchanged,
+            c: Impact::None,
+            i,
+            a,
         }
     }
     /// Zero-impact vector (informational findings)
@@ -117,19 +159,43 @@ impl CvssVector {
         format!(
             "CVSS:3.1/AV:{}/AC:{}/PR:{}/UI:{}/S:{}/C:{}/I:{}/A:{}",
             match self.av {
-                AttackVector::Network => "N", AttackVector::Adjacent => "A",
-                AttackVector::Local => "L", AttackVector::Physical => "P",
+                AttackVector::Network => "N",
+                AttackVector::Adjacent => "A",
+                AttackVector::Local => "L",
+                AttackVector::Physical => "P",
             },
-            match self.ac { AttackComplexity::Low => "L", AttackComplexity::High => "H" },
+            match self.ac {
+                AttackComplexity::Low => "L",
+                AttackComplexity::High => "H",
+            },
             match self.pr {
-                PrivilegesRequired::None => "N", PrivilegesRequired::Low => "L",
+                PrivilegesRequired::None => "N",
+                PrivilegesRequired::Low => "L",
                 PrivilegesRequired::High => "H",
             },
-            match self.ui { UserInteraction::None => "N", UserInteraction::Required => "R" },
-            match self.s { Scope::Unchanged => "U", Scope::Changed => "C" },
-            match self.c { Impact::None => "N", Impact::Low => "L", Impact::High => "H" },
-            match self.i { Impact::None => "N", Impact::Low => "L", Impact::High => "H" },
-            match self.a { Impact::None => "N", Impact::Low => "L", Impact::High => "H" },
+            match self.ui {
+                UserInteraction::None => "N",
+                UserInteraction::Required => "R",
+            },
+            match self.s {
+                Scope::Unchanged => "U",
+                Scope::Changed => "C",
+            },
+            match self.c {
+                Impact::None => "N",
+                Impact::Low => "L",
+                Impact::High => "H",
+            },
+            match self.i {
+                Impact::None => "N",
+                Impact::Low => "L",
+                Impact::High => "H",
+            },
+            match self.a {
+                Impact::None => "N",
+                Impact::Low => "L",
+                Impact::High => "H",
+            },
         )
     }
 
@@ -142,10 +208,15 @@ impl CvssVector {
 
     fn exploitability_sub_score(&self) -> f64 {
         let av = match self.av {
-            AttackVector::Network => 0.85, AttackVector::Adjacent => 0.62,
-            AttackVector::Local => 0.55, AttackVector::Physical => 0.20,
+            AttackVector::Network => 0.85,
+            AttackVector::Adjacent => 0.62,
+            AttackVector::Local => 0.55,
+            AttackVector::Physical => 0.20,
         };
-        let ac = match self.ac { AttackComplexity::Low => 0.77, AttackComplexity::High => 0.44 };
+        let ac = match self.ac {
+            AttackComplexity::Low => 0.77,
+            AttackComplexity::High => 0.44,
+        };
         let pr = match (self.pr, matches!(self.s, Scope::Changed)) {
             (PrivilegesRequired::None, _) => 0.85,
             (PrivilegesRequired::Low, false) => 0.62,
@@ -153,13 +224,20 @@ impl CvssVector {
             (PrivilegesRequired::High, false) => 0.27,
             (PrivilegesRequired::High, true) => 0.50,
         };
-        let ui = match self.ui { UserInteraction::None => 0.85, UserInteraction::Required => 0.62 };
+        let ui = match self.ui {
+            UserInteraction::None => 0.85,
+            UserInteraction::Required => 0.62,
+        };
         8.22 * av * ac * pr * ui
     }
 }
 
 fn impact_value(i: Impact) -> f64 {
-    match i { Impact::None => 0.0, Impact::Low => 0.22, Impact::High => 0.56 }
+    match i {
+        Impact::None => 0.0,
+        Impact::Low => 0.22,
+        Impact::High => 0.56,
+    }
 }
 
 /// CVSS 3.1 roundup: round to nearest tenth, always up.
@@ -187,19 +265,17 @@ pub fn category_to_cvss(category: &VulnerabilityCategory) -> CvssVector {
         | VulnerabilityCategory::ERC2771MulticallSpoofing
         | VulnerabilityCategory::UninitializedImplementation
         | VulnerabilityCategory::DoubleInitialization
-        | VulnerabilityCategory::UnvalidatedCrossChainReceiver
-            => CvssVector::nlc(HI, HI),
+        | VulnerabilityCategory::UnvalidatedCrossChainReceiver => CvssVector::nlc(HI, HI),
 
-        VulnerabilityCategory::CLMMMathOverflow
-        | VulnerabilityCategory::InconsistentRounding
-            => CvssVector::nhc(HI, HI),
+        VulnerabilityCategory::CLMMMathOverflow | VulnerabilityCategory::InconsistentRounding => {
+            CvssVector::nhc(HI, HI)
+        }
 
         // === High: Significant fund risk ===
         VulnerabilityCategory::InconsistentStateReset
         | VulnerabilityCategory::AccessControl
         | VulnerabilityCategory::RoleBasedAccessControl
-        | VulnerabilityCategory::ArbitraryExternalCall
-            => CvssVector::nlu(HI, HI),
+        | VulnerabilityCategory::ArbitraryExternalCall => CvssVector::nlu(HI, HI),
 
         VulnerabilityCategory::UnprotectedProxyUpgrade
         | VulnerabilityCategory::ProxyAdminVulnerability
@@ -207,40 +283,43 @@ pub fn category_to_cvss(category: &VulnerabilityCategory) -> CvssVector {
         | VulnerabilityCategory::BridgeVulnerability
         | VulnerabilityCategory::CrossChainReplay
         | VulnerabilityCategory::CrossChainMessageReplay
-        | VulnerabilityCategory::MissingStorageGap
-            => CvssVector::nhc(HI, HI),
+        | VulnerabilityCategory::MissingStorageGap => CvssVector::nhc(HI, HI),
 
         VulnerabilityCategory::ReadOnlyReentrancy
         | VulnerabilityCategory::TransientStorageGasReentrancy
         | VulnerabilityCategory::TransientStorageReentrancy
-        | VulnerabilityCategory::FlashLoanAttack
-            => CvssVector::nhu(HI, HI),
+        | VulnerabilityCategory::FlashLoanAttack => CvssVector::nhu(HI, HI),
 
         VulnerabilityCategory::OracleManipulation
         | VulnerabilityCategory::DonationAttackVector
         | VulnerabilityCategory::EIP7702TxOriginBypass
         | VulnerabilityCategory::SignatureVulnerabilities
         | VulnerabilityCategory::SignatureReplay
-        | VulnerabilityCategory::SignatureVerificationBypass
-            => CvssVector::nhu(HI, LO),
+        | VulnerabilityCategory::SignatureVerificationBypass => CvssVector::nhu(HI, LO),
 
         VulnerabilityCategory::UnprotectedAdminSweep => CvssVector {
-            pr: PrivilegesRequired::High, ..CvssVector::nlu(HI, HI)
+            pr: PrivilegesRequired::High,
+            ..CvssVector::nlu(HI, HI)
         },
         VulnerabilityCategory::SelfdestructDeprecation => CvssVector {
-            pr: PrivilegesRequired::High, ..CvssVector::nlc(HI, HI)
+            pr: PrivilegesRequired::High,
+            ..CvssVector::nlc(HI, HI)
         },
         VulnerabilityCategory::ArbitraryReceiverCallback => CvssVector {
-            pr: PrivilegesRequired::Low, ..CvssVector::nlu(HI, HI)
+            pr: PrivilegesRequired::Low,
+            ..CvssVector::nlu(HI, HI)
         },
         VulnerabilityCategory::AVSSlashingRisk => CvssVector {
-            pr: PrivilegesRequired::Low, ..CvssVector::nlu(HI, LO)
+            pr: PrivilegesRequired::Low,
+            ..CvssVector::nlu(HI, LO)
         },
         VulnerabilityCategory::GovernanceAttack => CvssVector {
-            pr: PrivilegesRequired::Low, ..CvssVector::nhc(HI, LO)
+            pr: PrivilegesRequired::Low,
+            ..CvssVector::nhc(HI, LO)
         },
         VulnerabilityCategory::TxOriginAuth => CvssVector {
-            ui: UserInteraction::Required, ..CvssVector::nhu(HI, Impact::None)
+            ui: UserInteraction::Required,
+            ..CvssVector::nhu(HI, Impact::None)
         },
 
         // === Medium: Conditional exploitation ===
@@ -257,26 +336,26 @@ pub fn category_to_cvss(category: &VulnerabilityCategory) -> CvssVector {
         | VulnerabilityCategory::UnusedReturnValues
         | VulnerabilityCategory::LowLevelCalls
         | VulnerabilityCategory::CompilerBug
-        | VulnerabilityCategory::InputValidationFailure
-            => CvssVector::nhu(LO, LO),
+        | VulnerabilityCategory::InputValidationFailure => CvssVector::nhu(LO, LO),
 
         VulnerabilityCategory::TimeManipulation
         | VulnerabilityCategory::BlockTimestamp
         | VulnerabilityCategory::IsContractPostPectra
-        | VulnerabilityCategory::Push0Compatibility
-            => CvssVector::nhu(LO, Impact::None),
+        | VulnerabilityCategory::Push0Compatibility => CvssVector::nhu(LO, Impact::None),
 
         VulnerabilityCategory::MissingTimelock => CvssVector {
-            pr: PrivilegesRequired::High, ac: AttackComplexity::Low, ..CvssVector::nhu(LO, LO)
+            pr: PrivilegesRequired::High,
+            ac: AttackComplexity::Low,
+            ..CvssVector::nhu(LO, LO)
         },
 
-        VulnerabilityCategory::DoSAttacks
-        | VulnerabilityCategory::StorageDoSAttacks
-            => CvssVector::nhu(Impact::None, HI),
+        VulnerabilityCategory::DoSAttacks | VulnerabilityCategory::StorageDoSAttacks => {
+            CvssVector::nhu(Impact::None, HI)
+        }
 
-        VulnerabilityCategory::HardcodedGasAmount
-        | VulnerabilityCategory::UnsafeTransferGas
-            => CvssVector::nhu(Impact::None, LO),
+        VulnerabilityCategory::HardcodedGasAmount | VulnerabilityCategory::UnsafeTransferGas => {
+            CvssVector::nhu(Impact::None, LO)
+        }
 
         // === Low / Informational ===
         VulnerabilityCategory::GasOptimization
@@ -287,8 +366,7 @@ pub fn category_to_cvss(category: &VulnerabilityCategory) -> CvssVector {
         | VulnerabilityCategory::ExternalFunction
         | VulnerabilityCategory::ImmutabilityIssues
         | VulnerabilityCategory::MissingEvents
-        | VulnerabilityCategory::PragmaIssues
-            => CvssVector::zero(),
+        | VulnerabilityCategory::PragmaIssues => CvssVector::zero(),
 
         // Default for unmapped categories
         _ => CvssVector::nhu(LO, LO),
@@ -312,7 +390,10 @@ mod tests {
     fn test_reentrancy_cvss_score() {
         let vector = category_to_cvss(&VulnerabilityCategory::Reentrancy);
         let score = vector.calculate_base_score();
-        assert!(score >= 9.0, "Reentrancy should be Critical (>=9.0), got {score}");
+        assert!(
+            score >= 9.0,
+            "Reentrancy should be Critical (>=9.0), got {score}"
+        );
     }
 
     #[test]
@@ -333,12 +414,20 @@ mod tests {
     #[test]
     fn test_score_range() {
         let v = CvssVector {
-            av: AttackVector::Network, ac: AttackComplexity::Low,
-            pr: PrivilegesRequired::None, ui: UserInteraction::None,
-            s: Scope::Changed, c: Impact::High, i: Impact::High, a: Impact::High,
+            av: AttackVector::Network,
+            ac: AttackComplexity::Low,
+            pr: PrivilegesRequired::None,
+            ui: UserInteraction::None,
+            s: Scope::Changed,
+            c: Impact::High,
+            i: Impact::High,
+            a: Impact::High,
         };
         let score = v.calculate_base_score();
-        assert!(score <= 10.0 && score >= 0.0, "Score must be in [0, 10], got {score}");
+        assert!(
+            score <= 10.0 && score >= 0.0,
+            "Score must be in [0, 10], got {score}"
+        );
         assert_eq!(score, 10.0, "Maximum vector should produce 10.0");
     }
 }

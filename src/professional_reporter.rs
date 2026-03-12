@@ -1,4 +1,4 @@
-use crate::vulnerabilities::{Vulnerability, VulnerabilitySeverity, VulnerabilityCategory};
+use crate::vulnerabilities::{Vulnerability, VulnerabilityCategory, VulnerabilitySeverity};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -70,12 +70,12 @@ impl ProfessionalReporter {
 
     pub fn add_vulnerabilities(&mut self, vulnerabilities: Vec<Vulnerability>, file_path: &str) {
         let mut finding_counter = HashMap::new();
-        
+
         for vuln in vulnerabilities {
             let severity_key = self.get_severity_prefix(&vuln.severity);
             let counter = finding_counter.entry(severity_key.clone()).or_insert(0);
             *counter += 1;
-            
+
             let finding_id = format!("{}-{:02}", severity_key, counter);
             let detailed_finding = self.convert_to_detailed_finding(vuln, finding_id, file_path);
             self.findings.push(detailed_finding);
@@ -92,7 +92,12 @@ impl ProfessionalReporter {
         }
     }
 
-    fn convert_to_detailed_finding(&self, vuln: Vulnerability, id: String, file_path: &str) -> DetailedFinding {
+    fn convert_to_detailed_finding(
+        &self,
+        vuln: Vulnerability,
+        id: String,
+        file_path: &str,
+    ) -> DetailedFinding {
         let contract_function = self.extract_function_from_code(&vuln.code_snippet);
         let github_links = if let Some(repo) = &self.audit_info.repository_url {
             vec![format!("{}#L{}", repo, vuln.line_number)]
@@ -118,9 +123,13 @@ impl ProfessionalReporter {
         let attack_path = vuln.attack_path.clone();
         let priority = if let Some(cvss) = cvss_score {
             let ps = cvss * vuln.confidence_percent as f64 / 100.0;
-            if ps >= 7.0 { "P1 - Immediate".to_string() }
-            else if ps >= 4.0 { "P2 - Short-term".to_string() }
-            else { "P3 - Backlog".to_string() }
+            if ps >= 7.0 {
+                "P1 - Immediate".to_string()
+            } else if ps >= 4.0 {
+                "P2 - Short-term".to_string()
+            } else {
+                "P3 - Backlog".to_string()
+            }
         } else {
             "P3 - Backlog".to_string()
         };
@@ -161,7 +170,12 @@ impl ProfessionalReporter {
 
     fn generate_professional_title(&self, vuln: &Vulnerability, function: &str) -> String {
         if function != "Unknown" && !function.is_empty() {
-            format!("{} in {}::{}", vuln.title, self.extract_contract_name(), function)
+            format!(
+                "{} in {}::{}",
+                vuln.title,
+                self.extract_contract_name(),
+                function
+            )
         } else {
             vuln.title.clone()
         }
@@ -176,10 +190,12 @@ impl ProfessionalReporter {
     }
 
     fn generate_summary(&self, vuln: &Vulnerability) -> String {
-        format!("The {} contract contains a {} vulnerability. {}",
-                self.extract_contract_name(),
-                vuln.category.as_str().to_lowercase(),
-                vuln.description)
+        format!(
+            "The {} contract contains a {} vulnerability. {}",
+            self.extract_contract_name(),
+            vuln.category.as_str().to_lowercase(),
+            vuln.description
+        )
     }
 
     fn generate_vulnerability_details(&self, vuln: &Vulnerability, file_path: &str) -> String {
@@ -196,30 +212,30 @@ impl ProfessionalReporter {
             VulnerabilitySeverity::Critical => {
                 format!("This is a CRITICAL vulnerability that can lead to complete compromise of the contract. {} This vulnerability allows attackers to exploit the contract, potentially resulting in total loss of funds or complete control over the contract's functionality.",
                         vuln.description)
-            },
+            }
             VulnerabilitySeverity::High => {
                 format!("This vulnerability poses a HIGH risk to the contract's security. {} Exploitation could result in significant financial loss or major disruption to the contract's intended functionality.",
                         vuln.description)
-            },
+            }
             VulnerabilitySeverity::Medium => {
                 format!("This vulnerability presents a MEDIUM risk. {} While not immediately exploitable for major damage, it could be combined with other vulnerabilities or lead to unexpected contract behavior.",
                         vuln.description)
-            },
+            }
             VulnerabilitySeverity::Low => {
                 format!("This is a LOW severity issue. {} While not directly exploitable, it may indicate poor coding practices or potential future vulnerabilities.",
                         vuln.description)
-            },
+            }
             VulnerabilitySeverity::Info => {
                 format!("This is an informational finding. {} It represents a best practice recommendation or code quality improvement.",
                         vuln.description)
-            },
+            }
         }
     }
 
     fn generate_proof_of_concept(&self, vuln: &Vulnerability) -> Option<String> {
         match &vuln.category {
-            VulnerabilityCategory::AccessControl => {
-                Some(format!(r#"**Working Test Case**
+            VulnerabilityCategory::AccessControl => Some(format!(
+                r#"**Working Test Case**
 
 The following test demonstrates the vulnerability:
 
@@ -241,11 +257,12 @@ contract ExploitTest {{
 1. Attacker identifies the vulnerable function at line {}
 2. Attacker calls the function without authentication
 3. Function executes without proper access control checks
-4. Attacker gains unauthorized access or control"#, 
-                self.extract_function_from_code(&vuln.code_snippet), vuln.line_number))
-            },
-            VulnerabilityCategory::Reentrancy => {
-                Some(format!(r#"**Reentrancy Attack Scenario**
+4. Attacker gains unauthorized access or control"#,
+                self.extract_function_from_code(&vuln.code_snippet),
+                vuln.line_number
+            )),
+            VulnerabilityCategory::Reentrancy => Some(format!(
+                r#"**Reentrancy Attack Scenario**
 
 ```solidity
 contract ReentrancyAttack {{
@@ -270,10 +287,10 @@ contract ReentrancyAttack {{
 4. State is manipulated before original call completes"#,
                 self.extract_function_from_code(&vuln.code_snippet),
                 self.extract_function_from_code(&vuln.code_snippet),
-                vuln.line_number))
-            },
-            VulnerabilityCategory::PrecisionLoss => {
-                Some(format!(r#"**Precision Loss Demonstration**
+                vuln.line_number
+            )),
+            VulnerabilityCategory::PrecisionLoss => Some(format!(
+                r#"**Precision Loss Demonstration**
 
 ```solidity
 function testPrecisionLoss() public {{
@@ -291,10 +308,11 @@ function testPrecisionLoss() public {{
 }}
 ```
 
-This demonstrates how integer division causes fund loss."#, vuln.line_number))
-            },
-            VulnerabilityCategory::StorageDoSAttacks => {
-                Some(format!(r#"**DoS Attack Demonstration**
+This demonstrates how integer division causes fund loss."#,
+                vuln.line_number
+            )),
+            VulnerabilityCategory::StorageDoSAttacks => Some(format!(
+                r#"**DoS Attack Demonstration**
 
 ```solidity
 contract DoSAttack {{
@@ -315,19 +333,20 @@ contract DoSAttack {{
 **Attack Impact:**
 1. Attacker floods storage with spam submissions
 2. Legitimate users face high gas costs
-3. Contract becomes unusable due to gas limits"#, 
-                self.extract_function_from_code(&vuln.code_snippet)))
-            },
+3. Contract becomes unusable due to gas limits"#,
+                self.extract_function_from_code(&vuln.code_snippet)
+            )),
             _ => None,
         }
     }
 
     fn generate_mitigation(&self, vuln: &Vulnerability) -> String {
         let base_recommendation = &vuln.recommendation;
-        
+
         match &vuln.category {
             VulnerabilityCategory::AccessControl => {
-                format!(r#"{}
+                format!(
+                    r#"{}
 
 **Implementation Options:**
 
@@ -354,12 +373,15 @@ contract MyContract is Ownable {{
         // Protected function logic
     }}
 }}
-```"#, base_recommendation, 
-                self.extract_function_from_code(&vuln.code_snippet),
-                self.extract_function_from_code(&vuln.code_snippet))
-            },
+```"#,
+                    base_recommendation,
+                    self.extract_function_from_code(&vuln.code_snippet),
+                    self.extract_function_from_code(&vuln.code_snippet)
+                )
+            }
             VulnerabilityCategory::Reentrancy => {
-                format!(r#"{}
+                format!(
+                    r#"{}
 
 **Recommended Implementation:**
 
@@ -378,10 +400,14 @@ contract SecureContract is ReentrancyGuard {{
         externalCall();
     }}
 }}
-```"#, base_recommendation, self.extract_function_from_code(&vuln.code_snippet))
-            },
+```"#,
+                    base_recommendation,
+                    self.extract_function_from_code(&vuln.code_snippet)
+                )
+            }
             VulnerabilityCategory::PrecisionLoss => {
-                format!(r#"{}
+                format!(
+                    r#"{}
 
 **Corrected Implementation:**
 
@@ -402,10 +428,13 @@ function distributeRewards() external {{
         }}
     }}
 }}
-```"#, base_recommendation)
-            },
+```"#,
+                    base_recommendation
+                )
+            }
             VulnerabilityCategory::StorageDoSAttacks => {
-                format!(r#"{}
+                format!(
+                    r#"{}
 
 **Comprehensive Mitigation:**
 
@@ -435,8 +464,11 @@ function {}(string memory data) external {{
     // Process submission
     processSubmission(data);
 }}
-```"#, base_recommendation, self.extract_function_from_code(&vuln.code_snippet))
-            },
+```"#,
+                    base_recommendation,
+                    self.extract_function_from_code(&vuln.code_snippet)
+                )
+            }
             _ => base_recommendation.clone(),
         }
     }
@@ -492,38 +524,60 @@ function {}(string memory data) external {{
         report.push_str("---\n\n");
         report.push_str("## Need a Deeper Analysis?\n\n");
         report.push_str("This automated scan provides a solid foundation, but complex vulnerabilities often require expert human review. ");
-        report.push_str("For a comprehensive, in-depth audit of your smart contract vulnerabilities, ");
-        report.push_str("visit **[41swara.com](https://41swara.com)** or contact our security team directly.\n");
+        report.push_str(
+            "For a comprehensive, in-depth audit of your smart contract vulnerabilities, ",
+        );
+        report.push_str(
+            "visit **[41swara.com](https://41swara.com)** or contact our security team directly.\n",
+        );
 
         report
     }
 
     fn generate_executive_summary(&self, summary: &FindingSummary) -> String {
-        let total = summary.critical_count + summary.high_count + summary.medium_count
-            + summary.low_count + summary.info_count;
+        let total = summary.critical_count
+            + summary.high_count
+            + summary.medium_count
+            + summary.low_count
+            + summary.info_count;
 
         // Calculate overall risk score (weighted CVSS average)
-        let (total_weighted, count) = self.findings.iter().fold((0.0_f64, 0_usize), |(sum, c), f| {
-            if let Some(cvss) = f.cvss_score {
-                (sum + cvss, c + 1)
-            } else {
-                (sum, c)
-            }
-        });
-        let avg_cvss = if count > 0 { total_weighted / count as f64 } else { 0.0 };
+        let (total_weighted, count) =
+            self.findings
+                .iter()
+                .fold((0.0_f64, 0_usize), |(sum, c), f| {
+                    if let Some(cvss) = f.cvss_score {
+                        (sum + cvss, c + 1)
+                    } else {
+                        (sum, c)
+                    }
+                });
+        let avg_cvss = if count > 0 {
+            total_weighted / count as f64
+        } else {
+            0.0
+        };
 
-        let risk_rating = if avg_cvss >= 9.0 { "CRITICAL" }
-            else if avg_cvss >= 7.0 { "HIGH" }
-            else if avg_cvss >= 4.0 { "MEDIUM" }
-            else if avg_cvss > 0.0 { "LOW" }
-            else { "INFORMATIONAL" };
+        let risk_rating = if avg_cvss >= 9.0 {
+            "CRITICAL"
+        } else if avg_cvss >= 7.0 {
+            "HIGH"
+        } else if avg_cvss >= 4.0 {
+            "MEDIUM"
+        } else if avg_cvss > 0.0 {
+            "LOW"
+        } else {
+            "INFORMATIONAL"
+        };
 
         // Top 3 most severe findings
         let mut sorted = self.findings.clone();
         sorted.sort_by(|a, b| {
             let a_score = a.cvss_score.unwrap_or(0.0);
             let b_score = b.cvss_score.unwrap_or(0.0);
-            b_score.partial_cmp(&a_score).unwrap_or(std::cmp::Ordering::Equal)
+            b_score
+                .partial_cmp(&a_score)
+                .unwrap_or(std::cmp::Ordering::Equal)
         });
 
         let mut exec = String::from("## Executive Summary\n\n");
@@ -537,8 +591,17 @@ function {}(string memory data) external {{
             exec.push_str("| # | Finding | CVSS | Priority |\n");
             exec.push_str("|---|---------|------|----------|\n");
             for (i, f) in sorted.iter().take(5).enumerate() {
-                let cvss = f.cvss_score.map(|s| format!("{s:.1}")).unwrap_or_else(|| "-".into());
-                exec.push_str(&format!("| {} | {} | {} | {} |\n", i + 1, f.title, cvss, f.priority));
+                let cvss = f
+                    .cvss_score
+                    .map(|s| format!("{s:.1}"))
+                    .unwrap_or_else(|| "-".into());
+                exec.push_str(&format!(
+                    "| {} | {} | {} | {} |\n",
+                    i + 1,
+                    f.title,
+                    cvss,
+                    f.priority
+                ));
             }
             exec.push('\n');
         }
@@ -556,7 +619,9 @@ function {}(string memory data) external {{
 
     fn generate_priority_matrix(&self) -> String {
         let mut matrix = String::from("## Remediation Priority Matrix\n\n");
-        matrix.push_str("Sorted by priority score (CVSS x Confidence). Fix P1 items before deployment.\n\n");
+        matrix.push_str(
+            "Sorted by priority score (CVSS x Confidence). Fix P1 items before deployment.\n\n",
+        );
         matrix.push_str("| Priority | ID | Finding | CVSS | Confidence | Exploits Known |\n");
         matrix.push_str("|----------|-----|---------|------|------------|----------------|\n");
 
@@ -568,12 +633,22 @@ function {}(string memory data) external {{
         });
 
         for f in &sorted {
-            let cvss = f.cvss_score.map(|s| format!("{s:.1}")).unwrap_or_else(|| "-".into());
-            let exploits = if f.exploit_references.is_empty() { "No".to_string() }
-                else { format!("Yes ({})", f.exploit_references.len()) };
-            let priority_short = if f.priority.starts_with("P1") { "**P1**" }
-                else if f.priority.starts_with("P2") { "P2" }
-                else { "P3" };
+            let cvss = f
+                .cvss_score
+                .map(|s| format!("{s:.1}"))
+                .unwrap_or_else(|| "-".into());
+            let exploits = if f.exploit_references.is_empty() {
+                "No".to_string()
+            } else {
+                format!("Yes ({})", f.exploit_references.len())
+            };
+            let priority_short = if f.priority.starts_with("P1") {
+                "**P1**"
+            } else if f.priority.starts_with("P2") {
+                "P2"
+            } else {
+                "P3"
+            };
             matrix.push_str(&format!(
                 "| {} | {} | {} | {} | - | {} |\n",
                 priority_short, f.id, f.title, cvss, exploits
@@ -585,7 +660,8 @@ function {}(string memory data) external {{
     }
 
     fn generate_title_page(&self) -> String {
-        format!(r#"# {} - Security Audit Report
+        format!(
+            r#"# {} - Security Audit Report
 
 **Professional Smart Contract Security Analysis**
 
@@ -601,13 +677,14 @@ function {}(string memory data) external {{
 
 This report contains the findings from a comprehensive security analysis of the smart contract codebase using advanced automated vulnerability detection techniques.
 
-"#, 
-        self.audit_info.project_name,
-        self.audit_info.project_name,
-        self.audit_info.auditor,
-        self.audit_info.start_date,
-        self.audit_info.end_date,
-        Utc::now().format("%B %d, %Y").to_string())
+"#,
+            self.audit_info.project_name,
+            self.audit_info.project_name,
+            self.audit_info.auditor,
+            self.audit_info.start_date,
+            self.audit_info.end_date,
+            Utc::now().format("%B %d, %Y").to_string()
+        )
     }
 
     fn generate_table_of_contents(&self, summary: &FindingSummary) -> String {
@@ -617,7 +694,9 @@ This report contains the findings from a comprehensive security analysis of the 
 
         if summary.critical_count > 0 {
             toc.push_str("• **Critical Risk Findings**\n");
-            let critical_findings: Vec<_> = self.findings.iter()
+            let critical_findings: Vec<_> = self
+                .findings
+                .iter()
                 .filter(|f| matches!(f.severity, VulnerabilitySeverity::Critical))
                 .collect();
             for finding in critical_findings {
@@ -627,7 +706,9 @@ This report contains the findings from a comprehensive security analysis of the 
 
         if summary.high_count > 0 {
             toc.push_str("• **High Risk Findings**\n");
-            let high_findings: Vec<_> = self.findings.iter()
+            let high_findings: Vec<_> = self
+                .findings
+                .iter()
                 .filter(|f| matches!(f.severity, VulnerabilitySeverity::High))
                 .collect();
             for finding in high_findings {
@@ -637,7 +718,9 @@ This report contains the findings from a comprehensive security analysis of the 
 
         if summary.medium_count > 0 {
             toc.push_str("• **Medium Risk Findings**\n");
-            let medium_findings: Vec<_> = self.findings.iter()
+            let medium_findings: Vec<_> = self
+                .findings
+                .iter()
                 .filter(|f| matches!(f.severity, VulnerabilitySeverity::Medium))
                 .collect();
             for finding in medium_findings {
@@ -647,7 +730,9 @@ This report contains the findings from a comprehensive security analysis of the 
 
         if summary.low_count > 0 {
             toc.push_str("• **Low Risk Findings**\n");
-            let low_findings: Vec<_> = self.findings.iter()
+            let low_findings: Vec<_> = self
+                .findings
+                .iter()
                 .filter(|f| matches!(f.severity, VulnerabilitySeverity::Low))
                 .collect();
             for finding in low_findings {
@@ -664,7 +749,8 @@ This report contains the findings from a comprehensive security analysis of the 
     }
 
     fn generate_audit_summary(&self) -> String {
-        format!(r#"## Audit Summary
+        format!(
+            r#"## Audit Summary
 
 **Sponsor:** {}
 **Dates:** {} - {}
@@ -685,18 +771,30 @@ The audit covered the complete smart contract codebase, including:
 - Delegate call security
 - And 200+ additional vulnerability patterns
 
-"#, 
-        self.audit_info.sponsor,
-        self.audit_info.start_date, 
-        self.audit_info.end_date,
-        self.audit_info.repository_url.as_deref().unwrap_or("Not provided"),
-        self.audit_info.commit_hash.as_deref().unwrap_or("Not provided"))
+"#,
+            self.audit_info.sponsor,
+            self.audit_info.start_date,
+            self.audit_info.end_date,
+            self.audit_info
+                .repository_url
+                .as_deref()
+                .unwrap_or("Not provided"),
+            self.audit_info
+                .commit_hash
+                .as_deref()
+                .unwrap_or("Not provided")
+        )
     }
 
     fn generate_results_summary(&self, summary: &FindingSummary) -> String {
-        let total = summary.critical_count + summary.high_count + summary.medium_count + summary.low_count + summary.info_count;
-        
-        format!(r#"## Results Summary
+        let total = summary.critical_count
+            + summary.high_count
+            + summary.medium_count
+            + summary.low_count
+            + summary.info_count;
+
+        format!(
+            r#"## Results Summary
 
 **Number of findings:** {}
 
@@ -712,14 +810,15 @@ The audit covered the complete smart contract codebase, including:
 
 ---
 
-"#, 
-        total,
-        summary.critical_count,
-        summary.high_count,
-        summary.medium_count, 
-        summary.low_count,
-        summary.info_count,
-        self.generate_risk_assessment(summary))
+"#,
+            total,
+            summary.critical_count,
+            summary.high_count,
+            summary.medium_count,
+            summary.low_count,
+            summary.info_count,
+            self.generate_risk_assessment(summary)
+        )
     }
 
     fn generate_risk_assessment(&self, summary: &FindingSummary) -> String {
@@ -738,7 +837,7 @@ The audit covered the complete smart contract codebase, including:
 
     fn generate_detailed_findings(&self) -> String {
         let mut report = String::new();
-        
+
         // Sort findings by severity
         let mut sorted_findings = self.findings.clone();
         sorted_findings.sort_by(|a, b| {
@@ -748,13 +847,13 @@ The audit covered the complete smart contract codebase, including:
         });
 
         let mut current_severity = None;
-        
+
         for finding in sorted_findings {
             // Add section header for new severity level
             if current_severity != Some(finding.severity.clone()) {
                 let section_title = match finding.severity {
                     VulnerabilitySeverity::Critical => "# Critical Risk Findings",
-                    VulnerabilitySeverity::High => "# High Risk Findings", 
+                    VulnerabilitySeverity::High => "# High Risk Findings",
                     VulnerabilitySeverity::Medium => "# Medium Risk Findings",
                     VulnerabilitySeverity::Low => "# Low Risk Findings",
                     VulnerabilitySeverity::Info => "# Informational Findings",
@@ -785,10 +884,14 @@ The audit covered the complete smart contract codebase, including:
         let mut content = String::new();
 
         // Finding header with CVSS badge
-        let cvss_badge = finding.cvss_score
+        let cvss_badge = finding
+            .cvss_score
             .map(|s| format!(" (CVSS: {s:.1})"))
             .unwrap_or_default();
-        content.push_str(&format!("## {}. {}{}\n\n", finding.id, finding.title, cvss_badge));
+        content.push_str(&format!(
+            "## {}. {}{}\n\n",
+            finding.id, finding.title, cvss_badge
+        ));
 
         // Priority and CVSS details
         content.push_str(&format!("**Priority**: {} | ", finding.priority));

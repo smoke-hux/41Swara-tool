@@ -20,9 +20,9 @@
 
 #![allow(dead_code)]
 
-use std::collections::{HashMap, HashSet};
+use crate::vulnerabilities::{Vulnerability, VulnerabilityCategory, VulnerabilitySeverity};
 use regex::Regex;
-use crate::vulnerabilities::{Vulnerability, VulnerabilitySeverity, VulnerabilityCategory};
+use std::collections::{HashMap, HashSet};
 
 /// Classification of logic vulnerability types that go beyond simple pattern matching.
 ///
@@ -158,7 +158,11 @@ impl LogicAnalyzer {
         vulnerabilities.extend(self.detect_logic_bypass(content, &functions));
 
         // 4. Flag state variables written with validation in some paths but not others
-        vulnerabilities.extend(self.detect_inconsistent_state_updates(content, &functions, &state_vars));
+        vulnerabilities.extend(self.detect_inconsistent_state_updates(
+            content,
+            &functions,
+            &state_vars,
+        ));
 
         // 5. Check for division without zero-check and array access without bounds-check
         vulnerabilities.extend(self.detect_missing_conditions(content, &functions));
@@ -201,7 +205,8 @@ impl LogicAnalyzer {
         // Heuristic for state writes: identifier followed by `=` but NOT `==`.
         let state_write_pattern = Regex::new(r"\b([a-z_]\w*)\s*=[^=]").unwrap();
         // Detects external call targets (address.call, .delegatecall, etc.).
-        let external_call_pattern = Regex::new(r"(\w+)\.(?:call|delegatecall|staticcall|transfer|send)\(").unwrap();
+        let external_call_pattern =
+            Regex::new(r"(\w+)\.(?:call|delegatecall|staticcall|transfer|send)\(").unwrap();
 
         let lines: Vec<&str> = content.lines().collect();
 
@@ -224,14 +229,21 @@ impl LogicAnalyzer {
                     "private"
                 } else {
                     "public" // default
-                }.to_string();
+                }
+                .to_string();
 
                 // Extract custom modifiers (strip out Solidity built-in keywords)
                 let modifiers: Vec<String> = modifier_pattern
                     .captures_iter(modifiers_str)
                     .filter_map(|c| c.get(1))
                     .map(|m| m.as_str().to_string())
-                    .filter(|m| !["external", "public", "internal", "private", "view", "pure", "payable", "virtual", "override"].contains(&m.as_str()))
+                    .filter(|m| {
+                        ![
+                            "external", "public", "internal", "private", "view", "pure", "payable",
+                            "virtual", "override",
+                        ]
+                        .contains(&m.as_str())
+                    })
                     .collect();
 
                 // Parse parameter list into (type, name) pairs
@@ -373,7 +385,11 @@ impl LogicAnalyzer {
     /// Looks for `enum <...State...> { A, B, C }`, then identifies the storage
     /// variable whose name contains "state" or "status", and finally infers
     /// transitions from assignment patterns like `stateVar.From = ... .To`.
-    fn detect_state_machine(&self, content: &str, state_vars: &[StateVariable]) -> ContractStateMachine {
+    fn detect_state_machine(
+        &self,
+        content: &str,
+        state_vars: &[StateVariable],
+    ) -> ContractStateMachine {
         let mut machine = ContractStateMachine {
             states: HashSet::new(),
             transitions: HashMap::new(),
@@ -391,7 +407,9 @@ impl LogicAnalyzer {
 
         // Step 2: Find the storage variable that holds the current state
         for var in state_vars {
-            if var.name.to_lowercase().contains("state") || var.name.to_lowercase().contains("status") {
+            if var.name.to_lowercase().contains("state")
+                || var.name.to_lowercase().contains("status")
+            {
                 machine.current_state_var = Some(var.name.clone());
                 break;
             }
@@ -399,10 +417,12 @@ impl LogicAnalyzer {
 
         // Step 3: Infer transitions from assignment patterns on the state variable
         if let Some(ref state_var) = machine.current_state_var {
-            let transition_pattern = Regex::new(&format!(r"{}\.(\w+).*=.*\.(\w+)", regex::escape(state_var))).unwrap();
+            let transition_pattern =
+                Regex::new(&format!(r"{}\.(\w+).*=.*\.(\w+)", regex::escape(state_var))).unwrap();
             for caps in transition_pattern.captures_iter(content) {
                 if let (Some(from), Some(to)) = (caps.get(1), caps.get(2)) {
-                    machine.transitions
+                    machine
+                        .transitions
                         .entry(from.as_str().to_string())
                         .or_default()
                         .push(to.as_str().to_string());
@@ -437,11 +457,12 @@ impl LogicAnalyzer {
         for func in functions {
             // Flag: function writes the state variable without first reading/checking it
             if func.state_writes.iter().any(|w| w == state_var) {
-                let has_state_check = func.body.contains(&format!("require({state_var}")) ||
-                                      func.body.contains(&format!("if ({state_var}")) ||
-                                      func.body.contains(&format!("== {state_var}"));
+                let has_state_check = func.body.contains(&format!("require({state_var}"))
+                    || func.body.contains(&format!("if ({state_var}"))
+                    || func.body.contains(&format!("== {state_var}"));
 
-                if !has_state_check && func.visibility == "external" || func.visibility == "public" {
+                if !has_state_check && func.visibility == "external" || func.visibility == "public"
+                {
                     vulnerabilities.push(Vulnerability::new(
                         VulnerabilitySeverity::High,
                         VulnerabilityCategory::LogicError,
@@ -462,7 +483,8 @@ impl LogicAnalyzer {
                     VulnerabilitySeverity::Medium,
                     VulnerabilityCategory::LogicError,
                     format!("Dead State: {from_state}"),
-                    "State has no valid transitions - once entered, contract may be stuck".to_string(),
+                    "State has no valid transitions - once entered, contract may be stuck"
+                        .to_string(),
                     1,
                     format!("State: {from_state}"),
                     "Add transition functions or mark as terminal state".to_string(),
@@ -492,10 +514,13 @@ impl LogicAnalyzer {
         let mut vulnerabilities = Vec::new();
 
         // Collect state variables likely involved in balance/supply tracking
-        let balance_vars: Vec<&StateVariable> = state_vars.iter()
-            .filter(|v| v.name.to_lowercase().contains("balance") ||
-                       v.name.to_lowercase().contains("supply") ||
-                       v.name.to_lowercase().contains("total"))
+        let balance_vars: Vec<&StateVariable> = state_vars
+            .iter()
+            .filter(|v| {
+                v.name.to_lowercase().contains("balance")
+                    || v.name.to_lowercase().contains("supply")
+                    || v.name.to_lowercase().contains("total")
+            })
             .collect();
 
         // --- Sub-check 1: balance/supply invariant ---
@@ -504,8 +529,10 @@ impl LogicAnalyzer {
             let name_lower = func.name.to_lowercase();
             // Transfer functions are zero-sum: they debit one balance and credit another.
             // Only supply-changing operations (mint/burn/deposit/redeem) can break the invariant.
-            let is_supply_changing = name_lower.contains("mint") || name_lower.contains("burn")
-                || name_lower.contains("deposit") || name_lower.contains("redeem");
+            let is_supply_changing = name_lower.contains("mint")
+                || name_lower.contains("burn")
+                || name_lower.contains("deposit")
+                || name_lower.contains("redeem");
             if !is_supply_changing {
                 continue;
             }
@@ -513,13 +540,15 @@ impl LogicAnalyzer {
             for balance_var in &balance_vars {
                 if func.state_writes.contains(&balance_var.name) {
                     // Check whether totalSupply (or equivalent) is also updated
-                    let has_total_update = func.state_writes.iter()
-                        .any(|w| w.to_lowercase().contains("total") || w.to_lowercase().contains("supply"));
+                    let has_total_update = func.state_writes.iter().any(|w| {
+                        w.to_lowercase().contains("total") || w.to_lowercase().contains("supply")
+                    });
 
                     // Only report when modifying a "balance" var without touching a "total/supply" var,
                     // and only for contracts that declare a totalSupply (i.e., likely ERC20)
                     if !has_total_update && balance_var.name.contains("balance") {
-                        let is_erc20 = content.contains("totalSupply") || content.contains("_totalSupply");
+                        let is_erc20 =
+                            content.contains("totalSupply") || content.contains("_totalSupply");
 
                         if is_erc20 {
                             vulnerabilities.push(Vulnerability::new(
@@ -541,16 +570,18 @@ impl LogicAnalyzer {
         for func in functions {
             if func.body.contains("deadline") || func.body.contains("expiry") {
                 // Look for a time-based guard: require(...block.timestamp...)
-                let has_time_check = func.body.contains("block.timestamp") ||
-                                    func.body.contains("block.number");
+                let has_time_check =
+                    func.body.contains("block.timestamp") || func.body.contains("block.number");
                 let has_validation = func.body.contains("require(") && has_time_check;
 
-                if !has_validation && (func.visibility == "external" || func.visibility == "public") {
+                if !has_validation && (func.visibility == "external" || func.visibility == "public")
+                {
                     vulnerabilities.push(Vulnerability::new(
                         VulnerabilitySeverity::Medium,
                         VulnerabilityCategory::LogicError,
                         format!("Unvalidated Deadline/Expiry in {}", func.name),
-                        "Function references deadline/expiry without timestamp validation".to_string(),
+                        "Function references deadline/expiry without timestamp validation"
+                            .to_string(),
                         func.line_start,
                         format!("function {}", func.name),
                         "Add require(block.timestamp <= deadline) validation".to_string(),
@@ -563,11 +594,7 @@ impl LogicAnalyzer {
     }
 
     /// Detect potential business logic bypass
-    fn detect_logic_bypass(
-        &self,
-        content: &str,
-        functions: &[FunctionInfo],
-    ) -> Vec<Vulnerability> {
+    fn detect_logic_bypass(&self, content: &str, functions: &[FunctionInfo]) -> Vec<Vulnerability> {
         let mut vulnerabilities = Vec::new();
 
         // Find pairs of functions that should be related
@@ -582,10 +609,12 @@ impl LogicAnalyzer {
         ];
 
         for (action1, action2) in critical_pairs {
-            let func1: Vec<&FunctionInfo> = functions.iter()
+            let func1: Vec<&FunctionInfo> = functions
+                .iter()
                 .filter(|f| f.name.to_lowercase().contains(action1))
                 .collect();
-            let func2: Vec<&FunctionInfo> = functions.iter()
+            let func2: Vec<&FunctionInfo> = functions
+                .iter()
                 .filter(|f| f.name.to_lowercase().contains(action2))
                 .collect();
 
@@ -596,16 +625,26 @@ impl LogicAnalyzer {
                     let f2_has_modifier = !f2.modifiers.is_empty();
 
                     if f1_has_modifier != f2_has_modifier {
-                        let (protected, unprotected) = if f1_has_modifier { (f1, f2) } else { (f2, f1) };
+                        let (protected, unprotected) =
+                            if f1_has_modifier { (f1, f2) } else { (f2, f1) };
 
                         vulnerabilities.push(Vulnerability::new(
                             VulnerabilitySeverity::High,
                             VulnerabilityCategory::LogicError,
-                            format!("Asymmetric Access Control: {} vs {}", protected.name, unprotected.name),
-                            format!("{} has access control but {} does not - potential logic bypass", protected.name, unprotected.name),
+                            format!(
+                                "Asymmetric Access Control: {} vs {}",
+                                protected.name, unprotected.name
+                            ),
+                            format!(
+                                "{} has access control but {} does not - potential logic bypass",
+                                protected.name, unprotected.name
+                            ),
                             unprotected.line_start,
                             format!("function {}", unprotected.name),
-                            format!("Add matching access control to {} as in {}", unprotected.name, protected.name),
+                            format!(
+                                "Add matching access control to {} as in {}",
+                                unprotected.name, protected.name
+                            ),
                         ));
                     }
                 }
@@ -618,8 +657,8 @@ impl LogicAnalyzer {
             if func.visibility == "internal" && !func.modifiers.is_empty() {
                 // Check if there's an external wrapper
                 let has_external_wrapper = functions.iter().any(|f| {
-                    (f.visibility == "external" || f.visibility == "public") &&
-                    f.body.contains(&func.name)
+                    (f.visibility == "external" || f.visibility == "public")
+                        && f.body.contains(&func.name)
                 });
 
                 if !has_external_wrapper {
@@ -656,9 +695,7 @@ impl LogicAnalyzer {
 
         for func in functions {
             for write_var in &func.state_writes {
-                write_map.entry(write_var.clone())
-                    .or_default()
-                    .push(func);
+                write_map.entry(write_var.clone()).or_default().push(func);
             }
         }
 
@@ -666,11 +703,13 @@ impl LogicAnalyzer {
         for (var_name, writing_funcs) in &write_map {
             if writing_funcs.len() > 1 {
                 // Check if writes are inconsistent (some with checks, some without)
-                let funcs_with_checks: Vec<&&FunctionInfo> = writing_funcs.iter()
+                let funcs_with_checks: Vec<&&FunctionInfo> = writing_funcs
+                    .iter()
                     .filter(|f| f.body.contains("require(") || f.body.contains("if ("))
                     .collect();
 
-                let funcs_without_checks: Vec<&&FunctionInfo> = writing_funcs.iter()
+                let funcs_without_checks: Vec<&&FunctionInfo> = writing_funcs
+                    .iter()
                     .filter(|f| !f.body.contains("require(") && !f.body.contains("if ("))
                     .filter(|f| f.visibility == "external" || f.visibility == "public")
                     .collect();
@@ -693,10 +732,7 @@ impl LogicAnalyzer {
 
         // Check for partial updates to tightly-coupled variable pairs
         // Only flag when: both vars exist as state vars, func writes one AND reads the other but doesn't update it
-        let related_pairs = vec![
-            ("start", "end"),
-            ("min", "max"),
-        ];
+        let related_pairs = vec![("start", "end"), ("min", "max")];
 
         for func in functions {
             // Skip view/pure, internal/private, and common safe function names
@@ -704,18 +740,29 @@ impl LogicAnalyzer {
                 continue;
             }
             let name_lower = func.name.to_lowercase();
-            if name_lower.contains("get") || name_lower.contains("view")
-                || name_lower.contains("fee") || name_lower.contains("collect") {
+            if name_lower.contains("get")
+                || name_lower.contains("view")
+                || name_lower.contains("fee")
+                || name_lower.contains("collect")
+            {
                 continue;
             }
 
             for (var1, var2) in &related_pairs {
-                let writes_var1 = func.state_writes.iter().any(|w| w.to_lowercase().contains(var1));
-                let writes_var2 = func.state_writes.iter().any(|w| w.to_lowercase().contains(var2));
+                let writes_var1 = func
+                    .state_writes
+                    .iter()
+                    .any(|w| w.to_lowercase().contains(var1));
+                let writes_var2 = func
+                    .state_writes
+                    .iter()
+                    .any(|w| w.to_lowercase().contains(var2));
 
                 // Only flag if one is written and the other is read but not written
                 if writes_var1 && !writes_var2 {
-                    let paired_exists = state_vars.iter().any(|v| v.name.to_lowercase().contains(var2));
+                    let paired_exists = state_vars
+                        .iter()
+                        .any(|v| v.name.to_lowercase().contains(var2));
                     let reads_paired = func.body.to_lowercase().contains(var2);
 
                     if paired_exists && reads_paired {
@@ -754,7 +801,12 @@ impl LogicAnalyzer {
                     if let Some(divisor) = caps.get(1) {
                         let divisor_name = divisor.as_str();
                         // Skip constants and literals
-                        if divisor_name.chars().next().map(|c| c.is_numeric()).unwrap_or(false) {
+                        if divisor_name
+                            .chars()
+                            .next()
+                            .map(|c| c.is_numeric())
+                            .unwrap_or(false)
+                        {
                             continue;
                         }
 
@@ -795,22 +847,42 @@ impl LogicAnalyzer {
 
                         // Skip mappings (they don't have length and return 0 for any key)
                         // Check if the variable is declared as a mapping anywhere in the file
-                        let is_mapping = content.contains(&format!("mapping(")) &&
-                            (content.contains(&format!("{array_name_str}"))
-                             || content.contains(&format!(" {array_name_str};"))
-                             || content.contains(&format!(" {array_name_str} ")));
+                        let is_mapping = content.contains(&format!("mapping("))
+                            && (content.contains(&format!("{array_name_str}"))
+                                || content.contains(&format!(" {array_name_str};"))
+                                || content.contains(&format!(" {array_name_str} ")));
                         // Also skip common mapping patterns: balanceOf, allowance, balances, etc.
-                        let known_mappings = ["balanceOf", "allowance", "allowances", "balances",
-                            "nonces", "delegates", "owners", "tokenApprovals", "_balances",
-                            "_allowances", "_owners"];
+                        let known_mappings = [
+                            "balanceOf",
+                            "allowance",
+                            "allowances",
+                            "balances",
+                            "nonces",
+                            "delegates",
+                            "owners",
+                            "tokenApprovals",
+                            "_balances",
+                            "_allowances",
+                            "_owners",
+                        ];
                         if is_mapping || known_mappings.contains(&array_name_str) {
                             continue;
                         }
 
-                        let has_bounds_check = func.body.contains(&format!("{index_name} < {array_name_str}.length")) ||
-                                              func.body.contains(&format!("require({array_name_str}.length >"));
+                        let has_bounds_check = func
+                            .body
+                            .contains(&format!("{index_name} < {array_name_str}.length"))
+                            || func
+                                .body
+                                .contains(&format!("require({array_name_str}.length >"));
 
-                        if !has_bounds_check && !index_name.chars().next().map(|c| c.is_numeric()).unwrap_or(false) {
+                        if !has_bounds_check
+                            && !index_name
+                                .chars()
+                                .next()
+                                .map(|c| c.is_numeric())
+                                .unwrap_or(false)
+                        {
                             vulnerabilities.push(Vulnerability::new(
                                 VulnerabilitySeverity::Medium,
                                 VulnerabilityCategory::LogicError,
@@ -843,7 +915,11 @@ impl LogicAnalyzer {
         let mut user_functions: Vec<&FunctionInfo> = Vec::new();
 
         for func in functions {
-            if func.modifiers.iter().any(|m| m.contains("Owner") || m.contains("Admin") || m.contains("Role")) {
+            if func
+                .modifiers
+                .iter()
+                .any(|m| m.contains("Owner") || m.contains("Admin") || m.contains("Role"))
+            {
                 admin_functions.push(func);
             } else if func.visibility == "external" || func.visibility == "public" {
                 user_functions.push(func);
@@ -854,15 +930,17 @@ impl LogicAnalyzer {
         for admin_func in &admin_functions {
             for user_func in &user_functions {
                 // Check if admin function modifies variables that user function depends on
-                let overlap: Vec<_> = admin_func.state_writes.iter()
+                let overlap: Vec<_> = admin_func
+                    .state_writes
+                    .iter()
                     .filter(|w| user_func.state_reads.contains(w))
                     .collect();
 
                 if !overlap.is_empty() {
                     // Check if user function has validation for these variables
-                    let has_validation = overlap.iter().any(|var|
-                        user_func.body.contains(&format!("require({var}"))
-                    );
+                    let has_validation = overlap
+                        .iter()
+                        .any(|var| user_func.body.contains(&format!("require({var}")));
 
                     if !has_validation {
                         vulnerabilities.push(Vulnerability::new(
@@ -893,10 +971,12 @@ impl LogicAnalyzer {
 
         // Check for approve-based race conditions
         for func in functions {
-            if func.name.to_lowercase() == "approve" || func.name.to_lowercase().contains("approval") {
+            if func.name.to_lowercase() == "approve"
+                || func.name.to_lowercase().contains("approval")
+            {
                 // Check if there's increaseAllowance/decreaseAllowance
-                let has_safe_methods = content.contains("increaseAllowance") ||
-                                       content.contains("decreaseAllowance");
+                let has_safe_methods =
+                    content.contains("increaseAllowance") || content.contains("decreaseAllowance");
 
                 if !has_safe_methods {
                     vulnerabilities.push(Vulnerability::new(
@@ -932,15 +1012,20 @@ impl LogicAnalyzer {
                     // in body, but a new function-like block resets context)
                     if after_call && !found {
                         // Skip lines that just check the call's return value
-                        if line.contains("require(success") || line.contains("if (!success")
-                            || line.contains("if (success") {
+                        if line.contains("require(success")
+                            || line.contains("if (!success")
+                            || line.contains("if (success")
+                        {
                             continue;
                         }
 
                         for read_var in &func.state_reads {
-                            if line.contains(read_var) &&
-                               (line.contains("if ") || line.contains("if(")
-                                || line.contains("require(") || line.contains("assert(")) {
+                            if line.contains(read_var)
+                                && (line.contains("if ")
+                                    || line.contains("if(")
+                                    || line.contains("require(")
+                                    || line.contains("assert("))
+                            {
                                 vulnerabilities.push(Vulnerability::new(
                                     VulnerabilitySeverity::High,
                                     VulnerabilityCategory::LogicError,
@@ -980,19 +1065,25 @@ impl LogicAnalyzer {
         ];
 
         for (action1, action2) in pairs {
-            let func1: Option<&FunctionInfo> = functions.iter()
-                .find(|f| f.name.to_lowercase().contains(action1) && !f.name.to_lowercase().contains(action2));
-            let func2: Option<&FunctionInfo> = functions.iter()
-                .find(|f| f.name.to_lowercase().contains(action2) && !f.name.to_lowercase().contains(action1));
+            let func1: Option<&FunctionInfo> = functions.iter().find(|f| {
+                f.name.to_lowercase().contains(action1) && !f.name.to_lowercase().contains(action2)
+            });
+            let func2: Option<&FunctionInfo> = functions.iter().find(|f| {
+                f.name.to_lowercase().contains(action2) && !f.name.to_lowercase().contains(action1)
+            });
 
             if let (Some(f1), Some(f2)) = (func1, func2) {
                 // Skip view/pure functions — they can't modify state or emit events.
                 // Check the function signature line for view/pure keywords.
                 let f2_sig_line = if f2.line_start > 0 && f2.line_start <= lines.len() {
                     lines[f2.line_start - 1]
-                } else { "" };
-                let f2_is_view = f2_sig_line.contains(" view ") || f2_sig_line.contains(" view)")
-                    || f2_sig_line.contains(" pure ") || f2_sig_line.contains(" pure)")
+                } else {
+                    ""
+                };
+                let f2_is_view = f2_sig_line.contains(" view ")
+                    || f2_sig_line.contains(" view)")
+                    || f2_sig_line.contains(" pure ")
+                    || f2_sig_line.contains(" pure)")
                     || f2.body.is_empty();
 
                 // Check for asymmetric validation (skip if f2 is view/pure)
@@ -1004,10 +1095,17 @@ impl LogicAnalyzer {
                         vulnerabilities.push(Vulnerability::new(
                             VulnerabilitySeverity::Medium,
                             VulnerabilityCategory::LogicError,
-                            format!("Asymmetric Validation: {} has checks, {} does not", f1.name, f2.name),
-                            "Paired operations have asymmetric validation - potential logic bug".to_string(),
+                            format!(
+                                "Asymmetric Validation: {} has checks, {} does not",
+                                f1.name, f2.name
+                            ),
+                            "Paired operations have asymmetric validation - potential logic bug"
+                                .to_string(),
                             f2.line_start,
-                            format!("{} lacks require() while {} has {}", f2.name, f1.name, f1_requires),
+                            format!(
+                                "{} lacks require() while {} has {}",
+                                f2.name, f1.name, f1_requires
+                            ),
                             format!("Add appropriate validation to {}", f2.name),
                         ));
                     }
@@ -1023,7 +1121,10 @@ impl LogicAnalyzer {
                             VulnerabilitySeverity::Low,
                             VulnerabilityCategory::MissingEvents,
                             format!("Missing Event in {}", f2.name),
-                            format!("'{}' emits events but paired '{}' does not", f1.name, f2.name),
+                            format!(
+                                "'{}' emits events but paired '{}' does not",
+                                f1.name, f2.name
+                            ),
                             f2.line_start,
                             format!("function {}", f2.name),
                             "Add event emission for tracking paired operations".to_string(),
@@ -1054,10 +1155,13 @@ impl LogicAnalyzer {
             ];
 
             for (pattern1, pattern2, reason) in &impossible_conditions {
-                if func.body.contains(pattern1) && (pattern2.is_empty() || func.body.contains(pattern2)) {
+                if func.body.contains(pattern1)
+                    && (pattern2.is_empty() || func.body.contains(pattern2))
+                {
                     if pattern1.contains("uint") && func.body.contains("uint") {
                         // Check for actual < 0 comparison with uint
-                        let uint_negative_check = Regex::new(r"uint\d*\s+\w+[^;]*<\s*0[^0-9]").unwrap();
+                        let uint_negative_check =
+                            Regex::new(r"uint\d*\s+\w+[^;]*<\s*0[^0-9]").unwrap();
                         if uint_negative_check.is_match(&func.body) {
                             vulnerabilities.push(Vulnerability::new(
                                 VulnerabilitySeverity::Medium,
@@ -1082,15 +1186,21 @@ impl LogicAnalyzer {
 
                 // Track brace depth BEFORE checking
                 for ch in trimmed.chars() {
-                    if ch == '{' { brace_depth += 1; }
-                    if ch == '}' { brace_depth -= 1; }
+                    if ch == '{' {
+                        brace_depth += 1;
+                    }
+                    if ch == '}' {
+                        brace_depth -= 1;
+                    }
                 }
 
                 // Only flag return/revert at the function body level (depth 1)
                 // A return inside an if/else/for block (depth >= 2) is normal control flow
                 if brace_depth == 1
-                    && (trimmed.starts_with("return ") || trimmed.starts_with("return;")
-                        || trimmed.starts_with("revert ") || trimmed.starts_with("revert("))
+                    && (trimmed.starts_with("return ")
+                        || trimmed.starts_with("return;")
+                        || trimmed.starts_with("revert ")
+                        || trimmed.starts_with("revert("))
                     && !trimmed.starts_with("//")
                 {
                     // Check if the very next non-empty, non-brace, non-comment line exists
@@ -1107,7 +1217,8 @@ impl LogicAnalyzer {
                             VulnerabilitySeverity::Low,
                             VulnerabilityCategory::UnusedCode,
                             format!("Unreachable Code in {}", func.name),
-                            "Code exists after return/revert statement and will never execute".to_string(),
+                            "Code exists after return/revert statement and will never execute"
+                                .to_string(),
                             func.line_start + j,
                             next.to_string(),
                             "Remove unreachable code or fix control flow".to_string(),
@@ -1131,12 +1242,16 @@ impl LogicAnalyzer {
         let mut vulnerabilities = Vec::new();
 
         // ERC4626 Vault Logic Bugs
-        if content.contains("ERC4626") || (content.contains("deposit") && content.contains("shares")) {
+        if content.contains("ERC4626")
+            || (content.contains("deposit") && content.contains("shares"))
+        {
             vulnerabilities.extend(self.detect_erc4626_logic_bugs(content, functions));
         }
 
         // AMM Logic Bugs
-        if content.contains("swap") && (content.contains("reserve") || content.contains("liquidity")) {
+        if content.contains("swap")
+            && (content.contains("reserve") || content.contains("liquidity"))
+        {
             vulnerabilities.extend(self.detect_amm_logic_bugs(content, functions));
         }
 
@@ -1154,30 +1269,36 @@ impl LogicAnalyzer {
     }
 
     /// Detect ERC-4626 vault logic bugs (first depositor inflation, share/asset rounding).
-    fn detect_erc4626_logic_bugs(&self, content: &str, functions: &[FunctionInfo]) -> Vec<Vulnerability> {
+    fn detect_erc4626_logic_bugs(
+        &self,
+        content: &str,
+        functions: &[FunctionInfo],
+    ) -> Vec<Vulnerability> {
         let mut vulnerabilities = Vec::new();
 
         // First depositor inflation attack
         for func in functions {
             if func.name.to_lowercase() == "deposit" {
-                let has_minimum_shares = func.body.contains("minShares") ||
-                                        func.body.contains("MIN_DEPOSIT") ||
-                                        content.contains("_initialConvertToShares") ||
-                                        content.contains("MIN_SHARES") ||
-                                        content.contains("MIN_ASSETS") ||
-                                        content.contains("INITIAL_DEPOSIT") ||
-                                        content.contains("_decimalsOffset") ||
-                                        content.contains("VIRTUAL_OFFSET");
+                let has_minimum_shares = func.body.contains("minShares")
+                    || func.body.contains("MIN_DEPOSIT")
+                    || content.contains("_initialConvertToShares")
+                    || content.contains("MIN_SHARES")
+                    || content.contains("MIN_ASSETS")
+                    || content.contains("INITIAL_DEPOSIT")
+                    || content.contains("_decimalsOffset")
+                    || content.contains("VIRTUAL_OFFSET");
 
                 if !has_minimum_shares {
                     vulnerabilities.push(Vulnerability::high_confidence(
                         VulnerabilitySeverity::Critical,
                         VulnerabilityCategory::LogicError,
                         "ERC4626 First Depositor Inflation Attack".to_string(),
-                        "Vault lacks protection against first depositor inflation attack".to_string(),
+                        "Vault lacks protection against first depositor inflation attack"
+                            .to_string(),
                         func.line_start,
                         format!("function {}", func.name),
-                        "Implement virtual shares/assets offset or minimum deposit requirement".to_string(),
+                        "Implement virtual shares/assets offset or minimum deposit requirement"
+                            .to_string(),
                     ));
                 }
             }
@@ -1186,9 +1307,9 @@ impl LogicAnalyzer {
         // Share rounding issues
         for func in functions {
             if func.name == "convertToShares" || func.name == "convertToAssets" {
-                let has_rounding_direction = func.body.contains("mulDivDown") ||
-                                            func.body.contains("mulDivUp") ||
-                                            func.body.contains("Math.Rounding");
+                let has_rounding_direction = func.body.contains("mulDivDown")
+                    || func.body.contains("mulDivUp")
+                    || func.body.contains("Math.Rounding");
 
                 if !has_rounding_direction && func.body.contains("/") {
                     vulnerabilities.push(Vulnerability::new(
@@ -1208,15 +1329,19 @@ impl LogicAnalyzer {
     }
 
     /// Detect AMM-specific logic bugs (constant product invariant, reserve sync, K-value manipulation).
-    fn detect_amm_logic_bugs(&self, content: &str, functions: &[FunctionInfo]) -> Vec<Vulnerability> {
+    fn detect_amm_logic_bugs(
+        &self,
+        content: &str,
+        functions: &[FunctionInfo],
+    ) -> Vec<Vulnerability> {
         let mut vulnerabilities = Vec::new();
 
         for func in functions {
             if func.name.to_lowercase().contains("swap") {
                 // K-value validation
-                let has_k_check = func.body.contains("k >=") ||
-                                  func.body.contains("invariant") ||
-                                  func.body.contains("reserve0 * reserve1");
+                let has_k_check = func.body.contains("k >=")
+                    || func.body.contains("invariant")
+                    || func.body.contains("reserve0 * reserve1");
 
                 if !has_k_check && content.contains("reserve") {
                     vulnerabilities.push(Vulnerability::new(
@@ -1231,9 +1356,9 @@ impl LogicAnalyzer {
                 }
 
                 // Minimum output check
-                let has_min_output = func.body.contains("amountOutMin") ||
-                                    func.body.contains("minReturn") ||
-                                    func.body.contains(">= minAmount");
+                let has_min_output = func.body.contains("amountOutMin")
+                    || func.body.contains("minReturn")
+                    || func.body.contains(">= minAmount");
 
                 if !has_min_output {
                     vulnerabilities.push(Vulnerability::new(
@@ -1243,7 +1368,8 @@ impl LogicAnalyzer {
                         "Swap function allows zero output - enables sandwich attacks".to_string(),
                         func.line_start,
                         format!("function {}", func.name),
-                        "Add minAmountOut parameter and require(amountOut >= minAmountOut)".to_string(),
+                        "Add minAmountOut parameter and require(amountOut >= minAmountOut)"
+                            .to_string(),
                     ));
                 }
             }
@@ -1253,15 +1379,19 @@ impl LogicAnalyzer {
     }
 
     /// Detect lending protocol logic bugs (collateral factor, liquidation threshold, interest rate).
-    fn detect_lending_logic_bugs(&self, content: &str, functions: &[FunctionInfo]) -> Vec<Vulnerability> {
+    fn detect_lending_logic_bugs(
+        &self,
+        content: &str,
+        functions: &[FunctionInfo],
+    ) -> Vec<Vulnerability> {
         let mut vulnerabilities = Vec::new();
 
         for func in functions {
             // Health factor check in liquidation
             if func.name.to_lowercase().contains("liquidat") {
-                let has_health_check = func.body.contains("healthFactor") ||
-                                       func.body.contains("isHealthy") ||
-                                       func.body.contains("collateralValue");
+                let has_health_check = func.body.contains("healthFactor")
+                    || func.body.contains("isHealthy")
+                    || func.body.contains("collateralValue");
 
                 if !has_health_check {
                     vulnerabilities.push(Vulnerability::new(
@@ -1277,17 +1407,20 @@ impl LogicAnalyzer {
             }
 
             // Interest accrual timing
-            if func.name.to_lowercase().contains("borrow") || func.name.to_lowercase().contains("repay") {
-                let has_accrual = func.body.contains("accrueInterest") ||
-                                  func.body.contains("_accrual") ||
-                                  func.body.contains("updateInterest");
+            if func.name.to_lowercase().contains("borrow")
+                || func.name.to_lowercase().contains("repay")
+            {
+                let has_accrual = func.body.contains("accrueInterest")
+                    || func.body.contains("_accrual")
+                    || func.body.contains("updateInterest");
 
                 if !has_accrual && content.contains("interest") {
                     vulnerabilities.push(Vulnerability::new(
                         VulnerabilitySeverity::High,
                         VulnerabilityCategory::LogicError,
                         format!("Missing Interest Accrual in {}", func.name),
-                        "Borrow/repay without interest accrual - enables interest manipulation".to_string(),
+                        "Borrow/repay without interest accrual - enables interest manipulation"
+                            .to_string(),
                         func.line_start,
                         format!("function {}", func.name),
                         "Call accrueInterest() at the start of borrow/repay functions".to_string(),
@@ -1300,15 +1433,21 @@ impl LogicAnalyzer {
     }
 
     /// Detect staking contract logic bugs (reward calculation, unbonding period, total supply sync).
-    fn detect_staking_logic_bugs(&self, content: &str, functions: &[FunctionInfo]) -> Vec<Vulnerability> {
+    fn detect_staking_logic_bugs(
+        &self,
+        content: &str,
+        functions: &[FunctionInfo],
+    ) -> Vec<Vulnerability> {
         let mut vulnerabilities = Vec::new();
 
         for func in functions {
             // Reward update before state change
-            if func.name.to_lowercase().contains("stake") || func.name.to_lowercase().contains("withdraw") {
-                let has_reward_update = func.body.contains("updateReward") ||
-                                        func.body.contains("_updateRewards") ||
-                                        func.body.contains("earned(");
+            if func.name.to_lowercase().contains("stake")
+                || func.name.to_lowercase().contains("withdraw")
+            {
+                let has_reward_update = func.body.contains("updateReward")
+                    || func.body.contains("_updateRewards")
+                    || func.body.contains("earned(");
 
                 if !has_reward_update && content.contains("reward") {
                     vulnerabilities.push(Vulnerability::new(
@@ -1324,10 +1463,12 @@ impl LogicAnalyzer {
             }
 
             // Reward per token calculation
-            if func.name.to_lowercase().contains("reward") && func.name.to_lowercase().contains("per") {
-                let has_zero_supply_check = func.body.contains("totalSupply == 0") ||
-                                            func.body.contains("totalSupply() == 0") ||
-                                            func.body.contains("if (totalStaked == 0");
+            if func.name.to_lowercase().contains("reward")
+                && func.name.to_lowercase().contains("per")
+            {
+                let has_zero_supply_check = func.body.contains("totalSupply == 0")
+                    || func.body.contains("totalSupply() == 0")
+                    || func.body.contains("if (totalStaked == 0");
 
                 if !has_zero_supply_check {
                     vulnerabilities.push(Vulnerability::new(

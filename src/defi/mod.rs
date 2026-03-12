@@ -7,13 +7,13 @@
 
 pub mod amm_analyzer;
 pub mod lending_analyzer;
-pub mod oracle_analyzer;
 pub mod mev_analyzer;
+pub mod oracle_analyzer;
 
 pub use amm_analyzer::AMMAnalyzer;
 pub use lending_analyzer::LendingAnalyzer;
-pub use oracle_analyzer::OracleAnalyzer;
 pub use mev_analyzer::MEVAnalyzer;
+pub use oracle_analyzer::OracleAnalyzer;
 
 use crate::vulnerabilities::Vulnerability;
 
@@ -67,25 +67,27 @@ impl DeFiAnalyzer {
     /// Detect the type of DeFi protocol from code patterns
     fn detect_protocol_type(&self, content: &str) -> ProtocolType {
         // AMM/DEX patterns
-        if content.contains("getReserves") ||
-           content.contains("swapExact") ||
-           content.contains("addLiquidity") ||
-           content.contains("removeLiquidity") ||
-           content.contains("UniswapV") ||
-           content.contains("IUniswap") ||
-           content.contains("Curve") ||
-           content.contains("Balancer") {
+        if content.contains("getReserves")
+            || content.contains("swapExact")
+            || content.contains("addLiquidity")
+            || content.contains("removeLiquidity")
+            || content.contains("UniswapV")
+            || content.contains("IUniswap")
+            || content.contains("Curve")
+            || content.contains("Balancer")
+        {
             return ProtocolType::AMM;
         }
 
         // Lending patterns
-        if content.contains("borrow") ||
-           content.contains("repay") ||
-           content.contains("liquidate") ||
-           content.contains("collateral") ||
-           content.contains("healthFactor") ||
-           content.contains("Aave") ||
-           content.contains("Compound") {
+        if content.contains("borrow")
+            || content.contains("repay")
+            || content.contains("liquidate")
+            || content.contains("collateral")
+            || content.contains("healthFactor")
+            || content.contains("Aave")
+            || content.contains("Compound")
+        {
             return ProtocolType::Lending;
         }
 

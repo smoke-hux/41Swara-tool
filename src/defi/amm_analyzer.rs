@@ -5,8 +5,8 @@
 
 #![allow(dead_code)]
 
+use crate::vulnerabilities::{Vulnerability, VulnerabilityCategory, VulnerabilitySeverity};
 use regex::Regex;
-use crate::vulnerabilities::{Vulnerability, VulnerabilitySeverity, VulnerabilityCategory};
 
 /// AMM-specific vulnerability analyzer
 pub struct AMMAnalyzer {
@@ -31,33 +31,22 @@ pub struct AMMAnalyzer {
 impl AMMAnalyzer {
     pub fn new() -> Self {
         Self {
-            uniswap_v2_callback: Regex::new(
-                r"function\s+uniswapV2Call\s*\([^)]*\)"
-            ).unwrap(),
-            uniswap_v2_sync: Regex::new(
-                r"\.sync\(\)|IUniswapV2Pair\([^)]*\)\.sync"
-            ).unwrap(),
+            uniswap_v2_callback: Regex::new(r"function\s+uniswapV2Call\s*\([^)]*\)").unwrap(),
+            uniswap_v2_sync: Regex::new(r"\.sync\(\)|IUniswapV2Pair\([^)]*\)\.sync").unwrap(),
             uniswap_v3_callback: Regex::new(
-                r"function\s+uniswapV3(Swap|Mint|Flash)Callback\s*\([^)]*\)"
-            ).unwrap(),
-            uniswap_v3_flash: Regex::new(
-                r"IUniswapV3Pool\([^)]*\)\.flash"
-            ).unwrap(),
+                r"function\s+uniswapV3(Swap|Mint|Flash)Callback\s*\([^)]*\)",
+            )
+            .unwrap(),
+            uniswap_v3_flash: Regex::new(r"IUniswapV3Pool\([^)]*\)\.flash").unwrap(),
             curve_reentrancy: Regex::new(
-                r"ICurve\w*\([^)]*\)\.(exchange|add_liquidity|remove_liquidity)"
-            ).unwrap(),
-            curve_read_only: Regex::new(
-                r"ICurve\w*\([^)]*\)\.(get_virtual_price|get_dy)"
-            ).unwrap(),
-            swap_function: Regex::new(
-                r"function\s+swap\w*\s*\([^)]*\)"
-            ).unwrap(),
-            slippage_param: Regex::new(
-                r"(minAmount|amountOutMin|minReturn|slippage|minOut)"
-            ).unwrap(),
-            deadline_param: Regex::new(
-                r"(deadline|expiry|validUntil|timestamp)"
-            ).unwrap(),
+                r"ICurve\w*\([^)]*\)\.(exchange|add_liquidity|remove_liquidity)",
+            )
+            .unwrap(),
+            curve_read_only: Regex::new(r"ICurve\w*\([^)]*\)\.(get_virtual_price|get_dy)").unwrap(),
+            swap_function: Regex::new(r"function\s+swap\w*\s*\([^)]*\)").unwrap(),
+            slippage_param: Regex::new(r"(minAmount|amountOutMin|minReturn|slippage|minOut)")
+                .unwrap(),
+            deadline_param: Regex::new(r"(deadline|expiry|validUntil|timestamp)").unwrap(),
         }
     }
 
@@ -92,7 +81,8 @@ impl AMMAnalyzer {
     /// Check for Uniswap callback reentrancy vulnerabilities
     fn check_uniswap_callback_reentrancy(&self, content: &str) -> Vec<Vulnerability> {
         let mut vulnerabilities = Vec::new();
-        let has_reentrancy_guard = content.contains("nonReentrant") || content.contains("ReentrancyGuard");
+        let has_reentrancy_guard =
+            content.contains("nonReentrant") || content.contains("ReentrancyGuard");
 
         // Check V2 callbacks
         for (idx, line) in content.lines().enumerate() {
@@ -117,7 +107,8 @@ impl AMMAnalyzer {
                         VulnerabilitySeverity::High,
                         VulnerabilityCategory::AccessControl,
                         "Uniswap V2 Callback Missing Sender Validation".to_string(),
-                        "uniswapV2Call doesn't validate msg.sender is the expected pair".to_string(),
+                        "uniswapV2Call doesn't validate msg.sender is the expected pair"
+                            .to_string(),
                         idx + 1,
                         line.to_string(),
                         "Add: require(msg.sender == pair, 'Invalid caller')".to_string(),
@@ -130,7 +121,9 @@ impl AMMAnalyzer {
                 let callback_body = self.extract_function_body(content, idx);
 
                 // V3 callbacks MUST verify the caller
-                if !callback_body.contains("verifyCallback") && !callback_body.contains("msg.sender == ") {
+                if !callback_body.contains("verifyCallback")
+                    && !callback_body.contains("msg.sender == ")
+                {
                     vulnerabilities.push(Vulnerability::high_confidence(
                         VulnerabilitySeverity::Critical,
                         VulnerabilityCategory::AccessControl,
@@ -170,9 +163,10 @@ impl AMMAnalyzer {
                 let function_context = self.get_function_context(content, idx);
 
                 // Check if this is used for pricing during a callback
-                if function_context.contains("Callback") ||
-                   function_context.contains("receive") ||
-                   function_context.contains("fallback") {
+                if function_context.contains("Callback")
+                    || function_context.contains("receive")
+                    || function_context.contains("fallback")
+                {
                     vulnerabilities.push(Vulnerability::high_confidence(
                         VulnerabilitySeverity::Critical,
                         VulnerabilityCategory::OracleManipulation,
@@ -214,8 +208,8 @@ impl AMMAnalyzer {
                 if !self.slippage_param.is_match(line) {
                     // Check function body for slippage check
                     let func_body = self.extract_function_body(content, idx);
-                    if !self.slippage_param.is_match(&func_body) &&
-                       !func_body.contains("require(") {
+                    if !self.slippage_param.is_match(&func_body) && !func_body.contains("require(")
+                    {
                         vulnerabilities.push(Vulnerability::high_confidence(
                             VulnerabilitySeverity::Critical,
                             VulnerabilityCategory::FrontRunning,
@@ -238,12 +232,16 @@ impl AMMAnalyzer {
         let mut vulnerabilities = Vec::new();
 
         for (idx, line) in content.lines().enumerate() {
-            if self.swap_function.is_match(line) || line.contains("addLiquidity") || line.contains("removeLiquidity") {
+            if self.swap_function.is_match(line)
+                || line.contains("addLiquidity")
+                || line.contains("removeLiquidity")
+            {
                 // Check if function has deadline parameter
                 if !self.deadline_param.is_match(line) {
                     let func_body = self.extract_function_body(content, idx);
-                    if !self.deadline_param.is_match(&func_body) &&
-                       !func_body.contains("block.timestamp") {
+                    if !self.deadline_param.is_match(&func_body)
+                        && !func_body.contains("block.timestamp")
+                    {
                         vulnerabilities.push(Vulnerability::new(
                             VulnerabilitySeverity::High,
                             VulnerabilityCategory::FrontRunning,
@@ -280,10 +278,11 @@ impl AMMAnalyzer {
                     let func_context = self.get_function_context(content, idx);
 
                     // Check for commit-reveal or private mempool patterns
-                    if !func_context.contains("commit") &&
-                       !func_context.contains("reveal") &&
-                       !func_context.contains("flashbots") &&
-                       !func_context.contains("private") {
+                    if !func_context.contains("commit")
+                        && !func_context.contains("reveal")
+                        && !func_context.contains("flashbots")
+                        && !func_context.contains("private")
+                    {
                         // Check slippage
                         if line.contains("0,") || line.contains(", 0,") || line.contains(",0)") {
                             vulnerabilities.push(Vulnerability::high_confidence(
@@ -314,10 +313,16 @@ impl AMMAnalyzer {
                 if line.contains("getReserves") {
                     // Check if used for pricing without TWAP
                     let func_body = self.extract_function_body(content, idx);
-                    if func_body.contains("price") || func_body.contains("Price") ||
-                       func_body.contains("amount") || func_body.contains("value") {
-                        if !content.contains("TWAP") && !content.contains("timeWeightedAverage") &&
-                           !content.contains("Chainlink") && !content.contains("oracle") {
+                    if func_body.contains("price")
+                        || func_body.contains("Price")
+                        || func_body.contains("amount")
+                        || func_body.contains("value")
+                    {
+                        if !content.contains("TWAP")
+                            && !content.contains("timeWeightedAverage")
+                            && !content.contains("Chainlink")
+                            && !content.contains("oracle")
+                        {
                             vulnerabilities.push(Vulnerability::high_confidence(
                                 VulnerabilitySeverity::Critical,
                                 VulnerabilityCategory::OracleManipulation,
@@ -358,15 +363,18 @@ impl AMMAnalyzer {
         let mut vulnerabilities = Vec::new();
 
         // First depositor / inflation attack
-        if content.contains("totalSupply") && (content.contains("mint") || content.contains("deposit")) {
+        if content.contains("totalSupply")
+            && (content.contains("mint") || content.contains("deposit"))
+        {
             for (idx, line) in content.lines().enumerate() {
                 if line.contains("totalSupply() == 0") || line.contains("totalSupply == 0") {
                     // Check for virtual offset protection
                     let func_body = self.extract_function_body(content, idx);
-                    if !func_body.contains("MINIMUM_LIQUIDITY") &&
-                       !func_body.contains("INITIAL_") &&
-                       !func_body.contains("virtualOffset") &&
-                       !func_body.contains("_decimalsOffset") {
+                    if !func_body.contains("MINIMUM_LIQUIDITY")
+                        && !func_body.contains("INITIAL_")
+                        && !func_body.contains("virtualOffset")
+                        && !func_body.contains("_decimalsOffset")
+                    {
                         vulnerabilities.push(Vulnerability::high_confidence(
                             VulnerabilitySeverity::Critical,
                             VulnerabilityCategory::LogicError,
@@ -384,8 +392,9 @@ impl AMMAnalyzer {
         // LP token price manipulation via donation
         if content.contains("balanceOf(address(this))") {
             for (idx, line) in content.lines().enumerate() {
-                if line.contains("balanceOf(address(this))") &&
-                   (line.contains("/") || line.contains("price") || line.contains("share")) {
+                if line.contains("balanceOf(address(this))")
+                    && (line.contains("/") || line.contains("price") || line.contains("share"))
+                {
                     vulnerabilities.push(Vulnerability::new(
                         VulnerabilitySeverity::High,
                         VulnerabilityCategory::OracleManipulation,
@@ -442,10 +451,13 @@ impl AMMAnalyzer {
 
     fn has_state_changes(&self, body: &str) -> bool {
         // Check for common state change patterns
-        body.contains("=") && !body.contains("==") &&
-        (body.contains("balance") || body.contains("amount") ||
-         body.contains("total") || body.contains("[") ||
-         body.contains("mapping"))
+        body.contains("=")
+            && !body.contains("==")
+            && (body.contains("balance")
+                || body.contains("amount")
+                || body.contains("total")
+                || body.contains("[")
+                || body.contains("mapping"))
     }
 }
 
