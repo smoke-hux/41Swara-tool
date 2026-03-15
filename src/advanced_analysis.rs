@@ -5080,6 +5080,18 @@ impl AdvancedAnalyzer {
     fn detect_iscontract_post_pectra(&self, content: &str) -> Vec<Vulnerability> {
         let mut vulns = Vec::new();
         let iscontract_re = Regex::new(r"(extcodesize|isContract|\.code\.length)\s*").unwrap();
+        let auth_like_patterns = [
+            "function onlyeoa",
+            "function onlyhuman",
+            "function onlyexternallyowned",
+            "function requireeoa",
+            "function allowedeoa",
+            "function authorizedcaller",
+            "function isauthorized",
+            "function isallowed",
+            "function validatecaller",
+            "modifier onlyeoa",
+        ];
 
         for (idx, line) in content.lines().enumerate() {
             if line.trim().starts_with("//") || line.trim().starts_with("*") {
@@ -5094,10 +5106,14 @@ impl AdvancedAnalyzer {
                     .take(end - start)
                     .collect::<Vec<_>>()
                     .join("\n");
+                let context_lower = context.to_lowercase();
                 let is_access_control = context.contains("require")
                     || context.contains("if")
                     || context.contains("revert")
-                    || context.contains("assert");
+                    || context.contains("assert")
+                    || auth_like_patterns
+                        .iter()
+                        .any(|pattern| context_lower.contains(pattern));
                 if line.contains("function isContract") {
                     continue;
                 }

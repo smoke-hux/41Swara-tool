@@ -25,6 +25,7 @@ mod professional_reporter; // Professional audit-style report generation
 mod project_scanner; // Cross-file project-wide analysis
 mod reporter; // Terminal-based vulnerability report output
 mod sarif;
+mod sarif_report;
 mod scanner; // Core scanning orchestration engine
 mod vulnerabilities; // Vulnerability rules, types, and severity definitions // SARIF 2.1.0 output format (GitHub Code Scanning integration)
 
@@ -60,7 +61,7 @@ mod config; // TOML-based custom rules and scanner settings
 use abi_scanner::ABIScanner;
 use professional_reporter::{AuditInfo, ProfessionalReporter};
 use reporter::VulnerabilityReporter;
-use sarif::SarifReport;
+use sarif_report::SarifReport;
 use scanner::{ContractScanner, ScannerConfig};
 use vulnerabilities::{Vulnerability, VulnerabilitySeverity};
 

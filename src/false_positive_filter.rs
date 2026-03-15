@@ -786,12 +786,29 @@ impl FalsePositiveFilter {
                 let context = self
                     .get_context_window(content, vuln.line_number, 3, 25)
                     .to_lowercase();
+                let contract_check_auth_like = title.contains("contract check bypassable")
+                    && [
+                        "function onlyeoa",
+                        "function onlyhuman",
+                        "function onlyexternallyowned",
+                        "function requireeoa",
+                        "function allowedeoa",
+                        "function authorizedcaller",
+                        "function isauthorized",
+                        "function isallowed",
+                        "function validatecaller",
+                        "function gate",
+                        "modifier onlyeoa",
+                    ]
+                    .iter()
+                    .any(|pattern| context.contains(pattern));
 
                 // Don't report for view/pure functions
-                if snippet.contains(" view ")
-                    || snippet.contains(" pure ")
-                    || context.contains(" view ")
-                    || context.contains(" pure ")
+                if !contract_check_auth_like
+                    && (snippet.contains(" view ")
+                        || snippet.contains(" pure ")
+                        || context.contains(" view ")
+                        || context.contains(" pure "))
                 {
                     return false;
                 }
@@ -833,7 +850,10 @@ impl FalsePositiveFilter {
                         || context.contains("if (")
                         || context.contains("if(")
                         || context.contains("revert");
-                    if helper_context || !used_for_auth {
+                    if helper_context && !contract_check_auth_like {
+                        return false;
+                    }
+                    if !used_for_auth && !contract_check_auth_like {
                         return false;
                     }
                 }
@@ -1631,6 +1651,11 @@ impl FalsePositiveFilter {
         // and LogicError with First Depositor/Inflation as ERC-4626 group,
         // and LogicError with Approve Race as its own group to dedup
         let effective_group = |v: &Vulnerability| -> u8 {
+            if matches!(v.category, VulnerabilityCategory::SignatureVulnerabilities)
+                && v.title.contains("Malleability")
+            {
+                return 10;
+            }
             let g = category_group(&v.category);
             if g != 0 {
                 return g;

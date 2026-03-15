@@ -29,6 +29,8 @@ use regex::Regex;
 use std::io;
 use std::path::Path;
 
+type ParsedLine<'a> = (usize, &'a str);
+
 /// The result of scanning a single Solidity file.
 /// Bundles detected vulnerabilities together with compiler version information
 /// so callers get both analysis results and contract metadata in one return value.
@@ -39,6 +41,24 @@ pub struct ScanResult {
     /// Compiler version information extracted from the pragma statement.
     /// `None` if no `pragma solidity` line was found.
     pub compiler_info: Option<CompilerInfo>,
+}
+
+#[derive(Clone, Copy, Default)]
+struct LineState {
+    is_comment: bool,
+    is_in_block_comment: bool,
+    is_signature_only: bool,
+}
+
+struct ScanContext {
+    has_safemath: bool,
+    has_safe_erc20: bool,
+    has_reentrancy_guard: bool,
+    uses_openzeppelin: bool,
+    uses_solidity_0_8_plus: bool,
+    uses_safe_signature_library: bool,
+    known_modifiers: Vec<String>,
+    line_states: Vec<LineState>,
 }
 
 // =============================================================================
@@ -61,6 +81,9 @@ static RE_MODIFIER: Lazy<Regex> =
 static RE_STATE_MOD: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"(\w+\s*=\s*[^=]|\w+\[[^\]]*\]\s*=|\+\+|--|\.\s*push\s*\(|delete\s+)")
         .expect("invalid state mod regex")
+});
+static RE_NAMED_RETURN: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"returns\s*\([^)]*\b\w+\s+\w+[^)]*\)").expect("invalid named return regex")
 });
 
 /// Maximum file size (in bytes) the scanner will process.
@@ -139,11 +162,11 @@ impl ContractScanner {
     }
 
     /// Check if the given line index is a single-line comment (// or * or /*).
-    fn is_in_comment(&self, lines: &[(usize, String)], line_idx: usize) -> bool {
+    fn is_in_comment(&self, lines: &[ParsedLine<'_>], line_idx: usize) -> bool {
         if line_idx >= lines.len() {
             return false;
         }
-        let line = &lines[line_idx].1;
+        let line = lines[line_idx].1;
         line.trim().starts_with("//")
             || line.trim().starts_with("*")
             || line.trim().starts_with("/*")
@@ -151,6 +174,7 @@ impl ContractScanner {
 
     /// Check if a line falls inside a multi-line /* ... */ comment block.
     /// Tracks block comment state by scanning from the start of the file.
+    #[allow(dead_code)]
     fn is_in_multiline_comment(&self, content: &str, line_idx: usize) -> bool {
         let lines: Vec<&str> = content.lines().collect();
         if line_idx >= lines.len() {
@@ -232,13 +256,13 @@ impl ContractScanner {
     /// Solidity function signatures can span many lines with parameters and modifiers.
     fn get_full_function_signature(
         &self,
-        lines: &[(usize, String)],
+        lines: &[ParsedLine<'_>],
         func_line_idx: usize,
     ) -> String {
         let mut sig = String::new();
         let max_lines = (func_line_idx + 15).min(lines.len());
         for i in func_line_idx..max_lines {
-            sig.push_str(&lines[i].1);
+            sig.push_str(lines[i].1);
             sig.push(' ');
             if lines[i].1.contains('{') {
                 break;
@@ -377,6 +401,55 @@ impl ContractScanner {
             || function_line.contains(" private ")
             || function_line.contains(" internal)")
             || function_line.contains(" private)")
+    }
+
+    /// Check if a function declaration has no implementation body.
+    /// This covers interface and abstract signatures like `function foo() external;`.
+    fn is_signature_only_declaration(&self, line: &str) -> bool {
+        let trimmed = line.trim();
+        trimmed.starts_with("function ")
+            && trimmed.ends_with(';')
+            && !trimmed.contains('{')
+            && !trimmed.contains("= ")
+    }
+
+    fn build_scan_context(&self, content: &str, lines: &[ParsedLine<'_>]) -> ScanContext {
+        let mut line_states = Vec::with_capacity(lines.len());
+        let mut in_block_comment = false;
+
+        for (_, line) in lines {
+            let trimmed = line.trim();
+            let starts_block_comment = line.contains("/*");
+            let ends_block_comment = line.contains("*/");
+
+            let state = LineState {
+                is_comment: trimmed.starts_with("//")
+                    || trimmed.starts_with('*')
+                    || trimmed.starts_with("/*"),
+                is_in_block_comment: in_block_comment || trimmed.starts_with("/*"),
+                is_signature_only: self.is_signature_only_declaration(line),
+            };
+            line_states.push(state);
+
+            if starts_block_comment && !ends_block_comment {
+                in_block_comment = true;
+            }
+            if ends_block_comment {
+                in_block_comment = false;
+            }
+        }
+
+        ScanContext {
+            has_safemath: self.has_safemath(content),
+            has_safe_erc20: self.has_safe_erc20(content),
+            has_reentrancy_guard: self.has_reentrancy_guard(content),
+            uses_openzeppelin: self.uses_openzeppelin(content),
+            uses_solidity_0_8_plus: self.uses_solidity_0_8_plus(content),
+            uses_safe_signature_library: content.contains("ECDSA.recover")
+                || content.contains("SignatureChecker"),
+            known_modifiers: self.resolve_known_modifiers(content),
+            line_states,
+        }
     }
 }
 
@@ -530,7 +603,12 @@ impl ContractScanner {
     /// threat modeling, EIP checks, and false positive filtering.
     pub fn scan_content(&self, content: &str) -> ScanResult {
         let mut vulnerabilities = Vec::new();
-        let lines: Vec<(usize, String)> = self.parser.parse_lines(content);
+        let lines: Vec<ParsedLine<'_>> = content
+            .lines()
+            .enumerate()
+            .map(|(idx, line)| (idx + 1, line))
+            .collect();
+        let scan_context = self.build_scan_context(content, &lines);
 
         // Extract compiler info early — used for version-aware analysis and returned in ScanResult
         let compiler_info = self.parser.extract_compiler_info(content);
@@ -719,7 +797,12 @@ impl ContractScanner {
             if rule.multiline {
                 vulnerabilities.extend(self.scan_multiline_pattern(content, rule));
             } else {
-                vulnerabilities.extend(self.scan_line_patterns(&lines, rule));
+                vulnerabilities.extend(self.scan_line_patterns(
+                    content,
+                    &lines,
+                    &scan_context,
+                    rule,
+                ));
             }
         }
 
@@ -730,7 +813,12 @@ impl ContractScanner {
                 if rule.multiline {
                     vulnerabilities.extend(self.scan_multiline_pattern(content, rule));
                 } else {
-                    vulnerabilities.extend(self.scan_line_patterns(&lines, rule));
+                    vulnerabilities.extend(self.scan_line_patterns(
+                        content,
+                        &lines,
+                        &scan_context,
+                        rule,
+                    ));
                 }
             }
         }
@@ -831,20 +919,21 @@ impl ContractScanner {
     /// Skips commented lines and applies context-aware filtering to reduce false positives.
     fn scan_line_patterns(
         &self,
-        lines: &[(usize, String)],
+        content: &str,
+        lines: &[ParsedLine<'_>],
+        scan_context: &ScanContext,
         rule: &VulnerabilityRule,
     ) -> Vec<Vulnerability> {
         let mut vulnerabilities = Vec::new();
 
-        let full_content: String = lines
-            .iter()
-            .map(|(_, line)| line.as_str())
-            .collect::<Vec<_>>()
-            .join("\n");
-
         for (idx, (line_number, line_content)) in lines.iter().enumerate() {
             // Skip if line is in a comment
             if self.is_in_comment(lines, idx) {
+                continue;
+            }
+
+            // Interface and abstract signatures have no executable body to analyze.
+            if scan_context.line_states[idx].is_signature_only {
                 continue;
             }
 
@@ -854,15 +943,16 @@ impl ContractScanner {
                     &rule.category,
                     Some(&rule.title),
                     line_content,
-                    &full_content,
+                    content,
                     lines,
                     idx,
+                    scan_context,
                 );
 
                 if should_report {
                     // Extract context around the vulnerability
                     let (context_before, context_after) =
-                        Vulnerability::extract_context(&full_content, *line_number, 2);
+                        Vulnerability::extract_context(content, *line_number, 2);
 
                     let vulnerability = Vulnerability::new(
                         rule.severity.clone(),
@@ -893,18 +983,18 @@ impl ContractScanner {
         _title: Option<&str>,
         line: &str,
         full_content: &str,
-        lines: &[(usize, String)],
+        lines: &[ParsedLine<'_>],
         line_idx: usize,
+        scan_context: &ScanContext,
     ) -> bool {
         use crate::vulnerabilities::VulnerabilityCategory;
 
         // Global filter: Skip commented lines
-        if self.is_in_comment(lines, line_idx) {
-            return false;
-        }
-
-        // Global filter: Skip if inside multiline comment
-        if self.is_in_multiline_comment(full_content, line_idx) {
+        if scan_context
+            .line_states
+            .get(line_idx)
+            .is_some_and(|state| state.is_comment || state.is_in_block_comment)
+        {
             return false;
         }
 
@@ -912,18 +1002,16 @@ impl ContractScanner {
             VulnerabilityCategory::ArithmeticIssues => {
                 // FP-5: Suppress "Division by Zero" in Solidity 0.8+ (auto-reverts)
                 if let Some(title) = _title {
-                    if title.contains("Division by Zero")
-                        && self.uses_solidity_0_8_plus(full_content)
-                    {
+                    if title.contains("Division by Zero") && scan_context.uses_solidity_0_8_plus {
                         return false;
                     }
                 }
                 // Don't report if SafeMath is being used
-                if self.has_safemath(full_content) {
+                if scan_context.has_safemath {
                     return false;
                 }
                 // Don't report in Solidity 0.8+ (has built-in overflow protection)
-                if self.uses_solidity_0_8_plus(full_content) {
+                if scan_context.uses_solidity_0_8_plus {
                     return false;
                 }
                 // Don't report simple counter increments
@@ -941,7 +1029,7 @@ impl ContractScanner {
 
             VulnerabilityCategory::UnusedReturnValues => {
                 // Don't report if using SafeERC20 which handles this
-                if self.has_safe_erc20(full_content) {
+                if scan_context.has_safe_erc20 {
                     return false;
                 }
                 // Check if return value is actually being checked on the same or next line
@@ -989,10 +1077,9 @@ impl ContractScanner {
                 }
                 // Check if function already has modifiers or access control
                 if line.contains("function") {
-                    let modifiers = self.resolve_known_modifiers(full_content);
                     // Use multi-line signature to catch modifiers on continuation lines
                     let full_sig = self.get_full_function_signature(lines, line_idx);
-                    if self.has_access_control_modifier(&full_sig, &modifiers) {
+                    if self.has_access_control_modifier(&full_sig, &scan_context.known_modifiers) {
                         return false;
                     }
                     // Check if there's an inline access control check within the function
@@ -1013,10 +1100,10 @@ impl ContractScanner {
                     return false;
                 }
                 // Don't report if using OpenZeppelin access control with any only* modifier
-                if self.uses_openzeppelin(full_content) && line.contains("function") {
-                    let modifiers = self.resolve_known_modifiers(full_content);
+                if scan_context.uses_openzeppelin && line.contains("function") {
                     let full_sig = self.get_full_function_signature(lines, line_idx);
-                    if modifiers
+                    if scan_context
+                        .known_modifiers
                         .iter()
                         .any(|m| m.starts_with("only") && full_sig.contains(m.as_str()))
                     {
@@ -1029,7 +1116,7 @@ impl ContractScanner {
                     let func_end = (line_idx + 15).min(lines.len());
                     let func_body: String = lines[line_idx..func_end]
                         .iter()
-                        .map(|(_, l)| l.as_str())
+                        .map(|(_, l)| *l)
                         .collect::<Vec<_>>()
                         .join("\n");
                     if func_body.contains("msg.sender")
@@ -1043,7 +1130,7 @@ impl ContractScanner {
 
             VulnerabilityCategory::Reentrancy => {
                 // Don't report if ReentrancyGuard is being used
-                if self.has_reentrancy_guard(full_content) {
+                if scan_context.has_reentrancy_guard {
                     return false;
                 }
                 // .transfer() and .send() use 2300 gas — safe from reentrancy
@@ -1061,8 +1148,7 @@ impl ContractScanner {
                     return false;
                 }
                 // Don't report reentrancy inside onlyOwner functions (only owner can trigger)
-                let modifiers = self.resolve_known_modifiers(full_content);
-                if self.has_access_control_modifier(&full_sig, &modifiers) {
+                if self.has_access_control_modifier(&full_sig, &scan_context.known_modifiers) {
                     return false;
                 }
                 // Don't report for view/pure functions
@@ -1181,7 +1267,7 @@ impl ContractScanner {
                 let end = (line_idx + 10).min(lines.len());
                 let assembly_body: String = lines[line_idx..end]
                     .iter()
-                    .map(|(_, l)| l.as_str())
+                    .map(|(_, l)| *l)
                     .collect::<Vec<_>>()
                     .join("\n");
                 if safe_assembly_ops
@@ -1272,9 +1358,7 @@ impl ContractScanner {
             VulnerabilityCategory::SignatureReplay
             | VulnerabilityCategory::SignatureVulnerabilities => {
                 // Don't report if using OpenZeppelin ECDSA
-                if full_content.contains("ECDSA.recover")
-                    || full_content.contains("SignatureChecker")
-                {
+                if scan_context.uses_safe_signature_library {
                     return false;
                 }
                 true
@@ -1326,7 +1410,7 @@ impl ContractScanner {
             VulnerabilityCategory::MetaTransactionVulnerability
             | VulnerabilityCategory::TrustedForwarderBypass => {
                 // Don't report if using OpenZeppelin's Context/ERC2771Context properly
-                if self.uses_openzeppelin(full_content) && full_content.contains("ERC2771Context") {
+                if scan_context.uses_openzeppelin && full_content.contains("ERC2771Context") {
                     return false;
                 }
                 true
@@ -1498,17 +1582,16 @@ impl ContractScanner {
                 // Solidity auto-returns named return vars, so `returns (uint256 shares)` doesn't
                 // need explicit `return` statements — the variable is returned automatically.
                 // Check if the returns clause has named parameters (type + name, not just type).
-                let named_return_re = Regex::new(r"returns\s*\([^)]*\b\w+\s+\w+[^)]*\)").unwrap();
-                if named_return_re.is_match(line) || named_return_re.is_match(full_content) {
+                if RE_NAMED_RETURN.is_match(line) || RE_NAMED_RETURN.is_match(full_content) {
                     // Check within 5 lines of match start for named returns
                     let start = if line_idx >= 5 { line_idx - 5 } else { 0 };
                     let end = (line_idx + 5).min(lines.len());
                     let context: String = lines[start..end]
                         .iter()
-                        .map(|(_, l)| l.as_str())
+                        .map(|(_, l)| *l)
                         .collect::<Vec<_>>()
                         .join("\n");
-                    if named_return_re.is_match(&context) {
+                    if RE_NAMED_RETURN.is_match(&context) {
                         return false;
                     }
                 }

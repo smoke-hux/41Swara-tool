@@ -66,6 +66,44 @@ fn count_matching_needles(json: &str, needles: &[&str]) -> usize {
         .count()
 }
 
+/// Check if a finding with an exact title exists.
+fn has_finding_title(json: &str, title: &str) -> bool {
+    let parsed: serde_json::Value = match serde_json::from_str(json) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    parsed["results"]
+        .as_array()
+        .map(|results| {
+            results
+                .iter()
+                .flat_map(|r| r["vulnerabilities"].as_array())
+                .flatten()
+                .any(|v| v["title"].as_str() == Some(title))
+        })
+        .unwrap_or(false)
+}
+
+/// Check if a finding with an exact title exists at a specific line.
+fn has_finding_title_at_line(json: &str, title: &str, line: u64) -> bool {
+    let parsed: serde_json::Value = match serde_json::from_str(json) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    parsed["results"]
+        .as_array()
+        .map(|results| {
+            results
+                .iter()
+                .flat_map(|r| r["vulnerabilities"].as_array())
+                .flatten()
+                .any(|v| {
+                    v["title"].as_str() == Some(title) && v["line_number"].as_u64() == Some(line)
+                })
+        })
+        .unwrap_or(false)
+}
+
 /// Get total vulnerability count from JSON output.
 fn total_findings(json: &str) -> usize {
     let parsed: serde_json::Value = match serde_json::from_str(json) {
@@ -235,6 +273,51 @@ fn test_detects_2026_exploit_corpus() {
     assert!(
         hits >= 7,
         "Expected broad coverage across the bundled 2026 exploit corpus, got {hits} hits.\nOutput: {}",
+        &output[..output.len().min(1200)]
+    );
+}
+
+#[test]
+fn test_detects_false_negative_return_bomb_pattern() {
+    let output = scan_file("test_contracts/FalseNegativeTest.sol");
+    assert!(
+        has_finding_title(&output, "Return Bomb Risk - Unbounded Return Data"),
+        "Expected return bomb detection in FalseNegativeTest.sol.\nOutput: {}",
+        &output[..output.len().min(1200)]
+    );
+}
+
+#[test]
+fn test_detects_false_negative_is_contract_bypass_pattern() {
+    let output = scan_file("test_contracts/FalseNegativeTest.sol");
+    assert!(
+        has_finding_title(&output, "Contract Check Bypassable During Construction")
+            || has_finding_title(&output, "extcodesize/isContract Unreliable Post-EIP-7702"),
+        "Expected isContract/code.length bypass detection in FalseNegativeTest.sol.\nOutput: {}",
+        &output[..output.len().min(1200)]
+    );
+}
+
+#[test]
+fn test_detects_false_negative_signature_malleability_pattern() {
+    let output = scan_file("test_contracts/FalseNegativeTest.sol");
+    assert!(
+        has_finding_containing(&output, "Signature Malleability"),
+        "Expected signature malleability detection in FalseNegativeTest.sol.\nOutput: {}",
+        &output[..output.len().min(1200)]
+    );
+}
+
+#[test]
+fn test_interface_signatures_do_not_trigger_access_control_findings() {
+    let output = scan_file("test_contracts/FalseNegativeTest.sol");
+    assert!(
+        !has_finding_title_at_line(
+            &output,
+            "Missing Access Control on State-Changing Function",
+            47
+        ),
+        "Interface declarations should not be treated as vulnerable implementations.\nOutput: {}",
         &output[..output.len().min(1200)]
     );
 }
