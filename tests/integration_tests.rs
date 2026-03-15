@@ -3,7 +3,22 @@
 //! Tests detection accuracy and false positive rates across contract categories.
 //! These tests run the actual scanner binary on test contracts and verify the JSON output.
 
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
+
+fn scanner_bin() -> &'static Path {
+    static SCANNER_BIN: OnceLock<PathBuf> = OnceLock::new();
+
+    SCANNER_BIN
+        .get_or_init(|| {
+            option_env!("CARGO_BIN_EXE_41swara")
+                .map(PathBuf::from)
+                .or_else(|| std::env::var_os("CARGO_BIN_EXE_41swara").map(PathBuf::from))
+                .unwrap_or_else(|| PathBuf::from("target/debug/41swara"))
+        })
+        .as_path()
+}
 
 /// Run the scanner on a file and return the JSON stdout.
 fn scan_file(path: &str) -> String {
@@ -12,25 +27,33 @@ fn scan_file(path: &str) -> String {
 
 /// Run the scanner on a file with extra CLI arguments and return the JSON stdout.
 fn scan_file_with_args(path: &str, extra_args: &[&str]) -> String {
-    let mut args = vec![
-        "run",
-        "--bin",
-        "41swara",
-        "--quiet",
-        "--",
-        path,
-        "--format",
-        "json",
-        "--min-severity",
-        "info",
-    ];
+    let mut args = vec![path, "--format", "json", "--min-severity", "info"];
     args.extend(extra_args.iter().copied());
 
-    let output = Command::new("cargo")
+    let output = Command::new(scanner_bin())
         .args(args)
         .output()
         .expect("Failed to run scanner");
-    String::from_utf8_lossy(&output.stdout).to_string()
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+    assert!(
+        matches!(output.status.code(), Some(0..=3)),
+        "Scanner command failed for {path}\nstatus: {}\nstdout:\n{}\nstderr:\n{}",
+        output.status,
+        stdout,
+        stderr
+    );
+
+    assert!(
+        !stdout.trim().is_empty(),
+        "Scanner command produced no stdout for {path}\nstatus: {}\nstderr:\n{}",
+        output.status,
+        stderr
+    );
+
+    stdout
 }
 
 /// Count findings of a given severity in JSON output.
