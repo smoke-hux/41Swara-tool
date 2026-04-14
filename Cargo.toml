@@ -20,7 +20,7 @@ path = "src/main.rs"
 # Short alias - run with: 41
 [[bin]]
 name = "41"
-path = "src/main.rs"
+path = "src/bin/41.rs"
 
 [dependencies]
 regex = "1.10"
