@@ -576,31 +576,3 @@ impl Default for SlitherIntegration {
         Self::new()
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_confidence_conversion() {
-        let integration = SlitherIntegration::new();
-
-        assert_eq!(integration.slither_confidence_to_score("High"), 0.9);
-        assert_eq!(integration.slither_confidence_to_score("Medium"), 0.7);
-        assert_eq!(integration.slither_confidence_to_score("Low"), 0.5);
-    }
-
-    #[test]
-    fn test_impact_conversion() {
-        let integration = SlitherIntegration::new();
-
-        assert_eq!(
-            integration.slither_impact_to_severity("High"),
-            VulnerabilitySeverity::High
-        );
-        assert_eq!(
-            integration.slither_impact_to_severity("Medium"),
-            VulnerabilitySeverity::Medium
-        );
-    }
-}

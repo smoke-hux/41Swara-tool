@@ -24,8 +24,22 @@
 #![allow(dead_code)]
 
 use crate::vulnerabilities::{Vulnerability, VulnerabilityCategory, VulnerabilitySeverity};
+use once_cell::sync::Lazy;
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
+
+/// Per-call-site regex cache. Each macro expansion creates its own `static Lazy<Regex>`,
+/// so the pattern is compiled exactly once for the lifetime of the process — even when
+/// the surrounding function runs once per scanned file in a 1,000-file sweep.
+///
+/// Use only with `'static` string literals. For dynamic patterns (e.g. `format!`-built),
+/// fall back to `Regex::new(...)` directly.
+macro_rules! re {
+    ($pat:expr) => {{
+        static RE: Lazy<Regex> = Lazy::new(|| Regex::new($pat).unwrap());
+        &*RE
+    }};
+}
 
 /// The primary advanced analyzer that runs multi-category vulnerability detection
 /// on Solidity smart contract source code.
@@ -52,6 +66,40 @@ impl AdvancedAnalyzer {
     /// `verbose` is reserved for future diagnostic output and currently unused.
     pub fn new(verbose: bool) -> Self {
         Self { verbose }
+    }
+
+    fn strip_comment_lines(&self, content: &str) -> String {
+        let mut stripped = String::with_capacity(content.len());
+        let mut in_block_comment = false;
+
+        for line in content.lines() {
+            let trimmed = line.trim_start();
+            if in_block_comment {
+                if let Some(end_idx) = line.find("*/") {
+                    in_block_comment = false;
+                    stripped.push_str(&line[(end_idx + 2)..]);
+                }
+                stripped.push('\n');
+                continue;
+            }
+
+            if trimmed.starts_with("/*") && !trimmed.contains("*/") {
+                in_block_comment = true;
+                stripped.push('\n');
+                continue;
+            }
+
+            if trimmed.starts_with("//") || trimmed.starts_with("/*") || trimmed.starts_with('*') {
+                stripped.push('\n');
+                continue;
+            }
+
+            let code_only = line.split("//").next().unwrap_or("");
+            stripped.push_str(code_only);
+            stripped.push('\n');
+        }
+
+        stripped
     }
 
     // ========================================================================
@@ -98,9 +146,9 @@ impl AdvancedAnalyzer {
         }
 
         // Only flag .call{} as dangerous — .transfer() and .send() use 2300 gas (safe from reentrancy)
-        let external_call_pattern = Regex::new(r"\.call\{").unwrap();
+        let external_call_pattern = re!(r"\.call\{");
         let state_change_pattern =
-            Regex::new(r"(\w+)\s*=\s*[^=]|\w+\[.*\]\s*=\s*|\+\+|--").unwrap();
+            re!(r"(\w+)\s*=\s*[^=]|\w+\[.*\]\s*=\s*|\+\+|--");
 
         let lines: Vec<&str> = content.lines().collect();
 
@@ -117,7 +165,7 @@ impl AdvancedAnalyzer {
                 }
 
                 // Check if the enclosing function has access control (onlyOwner etc.)
-                let only_re = Regex::new(r"\bonly\w+|nonReentrant|whenNotPaused").unwrap();
+                let only_re = re!(r"\bonly\w+|nonReentrant|whenNotPaused");
                 // Scan backwards from current line to find function declaration
                 let mut func_sig = String::new();
                 for i in (0..=idx).rev() {
@@ -166,8 +214,8 @@ impl AdvancedAnalyzer {
     // rely on manipulable spot price sources (getReserves, balanceOf(this))
     // in the presence of flash loan callbacks.
     fn detect_flash_loan_vulnerability(&self, content: &str) -> Option<Vulnerability> {
-        let flash_loan_pattern = Regex::new(r"flashLoan|executeOperation|onFlashLoan").unwrap();
-        let price_dependency = Regex::new(r"getReserves|balanceOf\(address\(this\)\)").unwrap();
+        let flash_loan_pattern = re!(r"flashLoan|executeOperation|onFlashLoan");
+        let price_dependency = re!(r"getReserves|balanceOf\(address\(this\)\)");
 
         if flash_loan_pattern.is_match(content) || price_dependency.is_match(content) {
             for (idx, line) in content.lines().enumerate() {
@@ -193,8 +241,8 @@ impl AdvancedAnalyzer {
     // Detect MEV/sandwich attack vulnerabilities by identifying swap functions
     // that lack slippage protection parameters (amountOutMin, slippage, etc.).
     fn detect_sandwich_attack_vector(&self, content: &str) -> Option<Vulnerability> {
-        let swap_pattern = Regex::new(r"function\s+swap|swapExact|swapTokens").unwrap();
-        let slippage_pattern = Regex::new(r"amountOutMin|slippage").unwrap();
+        let swap_pattern = re!(r"function\s+swap|swapExact|swapTokens");
+        let slippage_pattern = re!(r"amountOutMin|slippage");
 
         if swap_pattern.is_match(content) && !slippage_pattern.is_match(content) {
             for (idx, line) in content.lines().enumerate() {
@@ -227,7 +275,7 @@ impl AdvancedAnalyzer {
     /// Functions with complexity > 10 are reported as low-severity issues.
     pub fn analyze_complexity(&self, content: &str) -> Vec<Vulnerability> {
         let mut vulnerabilities = Vec::new();
-        let function_pattern = Regex::new(r"function\s+(\w+)\s*\([^)]*\)[^{]*\{").unwrap();
+        let function_pattern = re!(r"function\s+(\w+)\s*\([^)]*\)[^{]*\{");
 
         let mut in_function = false;
         let mut function_name = String::new();
@@ -304,7 +352,7 @@ impl AdvancedAnalyzer {
         let mut vulnerabilities = Vec::new();
 
         // Find all modifiers
-        let modifier_pattern = Regex::new(r"modifier\s+(\w+)").unwrap();
+        let modifier_pattern = re!(r"modifier\s+(\w+)");
         let mut modifiers = HashSet::new();
 
         for captures in modifier_pattern.captures_iter(content) {
@@ -347,7 +395,7 @@ impl AdvancedAnalyzer {
         ];
 
         // Match the start of a function declaration (may span multiple lines)
-        let function_start_pattern = Regex::new(r"function\s+(\w+)\s*\(").unwrap();
+        let function_start_pattern = re!(r"function\s+(\w+)\s*\(");
 
         let lines: Vec<&str> = content.lines().collect();
         for (idx, line) in lines.iter().enumerate() {
@@ -412,7 +460,7 @@ impl AdvancedAnalyzer {
                     || full_sig.contains("onlyAdmin")
                     || full_sig.contains("whenNotPaused")
                     || full_sig.contains("initializer")
-                    || Regex::new(r"\bonly\w+").unwrap().is_match(&full_sig);
+                    || re!(r"\bonly\w+").is_match(&full_sig);
 
                 // Check visibility: skip private/internal functions
                 let is_private_or_internal =
@@ -516,8 +564,8 @@ impl AdvancedAnalyzer {
         let mut vulnerabilities = Vec::new();
 
         // Check for storage vs memory usage in loops
-        let loop_pattern = Regex::new(r"for\s*\([^)]*\)").unwrap();
-        let storage_read_pattern = Regex::new(r"storage\w+\[").unwrap();
+        let loop_pattern = re!(r"for\s*\([^)]*\)");
+        let storage_read_pattern = re!(r"storage\w+\[");
 
         let lines: Vec<&str> = content.lines().collect();
 
@@ -545,7 +593,7 @@ impl AdvancedAnalyzer {
         }
 
         // Check for multiple storage writes that could be batched
-        let storage_write_pattern = Regex::new(r"(\w+)\s*=\s*").unwrap();
+        let storage_write_pattern = re!(r"(\w+)\s*=\s*");
         let mut storage_writes = HashMap::new();
 
         for line in content.lines() {
@@ -569,7 +617,7 @@ impl AdvancedAnalyzer {
         }
 
         // Check for string/bytes that could be bytes32
-        let string_pattern = Regex::new(r#"string\s+(public\s+)?\w+\s*=\s*"[^"]{1,32}""#).unwrap();
+        let string_pattern = re!(r#"string\s+(public\s+)?\w+\s*=\s*"[^"]{1,32}""#);
 
         for (idx, line) in content.lines().enumerate() {
             if string_pattern.is_match(line) {
@@ -671,7 +719,7 @@ impl AdvancedAnalyzer {
     // (minAmount, amountOutMin, slippage, minReturn).
     fn detect_slippage_issues(&self, content: &str) -> Vec<Vulnerability> {
         let mut vulnerabilities = Vec::new();
-        let swap_pattern = Regex::new(r"function\s+swap").unwrap();
+        let swap_pattern = re!(r"function\s+swap");
 
         for (idx, line) in content.lines().enumerate() {
             if swap_pattern.is_match(line) {
@@ -704,7 +752,7 @@ impl AdvancedAnalyzer {
         let mut vulnerabilities = Vec::new();
 
         // Only flag explicit liquidity removal, not generic withdraw
-        let remove_liquidity_pattern = Regex::new(r"removeLiquidity").unwrap();
+        let remove_liquidity_pattern = re!(r"removeLiquidity");
 
         for (idx, line) in content.lines().enumerate() {
             if remove_liquidity_pattern.is_match(line) && line.contains("function") {
@@ -746,7 +794,7 @@ impl AdvancedAnalyzer {
 
         // Detect reward calculation issues
         if content.contains("reward") || content.contains("Reward") {
-            let reward_calc_pattern = Regex::new(r"reward\w*\s*=.*\*|reward\w*\s*=.*/").unwrap();
+            let reward_calc_pattern = re!(r"reward\w*\s*=.*\*|reward\w*\s*=.*/");
 
             for (idx, line) in content.lines().enumerate() {
                 if reward_calc_pattern.is_match(line) {
@@ -808,7 +856,7 @@ impl AdvancedAnalyzer {
     // and (b) duplicate token ID protection (_exists check).
     fn detect_nft_minting_issues(&self, content: &str) -> Vec<Vulnerability> {
         let mut vulnerabilities = Vec::new();
-        let mint_pattern = Regex::new(r"function\s+mint").unwrap();
+        let mint_pattern = re!(r"function\s+mint");
 
         for (idx, line) in content.lines().enumerate() {
             if mint_pattern.is_match(line) {
@@ -886,7 +934,7 @@ impl AdvancedAnalyzer {
         let mut vulnerabilities = Vec::new();
 
         // Check for mutable metadata
-        let token_uri_pattern = Regex::new(r"function\s+tokenURI").unwrap();
+        let token_uri_pattern = re!(r"function\s+tokenURI");
 
         for (idx, line) in content.lines().enumerate() {
             if token_uri_pattern.is_match(line) {
@@ -925,7 +973,7 @@ impl AdvancedAnalyzer {
         // Check EIP-2981 royalty implementation
         if content.contains("royaltyInfo") || content.contains("ERC2981") {
             // Check for proper royalty validation
-            let royalty_pattern = Regex::new(r"royalty|royaltyInfo").unwrap();
+            let royalty_pattern = re!(r"royalty|royaltyInfo");
 
             for (idx, line) in content.lines().enumerate() {
                 if royalty_pattern.is_match(line) {
@@ -993,7 +1041,7 @@ impl AdvancedAnalyzer {
         let mut vulnerabilities = Vec::new();
 
         // Look for withdraw pattern with external call before state update
-        let withdraw_pattern = Regex::new(r"function\s+withdraw").unwrap();
+        let withdraw_pattern = re!(r"function\s+withdraw");
 
         for (idx, line) in content.lines().enumerate() {
             if withdraw_pattern.is_match(line) {
@@ -1042,7 +1090,7 @@ impl AdvancedAnalyzer {
         let mut vulnerabilities = Vec::new();
 
         // Detect delegatecall with user-controlled address
-        let delegatecall_pattern = Regex::new(r"delegatecall").unwrap();
+        let delegatecall_pattern = re!(r"delegatecall");
 
         for (idx, line) in content.lines().enumerate() {
             if delegatecall_pattern.is_match(line) {
@@ -1197,8 +1245,7 @@ impl AdvancedAnalyzer {
 
         // Critical: transferOwnership without access control in proxy context
         let transfer_ownership_pattern =
-            Regex::new(r"function\s+transferOwnership\s*\([^)]*\)\s+(external|public)\s*\{")
-                .unwrap();
+            re!(r"function\s+transferOwnership\s*\([^)]*\)\s+(external|public)\s*\{");
 
         for (idx, line) in content.lines().enumerate() {
             if transfer_ownership_pattern.is_match(line) {
@@ -1227,7 +1274,7 @@ impl AdvancedAnalyzer {
 
         // Check for oracle manipulation surface in upgradeable contracts
         if content.contains("oracle") || content.contains("Oracle") {
-            let set_oracle_pattern = Regex::new(r"function\s+set\w*Oracle\w*\([^)]*\)").unwrap();
+            let set_oracle_pattern = re!(r"function\s+set\w*Oracle\w*\([^)]*\)");
 
             for (idx, line) in content.lines().enumerate() {
                 if set_oracle_pattern.is_match(line) {
@@ -1340,8 +1387,7 @@ impl AdvancedAnalyzer {
         // Typed calldata params (uint256 calldata, address[] calldata) are standard
         // and safe - the ABI decoder validates their structure automatically.
         let calldata_pattern =
-            Regex::new(r"function\s+(\w+)\s*\([^)]*bytes\s+calldata[^)]*\)\s+(external|public)")
-                .unwrap();
+            re!(r"function\s+(\w+)\s*\([^)]*bytes\s+calldata[^)]*\)\s+(external|public)");
 
         for (idx, line) in content.lines().enumerate() {
             if let Some(captures) = calldata_pattern.captures(line) {
@@ -1374,8 +1420,7 @@ impl AdvancedAnalyzer {
 
         // Array parameter without length checks
         let array_pattern =
-            Regex::new(r"function\s+(\w+)\s*\([^)]*\[\]\s+(\w+)[^)]*\)\s+(external|public)")
-                .unwrap();
+            re!(r"function\s+(\w+)\s*\([^)]*\[\]\s+(\w+)[^)]*\)\s+(external|public)");
 
         for (idx, line) in content.lines().enumerate() {
             if let Some(captures) = array_pattern.captures(line) {
@@ -1415,7 +1460,7 @@ impl AdvancedAnalyzer {
         }
 
         // Missing nonce tracking
-        let ecrecover_pattern = Regex::new(r"ecrecover\s*\(").unwrap();
+        let ecrecover_pattern = re!(r"ecrecover\s*\(");
         let has_nonce_mapping = content.contains("mapping") && content.contains("nonce");
 
         for (idx, line) in content.lines().enumerate() {
@@ -1473,7 +1518,7 @@ impl AdvancedAnalyzer {
         let mut vulnerabilities = Vec::new();
 
         // Swap functions without slippage AND deadline protection
-        let swap_pattern = Regex::new(r"function\s+swap\w*\([^)]*\)").unwrap();
+        let swap_pattern = re!(r"function\s+swap\w*\([^)]*\)");
 
         for (idx, line) in content.lines().enumerate() {
             if swap_pattern.is_match(line) {
@@ -1498,7 +1543,7 @@ impl AdvancedAnalyzer {
 
         // Public liquidation functions (MEV hotspot)
         let liquidate_pattern =
-            Regex::new(r"function\s+liquidate\w*\([^)]*\)\s+(external|public)").unwrap();
+            re!(r"function\s+liquidate\w*\([^)]*\)\s+(external|public)");
 
         for (idx, line) in content.lines().enumerate() {
             if liquidate_pattern.is_match(line) {
@@ -1533,8 +1578,8 @@ impl AdvancedAnalyzer {
         let mut vulnerabilities = Vec::new();
 
         // Mixing different decimal precisions (Aevo pattern)
-        let decimal_1e18 = Regex::new(r"1e18|10\s*\*\*\s*18").unwrap();
-        let decimal_1e8 = Regex::new(r"1e8|10\s*\*\*\s*8").unwrap();
+        let decimal_1e18 = re!(r"1e18|10\s*\*\*\s*18");
+        let decimal_1e8 = re!(r"1e8|10\s*\*\*\s*8");
 
         let has_1e18 = decimal_1e18.is_match(content);
         let has_1e8 = decimal_1e8.is_match(content);
@@ -1555,7 +1600,7 @@ impl AdvancedAnalyzer {
 
         // Division before multiplication in pricing (precision loss)
         let price_calc_pattern =
-            Regex::new(r"(price|Price|value|Value|rate|Rate)\w*\s*=\s*[^=]*\/[^=]*\*").unwrap();
+            re!(r"(price|Price|value|Value|rate|Rate)\w*\s*=\s*[^=]*\/[^=]*\*");
 
         for (idx, line) in content.lines().enumerate() {
             if price_calc_pattern.is_match(line) {
@@ -1613,7 +1658,7 @@ impl AdvancedAnalyzer {
         let mut vulnerabilities = Vec::new();
 
         // Only check if contract defines its own approve function
-        let approve_pattern = Regex::new(r"function\s+approve\s*\(").unwrap();
+        let approve_pattern = re!(r"function\s+approve\s*\(");
         if !approve_pattern.is_match(content) {
             return vulnerabilities;
         }
@@ -1652,10 +1697,7 @@ impl AdvancedAnalyzer {
         let mut vulnerabilities = Vec::new();
 
         // Check for flash loan callback without proper validation
-        let callback_pattern = Regex::new(
-            r"function\s+(executeOperation|onFlashLoan|uniswapV\d+Call|pancakeCall)\s*\([^)]*\)",
-        )
-        .unwrap();
+        let callback_pattern = re!(r"function\s+(executeOperation|onFlashLoan|uniswapV\d+Call|pancakeCall)\s*\([^)]*\)");
 
         for (idx, line) in content.lines().enumerate() {
             if callback_pattern.is_match(line) {
@@ -1691,7 +1733,7 @@ impl AdvancedAnalyzer {
 
         // Detect price manipulation via balance queries
         let balance_price_pattern =
-            Regex::new(r"balanceOf\([^)]*\).*price|price.*balanceOf").unwrap();
+            re!(r"balanceOf\([^)]*\).*price|price.*balanceOf");
 
         for (idx, line) in content.lines().enumerate() {
             if balance_price_pattern.is_match(line)
@@ -1727,7 +1769,7 @@ impl AdvancedAnalyzer {
                 || content.contains("INITIAL_DEPOSIT")
                 || content.contains("10 **");
 
-            let mint_pattern = Regex::new(r"function\s+deposit\s*\(").unwrap();
+            let mint_pattern = re!(r"function\s+deposit\s*\(");
 
             for (idx, line) in content.lines().enumerate() {
                 // Skip import statements and comments
@@ -1764,8 +1806,8 @@ impl AdvancedAnalyzer {
 
         // Incorrect state update order (CEI violation)
         // Only flag .call{value:} — .transfer() and .send() use 2300 gas (safe from reentrancy)
-        let transfer_pattern = Regex::new(r"\.call\{value:|safeTransfer").unwrap();
-        let state_update_pattern = Regex::new(r"\w+\s*=\s*[^=]|\w+\[.*\]\s*=").unwrap();
+        let transfer_pattern = re!(r"\.call\{value:|safeTransfer");
+        let state_update_pattern = re!(r"\w+\s*=\s*[^=]|\w+\[.*\]\s*=");
 
         let lines: Vec<&str> = content.lines().collect();
         for (idx, line) in lines.iter().enumerate() {
@@ -1823,7 +1865,7 @@ impl AdvancedAnalyzer {
         // Check for MinimalForwarder usage
         if content.contains("MinimalForwarder") || content.contains("ForwardRequest") {
             // Check for proper signature validation
-            let execute_pattern = Regex::new(r"function\s+execute\s*\(").unwrap();
+            let execute_pattern = re!(r"function\s+execute\s*\(");
 
             for (idx, line) in content.lines().enumerate() {
                 if execute_pattern.is_match(line) {
@@ -1869,7 +1911,7 @@ impl AdvancedAnalyzer {
         // Check for ERC2771Context issues
         if content.contains("_msgSender()") || content.contains("ERC2771Context") {
             // Check if trusted forwarder can be manipulated
-            let set_forwarder = Regex::new(r"function\s+set\w*[Ff]orwarder").unwrap();
+            let set_forwarder = re!(r"function\s+set\w*[Ff]orwarder");
 
             for (idx, line) in content.lines().enumerate() {
                 if set_forwarder.is_match(line) {
@@ -1894,10 +1936,7 @@ impl AdvancedAnalyzer {
         let mut vulnerabilities = Vec::new();
 
         // Check for custom safe math implementations
-        let custom_math_pattern = Regex::new(
-            r"function\s+\w*(safe|checked|overflow)\w*(Add|Sub|Mul|Div|Shl|Shr)\w*\s*\(",
-        )
-        .unwrap();
+        let custom_math_pattern = re!(r"function\s+\w*(safe|checked|overflow)\w*(Add|Sub|Mul|Div|Shl|Shr)\w*\s*\(");
 
         for (idx, line) in content.lines().enumerate() {
             if custom_math_pattern.is_match(line) {
@@ -1917,7 +1956,7 @@ impl AdvancedAnalyzer {
 
         // Check for bit shift operations in critical calculations
         let shift_in_calc_pattern =
-            Regex::new(r"(liquidity|price|amount|value|shares)\w*\s*=.*<<|>>\s*\d+").unwrap();
+            re!(r"(liquidity|price|amount|value|shares)\w*\s*=.*<<|>>\s*\d+");
 
         for (idx, line) in content.lines().enumerate() {
             if shift_in_calc_pattern.is_match(line) {
@@ -1946,7 +1985,7 @@ impl AdvancedAnalyzer {
         }
 
         // Check for sqrt/exp in financial calculations
-        let complex_math = Regex::new(r"(sqrt|exp|pow)\s*\(.*\)").unwrap();
+        let complex_math = re!(r"(sqrt|exp|pow)\s*\(.*\)");
 
         for (idx, line) in content.lines().enumerate() {
             if complex_math.is_match(line) {
@@ -1981,7 +2020,7 @@ impl AdvancedAnalyzer {
         let mut vulnerabilities = Vec::new();
 
         // Check for governance voting functions
-        let vote_pattern = Regex::new(r"function\s+(castVote|vote|propose)\w*\s*\(").unwrap();
+        let vote_pattern = re!(r"function\s+(castVote|vote|propose)\w*\s*\(");
 
         for (idx, line) in content.lines().enumerate() {
             if vote_pattern.is_match(line) {
@@ -2015,7 +2054,7 @@ impl AdvancedAnalyzer {
 
         // Check for emergency functions
         let emergency_pattern =
-            Regex::new(r"function\s+emergency\w*\s*\([^)]*\)\s+(external|public)").unwrap();
+            re!(r"function\s+emergency\w*\s*\([^)]*\)\s+(external|public)");
 
         for (idx, line) in content.lines().enumerate() {
             if emergency_pattern.is_match(line) {
@@ -2051,10 +2090,7 @@ impl AdvancedAnalyzer {
         let mut vulnerabilities = Vec::new();
 
         // Check for cross-chain message handlers
-        let message_handler = Regex::new(
-            r"function\s+(lzReceive|_nonblockingLzReceive|receiveWormholeMessages?|_execute)\s*\(",
-        )
-        .unwrap();
+        let message_handler = re!(r"function\s+(lzReceive|_nonblockingLzReceive|receiveWormholeMessages?|_execute)\s*\(");
 
         for (idx, line) in content.lines().enumerate() {
             if message_handler.is_match(line) {
@@ -2093,7 +2129,7 @@ impl AdvancedAnalyzer {
 
         // Check for bridge claim functions
         let claim_pattern =
-            Regex::new(r"function\s+\w*(claim|withdraw|redeem)\w*\s*\([^)]*proof").unwrap();
+            re!(r"function\s+\w*(claim|withdraw|redeem)\w*\s*\([^)]*proof");
 
         for (idx, line) in content.lines().enumerate() {
             if claim_pattern.is_match(line) {
@@ -2175,9 +2211,9 @@ impl AdvancedAnalyzer {
 
         // Look for share calculation without protection
         let share_calc_pattern =
-            Regex::new(r"shares\s*=\s*assets\s*\*\s*totalSupply\s*/\s*totalAssets").unwrap();
+            re!(r"shares\s*=\s*assets\s*\*\s*totalSupply\s*/\s*totalAssets");
         let asset_calc_pattern =
-            Regex::new(r"assets\s*=\s*shares\s*\*\s*totalAssets\s*/\s*totalSupply").unwrap();
+            re!(r"assets\s*=\s*shares\s*\*\s*totalAssets\s*/\s*totalSupply");
 
         for (idx, line) in content.lines().enumerate() {
             if share_calc_pattern.is_match(line) || asset_calc_pattern.is_match(line) {
@@ -2196,7 +2232,7 @@ impl AdvancedAnalyzer {
         }
 
         // Also check convertToShares/convertToAssets functions
-        let convert_pattern = Regex::new(r"function\s+convertTo(Shares|Assets)\s*\(").unwrap();
+        let convert_pattern = re!(r"function\s+convertTo(Shares|Assets)\s*\(");
 
         for (idx, line) in content.lines().enumerate() {
             if convert_pattern.is_match(line) {
@@ -2256,7 +2292,7 @@ impl AdvancedAnalyzer {
         }
 
         // Check for view functions that read state
-        let view_pattern = Regex::new(r"function\s+(\w+)\s*\([^)]*\)\s+.*view").unwrap();
+        let view_pattern = re!(r"function\s+(\w+)\s*\([^)]*\)\s+.*view");
         let mut view_functions: HashSet<String> = HashSet::new();
 
         for captures in view_pattern.captures_iter(content) {
@@ -2359,7 +2395,7 @@ impl AdvancedAnalyzer {
 
         // Check for signature-based transfers
         let permit_transfer_pattern =
-            Regex::new(r"(permitTransferFrom|permitWitnessTransferFrom|permit\s*\()").unwrap();
+            re!(r"(permitTransferFrom|permitWitnessTransferFrom|permit\s*\()");
 
         for (idx, line) in content.lines().enumerate() {
             if permit_transfer_pattern.is_match(line) {
@@ -2406,7 +2442,7 @@ impl AdvancedAnalyzer {
 
         // Check for AllowanceTransfer approval patterns
         if content.contains("IAllowanceTransfer") || content.contains("allowance") {
-            let approve_pattern = Regex::new(r"approve\s*\([^)]*Permit2").unwrap();
+            let approve_pattern = re!(r"approve\s*\([^)]*Permit2");
 
             for (idx, line) in content.lines().enumerate() {
                 if approve_pattern.is_match(line)
@@ -2447,7 +2483,7 @@ impl AdvancedAnalyzer {
 
         // Check _lzReceive implementation
         let lz_receive_pattern =
-            Regex::new(r"function\s+(_lzReceive|lzReceive|_nonblockingLzReceive)\s*\(").unwrap();
+            re!(r"function\s+(_lzReceive|lzReceive|_nonblockingLzReceive)\s*\(");
 
         for (idx, line) in content.lines().enumerate() {
             if lz_receive_pattern.is_match(line) {
@@ -2513,7 +2549,7 @@ impl AdvancedAnalyzer {
         }
 
         // Check for setTrustedRemote access control
-        let set_trusted_pattern = Regex::new(r"function\s+setTrustedRemote\w*\s*\(").unwrap();
+        let set_trusted_pattern = re!(r"function\s+setTrustedRemote\w*\s*\(");
 
         for (idx, line) in content.lines().enumerate() {
             if set_trusted_pattern.is_match(line) {
@@ -2557,7 +2593,7 @@ impl AdvancedAnalyzer {
         }
 
         // Check validateUserOp implementation
-        let validate_pattern = Regex::new(r"function\s+validateUserOp\s*\(").unwrap();
+        let validate_pattern = re!(r"function\s+validateUserOp\s*\(");
 
         for (idx, line) in content.lines().enumerate() {
             if validate_pattern.is_match(line) {
@@ -2623,7 +2659,7 @@ impl AdvancedAnalyzer {
         }
 
         // Check paymaster validation
-        let paymaster_pattern = Regex::new(r"function\s+validatePaymasterUserOp\s*\(").unwrap();
+        let paymaster_pattern = re!(r"function\s+validatePaymasterUserOp\s*\(");
 
         for (idx, line) in content.lines().enumerate() {
             if paymaster_pattern.is_match(line) {
@@ -2672,7 +2708,7 @@ impl AdvancedAnalyzer {
         }
 
         // Check for transient storage in assembly blocks
-        let assembly_pattern = Regex::new(r"assembly\s*\{").unwrap();
+        let assembly_pattern = re!(r"assembly\s*\{");
 
         for (idx, line) in content.lines().enumerate() {
             if assembly_pattern.is_match(line) {
@@ -2721,7 +2757,7 @@ impl AdvancedAnalyzer {
         // Check for reentrancy lock using transient storage
         if content.contains("transient") && content.contains("lock") {
             // This is actually a good pattern, but warn about proper reset
-            let lock_pattern = Regex::new(r"(LOCK|lock|_locked).*transient").unwrap();
+            let lock_pattern = re!(r"(LOCK|lock|_locked).*transient");
 
             for (idx, line) in content.lines().enumerate() {
                 if lock_pattern.is_match(line) || line.contains("tstore") {
@@ -2763,7 +2799,7 @@ impl AdvancedAnalyzer {
             return vulnerabilities;
         }
 
-        let create2_pattern = Regex::new(r"(create2|CREATE2)\s*\(").unwrap();
+        let create2_pattern = re!(r"(create2|CREATE2)\s*\(");
 
         for (idx, line) in content.lines().enumerate() {
             if create2_pattern.is_match(line) || line.contains("Create2.deploy") {
@@ -2855,7 +2891,7 @@ impl AdvancedAnalyzer {
         }
 
         // Check for Merkle proof verification
-        let verify_pattern = Regex::new(r"(verify|processProof)\s*\(").unwrap();
+        let verify_pattern = re!(r"(verify|processProof)\s*\(");
 
         for (idx, line) in content.lines().enumerate() {
             if verify_pattern.is_match(line)
@@ -2933,7 +2969,7 @@ impl AdvancedAnalyzer {
 
         // Check for claimed/used tracking
         if content.contains("merkle") || content.contains("Merkle") {
-            let claim_pattern = Regex::new(r"function\s+\w*(claim|mint|redeem)\w*\s*\(").unwrap();
+            let claim_pattern = re!(r"function\s+\w*(claim|mint|redeem)\w*\s*\(");
 
             for (idx, line) in content.lines().enumerate() {
                 if claim_pattern.is_match(line) {
@@ -3005,7 +3041,7 @@ impl AdvancedAnalyzer {
 
         if uses_chainlink && !is_l2_aware {
             // Look for price feed usage without sequencer check
-            let price_pattern = Regex::new(r"latestRoundData\s*\(\s*\)").unwrap();
+            let price_pattern = re!(r"latestRoundData\s*\(\s*\)");
 
             for (idx, line) in content.lines().enumerate() {
                 if price_pattern.is_match(line) {
@@ -3064,7 +3100,7 @@ impl AdvancedAnalyzer {
             || content.contains("OVM_GasPriceOracle");
 
         if uses_l1_gas {
-            let oracle_pattern = Regex::new(r"(l1GasPrice|getL1Fee|L1_GAS)\s*\(?\s*\)?").unwrap();
+            let oracle_pattern = re!(r"(l1GasPrice|getL1Fee|L1_GAS)\s*\(?\s*\)?");
 
             for (idx, line) in content.lines().enumerate() {
                 if oracle_pattern.is_match(line) {
@@ -3136,7 +3172,7 @@ impl AdvancedAnalyzer {
 
         // Check for xDomainMessageSender validation
         let message_pattern =
-            Regex::new(r"function\s+\w+\s*\([^)]*\)\s+(external|public)").unwrap();
+            re!(r"function\s+\w+\s*\([^)]*\)\s+(external|public)");
 
         for (idx, line) in content.lines().enumerate() {
             if message_pattern.is_match(line) {
@@ -3203,7 +3239,7 @@ impl AdvancedAnalyzer {
         let mut vulnerabilities = Vec::new();
 
         // Check pragma version for PUSH0 compatibility
-        let pragma_pattern = Regex::new(r"pragma\s+solidity\s*[\^>=<\s]*(\d+\.\d+\.\d+)").unwrap();
+        let pragma_pattern = re!(r"pragma\s+solidity\s*[\^>=<\s]*(\d+\.\d+\.\d+)");
 
         for (idx, line) in content.lines().enumerate() {
             if let Some(captures) = pragma_pattern.captures(line) {
@@ -3260,8 +3296,7 @@ impl AdvancedAnalyzer {
 
         // Check hook implementations
         let hook_pattern =
-            Regex::new(r"function\s+(before|after)(Swap|AddLiquidity|RemoveLiquidity|Donate)\s*\(")
-                .unwrap();
+            re!(r"function\s+(before|after)(Swap|AddLiquidity|RemoveLiquidity|Donate)\s*\(");
 
         for (idx, line) in content.lines().enumerate() {
             if hook_pattern.is_match(line) {
@@ -3339,7 +3374,7 @@ impl AdvancedAnalyzer {
         }
 
         // Check ccipReceive implementation
-        let receive_pattern = Regex::new(r"function\s+_ccipReceive\s*\(").unwrap();
+        let receive_pattern = re!(r"function\s+_ccipReceive\s*\(");
 
         for (idx, line) in content.lines().enumerate() {
             if receive_pattern.is_match(line) || line.contains("ccipReceive") {
@@ -3400,7 +3435,7 @@ impl AdvancedAnalyzer {
         }
 
         // Check for slashing conditions
-        let stake_pattern = Regex::new(r"function\s+(stake|deposit|restake)\w*\s*\(").unwrap();
+        let stake_pattern = re!(r"function\s+(stake|deposit|restake)\w*\s*\(");
 
         for (idx, line) in content.lines().enumerate() {
             if stake_pattern.is_match(line) {
@@ -3498,7 +3533,7 @@ impl AdvancedAnalyzer {
 
         if !has_protection {
             // Find where ERC-777 is used
-            let erc777_pattern = Regex::new(r"IERC777|ERC777|tokensReceived|tokensToSend").unwrap();
+            let erc777_pattern = re!(r"IERC777|ERC777|tokensReceived|tokensToSend");
 
             for (idx, line) in content.lines().enumerate() {
                 if erc777_pattern.is_match(line) {
@@ -3557,8 +3592,7 @@ impl AdvancedAnalyzer {
         // Check for receive/fallback payable
         let can_receive = content.contains("receive()") && content.contains("payable")
             || content.contains("fallback()") && content.contains("payable")
-            || Regex::new(r"function\s+\w+\([^)]*\)\s+(external|public)\s+payable")
-                .unwrap()
+            || re!(r"function\s+\w+\([^)]*\)\s+(external|public)\s+payable")
                 .is_match(content);
 
         if !can_receive {
@@ -3575,9 +3609,7 @@ impl AdvancedAnalyzer {
 
         if !has_withdraw {
             // Find the payable function
-            let payable_pattern = Regex::new(
-                r"(receive|fallback)\s*\(\s*\)\s*(external\s+)?payable|function\s+\w+\([^)]*\)\s+(external|public)\s+payable"
-            ).unwrap();
+            let payable_pattern = re!(r"(receive|fallback)\s*\(\s*\)\s*(external\s+)?payable|function\s+\w+\([^)]*\)\s+(external|public)\s+payable");
 
             for (idx, line) in content.lines().enumerate() {
                 if payable_pattern.is_match(line) {
@@ -3616,10 +3648,7 @@ impl AdvancedAnalyzer {
         }
 
         // Look for claiming functions
-        let claim_pattern = Regex::new(
-            r"function\s+(claim|harvest|getReward|collectFee|collectReward)\w*\s*\([^)]*\)",
-        )
-        .unwrap();
+        let claim_pattern = re!(r"function\s+(claim|harvest|getReward|collectFee|collectReward)\w*\s*\([^)]*\)");
 
         for (idx, line) in content.lines().enumerate() {
             if claim_pattern.is_match(line) {
@@ -3708,9 +3737,7 @@ impl AdvancedAnalyzer {
 
         if !has_pausable {
             // Find critical DeFi functions without pause
-            let critical_pattern = Regex::new(
-                r"function\s+(swap|deposit|withdraw|stake|unstake|borrow|repay|liquidate)\w*\s*\([^)]*\)\s+(external|public)"
-            ).unwrap();
+            let critical_pattern = re!(r"function\s+(swap|deposit|withdraw|stake|unstake|borrow|repay|liquidate)\w*\s*\([^)]*\)\s+(external|public)");
 
             for (idx, line) in content.lines().enumerate() {
                 if critical_pattern.is_match(line) {
@@ -3749,7 +3776,7 @@ impl AdvancedAnalyzer {
 
         // Look for custom verification functions (higher risk)
         let custom_verify_pattern =
-            Regex::new(r"function\s+verify\w*[Ss]ignature\w*\s*\([^)]*\)").unwrap();
+            re!(r"function\s+verify\w*[Ss]ignature\w*\s*\([^)]*\)");
 
         for (idx, line) in content.lines().enumerate() {
             if custom_verify_pattern.is_match(line) {
@@ -3898,12 +3925,12 @@ impl AdvancedAnalyzer {
 
         // Check if this contract could be inherited (has state variables)
         let state_var_pattern =
-            Regex::new(r"^\s+(uint\d*|int\d*|address|bool|bytes\d*|string|mapping)\s+").unwrap();
+            re!(r"^\s+(uint\d*|int\d*|address|bool|bytes\d*|string|mapping)\s+");
 
         let has_state_vars = content.lines().any(|line| state_var_pattern.is_match(line));
 
         if has_state_vars {
-            let contract_pattern = Regex::new(r"contract\s+(\w+)\s+is").unwrap();
+            let contract_pattern = re!(r"contract\s+(\w+)\s+is");
             for (idx, line) in content.lines().enumerate() {
                 if let Some(caps) = contract_pattern.captures(line) {
                     if line.contains("Upgradeable") || line.contains("Initializable") {
@@ -3942,9 +3969,7 @@ impl AdvancedAnalyzer {
         }
 
         // Look for critical admin functions
-        let admin_fn_pattern = Regex::new(
-            r"function\s+(setFee|updateFee|changeFee|setOracle|updateOracle|setAdmin|changeAdmin|setReward|updateReward|setTreasury|setReceiver|setPauser|setMinter|changeOwner)\s*\([^)]*\)\s+(?:external|public)"
-        ).unwrap();
+        let admin_fn_pattern = re!(r"function\s+(setFee|updateFee|changeFee|setOracle|updateOracle|setAdmin|changeAdmin|setReward|updateReward|setTreasury|setReceiver|setPauser|setMinter|changeOwner)\s*\([^)]*\)\s+(?:external|public)");
 
         for (idx, line) in content.lines().enumerate() {
             if admin_fn_pattern.is_match(line) {
@@ -3993,9 +4018,7 @@ impl AdvancedAnalyzer {
         }
 
         // Detect explicit downcasts of non-constant expressions in financial contexts
-        let downcast_pattern = Regex::new(
-            r"\b(uint(?:8|16|32|48|64|96|128)|int(?:8|16|32|48|64|96|128))\s*\(\s*(\w+(?:\.\w+|\[\w+\])*)\s*\)"
-        ).unwrap();
+        let downcast_pattern = re!(r"\b(uint(?:8|16|32|48|64|96|128)|int(?:8|16|32|48|64|96|128))\s*\(\s*(\w+(?:\.\w+|\[\w+\])*)\s*\)");
 
         let financial_vars = [
             "amount",
@@ -4067,7 +4090,7 @@ impl AdvancedAnalyzer {
 
         if !has_erc165 {
             // Find the contract declaration line
-            let contract_pattern = Regex::new(r"contract\s+(\w+)").unwrap();
+            let contract_pattern = re!(r"contract\s+(\w+)");
             for (idx, line) in content.lines().enumerate() {
                 if let Some(caps) = contract_pattern.captures(line) {
                     if !line.trim().starts_with("//") {
@@ -4097,7 +4120,7 @@ impl AdvancedAnalyzer {
 
         // Check for initialize function
         let init_pattern =
-            Regex::new(r"function\s+initialize\s*\([^)]*\)\s+(?:external|public)").unwrap();
+            re!(r"function\s+initialize\s*\([^)]*\)\s+(?:external|public)");
 
         let lines: Vec<&str> = content.lines().collect();
         for (idx, line) in lines.iter().enumerate() {
@@ -4121,7 +4144,7 @@ impl AdvancedAnalyzer {
                             || full_sig.contains("onlyAdmin")
                             || full_sig.contains("onlyRole")
                             || full_sig.contains("auth")
-                            || Regex::new(r"\bonly\w+").unwrap().is_match(&full_sig);
+                            || re!(r"\bonly\w+").is_match(&full_sig);
 
                         // Check function body for re-init guard (require(x == 0))
                         let func_end = (idx + 15).min(lines.len());
@@ -4170,10 +4193,7 @@ impl AdvancedAnalyzer {
         }
 
         // Check for state variables
-        let has_state = Regex::new(
-            r"^\s+(?:uint|int|address|bool|bytes|string|mapping)\w*\s+(?:public|private|internal)",
-        )
-        .unwrap()
+        let has_state = re!(r"^\s+(?:uint|int|address|bool|bytes|string|mapping)\w*\s+(?:public|private|internal)")
         .is_match(content);
 
         if has_state {
@@ -4234,11 +4254,8 @@ impl AdvancedAnalyzer {
     fn detect_multicall_state_reset(&self, content: &str) -> Vec<Vulnerability> {
         let mut vulns = Vec::new();
         let multicall_re =
-            Regex::new(r"(?i)function\s+(cook|multicall|batch|multiCall|batchCall)\s*\(").unwrap();
-        let flag_reset_re = Regex::new(
-            r"(solvent|accrue|status|_status|locked)\s*=\s*(true|false|0|1|_NOT_ENTERED)",
-        )
-        .unwrap();
+            re!(r"(?i)function\s+(cook|multicall|batch|multiCall|batchCall)\s*\(");
+        let flag_reset_re = re!(r"(solvent|accrue|status|_status|locked)\s*=\s*(true|false|0|1|_NOT_ENTERED)");
 
         for (idx, line) in content.lines().enumerate() {
             if multicall_re.is_match(line) {
@@ -4272,7 +4289,7 @@ impl AdvancedAnalyzer {
     fn detect_inconsistent_state_reset(&self, content: &str) -> Vec<Vulnerability> {
         let mut vulns = Vec::new();
         let total_reset_re =
-            Regex::new(r"totalSupply\s*=\s*0|_totalSupply\s*=\s*0|totalShares\s*=\s*0").unwrap();
+            re!(r"totalSupply\s*=\s*0|_totalSupply\s*=\s*0|totalShares\s*=\s*0");
 
         for (idx, line) in content.lines().enumerate() {
             if total_reset_re.is_match(line) {
@@ -4312,7 +4329,7 @@ impl AdvancedAnalyzer {
     fn detect_eip7702_txorigin_bypass(&self, content: &str) -> Vec<Vulnerability> {
         let mut vulns = Vec::new();
         let txorigin_check_re =
-            Regex::new(r"(require|assert|if)\s*\(.*tx\.origin\s*==\s*msg\.sender").unwrap();
+            re!(r"(require|assert|if)\s*\(.*tx\.origin\s*==\s*msg\.sender");
 
         for (idx, line) in content.lines().enumerate() {
             if line.trim().starts_with("//") || line.trim().starts_with("*") {
@@ -4347,7 +4364,7 @@ impl AdvancedAnalyzer {
             return vulns;
         }
 
-        let transfer_send_re = Regex::new(r"\.(transfer|send)\s*\(").unwrap();
+        let transfer_send_re = re!(r"\.(transfer|send)\s*\(");
         for (idx, line) in content.lines().enumerate() {
             if line.trim().starts_with("//") {
                 continue;
@@ -4376,11 +4393,9 @@ impl AdvancedAnalyzer {
             return vulns;
         }
 
-        let view_fn_re = Regex::new(
-            r"(?i)function\s+(\w*(?:price|rate|share|value|balance|total|getRate|getPrice|convertToAssets|convertToShares)\w*)\s*\([^)]*\)\s*(?:external|public)\s+view"
-        ).unwrap();
+        let view_fn_re = re!(r"(?i)function\s+(\w*(?:price|rate|share|value|balance|total|getRate|getPrice|convertToAssets|convertToShares)\w*)\s*\([^)]*\)\s*(?:external|public)\s+view");
         let external_call_re =
-            Regex::new(r"\.(call|transfer|send)\s*[\({]|\.safeTransfer\(|\.withdraw\(").unwrap();
+            re!(r"\.(call|transfer|send)\s*[\({]|\.safeTransfer\(|\.withdraw\(");
 
         if !external_call_re.is_match(content) {
             return vulns;
@@ -4414,7 +4429,7 @@ impl AdvancedAnalyzer {
             return vulns;
         }
 
-        let contract_re = Regex::new(r"contract\s+(\w+)\s+is\s+([^{]+)").unwrap();
+        let contract_re = re!(r"contract\s+(\w+)\s+is\s+([^{]+)");
         for (idx, line) in content.lines().enumerate() {
             if let Some(caps) = contract_re.captures(line) {
                 let inheritance = caps.get(2).map_or("", |m| m.as_str());
@@ -4442,7 +4457,7 @@ impl AdvancedAnalyzer {
 
     fn detect_multicall_msg_value_reuse(&self, content: &str) -> Vec<Vulnerability> {
         let mut vulns = Vec::new();
-        let multicall_re = Regex::new(r"(?i)function\s+(multicall|batch|aggregate)\s*\(").unwrap();
+        let multicall_re = re!(r"(?i)function\s+(multicall|batch|aggregate)\s*\(");
 
         for (idx, line) in content.lines().enumerate() {
             if multicall_re.is_match(line) {
@@ -4477,7 +4492,7 @@ impl AdvancedAnalyzer {
     fn detect_fee_on_transfer(&self, content: &str) -> Vec<Vulnerability> {
         let mut vulns = Vec::new();
         let transfer_from_re =
-            Regex::new(r"\.transferFrom\s*\([^,]+,\s*[^,]+,\s*(\w+)\s*\)").unwrap();
+            re!(r"\.transferFrom\s*\([^,]+,\s*[^,]+,\s*(\w+)\s*\)");
 
         for (idx, line) in content.lines().enumerate() {
             if line.trim().starts_with("//") {
@@ -4545,11 +4560,9 @@ impl AdvancedAnalyzer {
             return vulns;
         }
 
-        let sweep_re = Regex::new(
-            r"function\s+(sweep|recover|rescue|emergencyWithdraw|drain|withdrawAll|withdrawToken|recoverToken|recoverERC20)\s*\("
-        ).unwrap();
+        let sweep_re = re!(r"function\s+(sweep|recover|rescue|emergencyWithdraw|drain|withdrawAll|withdrawToken|recoverToken|recoverERC20)\s*\(");
         let admin_mod_re =
-            Regex::new(r"(onlyOwner|onlyAdmin|onlyRole|onlyGovernance|auth)").unwrap();
+            re!(r"(onlyOwner|onlyAdmin|onlyRole|onlyGovernance|auth)");
 
         for (idx, line) in content.lines().enumerate() {
             if sweep_re.is_match(line) {
@@ -4581,9 +4594,7 @@ impl AdvancedAnalyzer {
 
     fn detect_unvalidated_crosschain_receiver(&self, content: &str) -> Vec<Vulnerability> {
         let mut vulns = Vec::new();
-        let receiver_re = Regex::new(
-            r"function\s+(_?(?:receive|execute|handle|process)(?:Message|Payload|CrossChain|FromChain)?|_nonblockingLzReceive|_ccipReceive|onMessageReceived)\s*\("
-        ).unwrap();
+        let receiver_re = re!(r"function\s+(_?(?:receive|execute|handle|process)(?:Message|Payload|CrossChain|FromChain)?|_nonblockingLzReceive|_ccipReceive|onMessageReceived)\s*\(");
 
         for (idx, line) in content.lines().enumerate() {
             if line.trim().starts_with("//") {
@@ -4665,40 +4676,33 @@ impl AdvancedAnalyzer {
             return vulns;
         }
 
-        let slash_re = Regex::new(
-            r"function\s+(slash|freezeOperator|penalize|slashOperator|slashStaker)\s*\(",
-        )
-        .unwrap();
+        let slash_re =
+            re!(r"(?i)^(slash|freezeOperator|penalize|slashOperator|slashStaker)$");
+        let delay_re =
+            re!(r"(?i)\b(delay|timelock|dispute|cooldown|veto(?:able)?|queue)\b");
 
-        for (idx, line) in content.lines().enumerate() {
-            if slash_re.is_match(line) {
-                let end = (idx + 15).min(content.lines().count());
-                let body: String = content
-                    .lines()
-                    .skip(idx)
-                    .take(end - idx)
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                let has_delay = body.contains("delay")
-                    || body.contains("timelock")
-                    || body.contains("dispute")
-                    || body.contains("cooldown")
-                    || body.contains("vetoable")
-                    || body.contains("queue");
-                if !has_delay {
-                    vulns.push(Vulnerability::new(
-                        VulnerabilitySeverity::High,
-                        VulnerabilityCategory::AVSSlashingRisk,
-                        "Slash Function Without Dispute Period".to_string(),
-                        "Slash/freeze function executes immediately without a dispute window or \
-                         timelock delay. A malicious or compromised slasher can instantly confiscate \
-                         staked funds without recourse.".to_string(),
-                        idx + 1,
-                        line.trim().to_string(),
-                        "Add a dispute/veto period (e.g., 7 days) before slash execution. Use a \
-                         two-step process: propose slash -> wait for dispute window -> execute.".to_string(),
-                    ));
-                }
+        for function in self
+            .extract_functions(content)
+            .into_iter()
+            .filter(|function| slash_re.is_match(&function.name))
+        {
+            let code_body = self.strip_comment_lines(&function.body);
+            let has_delay = delay_re.is_match(&code_body);
+            if !has_delay {
+                vulns.push(Vulnerability::new(
+                    VulnerabilitySeverity::High,
+                    VulnerabilityCategory::AVSSlashingRisk,
+                    "AVS Slash Without Timelock or Dispute Window".to_string(),
+                    "Slash/freeze function executes immediately without a dispute window or \
+                     timelock delay. A malicious or compromised slasher can instantly confiscate \
+                     staked funds without recourse."
+                        .to_string(),
+                    function.start_line,
+                    function.signature.clone(),
+                    "Add a dispute/veto period (e.g., 7 days) before slash execution. Use a \
+                     two-step process: propose slash -> wait for dispute window -> execute."
+                        .to_string(),
+                ));
             }
         }
         vulns
@@ -4720,19 +4724,15 @@ impl AdvancedAnalyzer {
             return vulns;
         };
 
-        let balance_expr_re = Regex::new(
-            r"(?:\w+\s*\.\s*)?balanceOf\s*\(\s*address\s*\(\s*this\s*\)\s*\)|address\s*\(\s*this\s*\)\s*\.\s*balance"
-        ).unwrap();
+        let balance_expr_re = re!(r"(?:\w+\s*\.\s*)?balanceOf\s*\(\s*address\s*\(\s*this\s*\)\s*\)|address\s*\(\s*this\s*\)\s*\.\s*balance");
         if !balance_expr_re.is_match(&total_assets_fn.body) {
             return vulns;
         }
 
         let state_vars = self.extract_state_variable_names(content);
-        let liability_name_re = Regex::new(
-            r"(?i)(revenue|liabil|debt|pending|accru|fee|fees|reserve|owed|obligation|claim|escrow|buffer)"
-        ).unwrap();
-        let alias_assign_re = Regex::new(r"(?:\w+\s+)?([A-Za-z_]\w*)\s*=\s*.+").unwrap();
-        let subtraction_re = Regex::new(r"-\s*([A-Za-z_]\w*)").unwrap();
+        let liability_name_re = re!(r"(?i)(revenue|liabil|debt|pending|accru|fee|fees|reserve|owed|obligation|claim|escrow|buffer)");
+        let alias_assign_re = re!(r"(?:\w+\s+)?([A-Za-z_]\w*)\s*=\s*.+");
+        let subtraction_re = re!(r"-\s*([A-Za-z_]\w*)");
         let mut balance_aliases: HashSet<String> = HashSet::new();
         let mut liability_vars: HashSet<String> = HashSet::new();
 
@@ -4771,15 +4771,10 @@ impl AdvancedAnalyzer {
             return vulns;
         }
 
-        let slash_like_re = Regex::new(
-            r"(?i)(slash|penali[sz]e|confiscat|seize|socializeLoss|reportLoss|handleLoss)",
-        )
-        .unwrap();
-        let asset_loss_re = Regex::new(
-            r"\.(?:safeTransfer|transfer|burn|safeTransferFrom)\s*\(|\b(?:_?burn|withdraw|redeem)\s*\("
-        ).unwrap();
+        let slash_like_re = re!(r"(?i)(slash|penali[sz]e|confiscat|seize|socializeLoss|reportLoss|handleLoss)");
+        let asset_loss_re = re!(r"\.(?:safeTransfer|transfer|burn|safeTransferFrom)\s*\(|\b(?:_?burn|withdraw|redeem)\s*\(");
         let writer_hint_re =
-            Regex::new(r"(?i)(buy|accru|collect|deposit|mint|harvest|fee)").unwrap();
+            re!(r"(?i)(buy|accru|collect|deposit|mint|harvest|fee)");
 
         for slash_fn in functions
             .iter()
@@ -4851,12 +4846,12 @@ impl AdvancedAnalyzer {
             return vulns;
         }
 
-        let bitshift_re = Regex::new(r"(<<|>>)\s*\d+").unwrap();
+        let clmm_shift_re = re!(r"(?i)((sqrt|price|liquidity|tick|ratio|amount)\w*.*(<<|>>)\s*\d+|(<<|>>)\s*\d+.*(sqrt|price|liquidity|tick|ratio|amount)\w*)");
         for (idx, line) in content.lines().enumerate() {
             if line.trim().starts_with("//") {
                 continue;
             }
-            if bitshift_re.is_match(line) {
+            if clmm_shift_re.is_match(line) {
                 let is_in_unchecked = {
                     let before: String =
                         content.lines().take(idx + 1).collect::<Vec<_>>().join("\n");
@@ -4873,7 +4868,7 @@ impl AdvancedAnalyzer {
                     vulns.push(Vulnerability::high_confidence(
                         VulnerabilitySeverity::Critical,
                         VulnerabilityCategory::CLMMMathOverflow,
-                        "Bit-Shift Overflow in CLMM Math".to_string(),
+                        "Unchecked Arithmetic in CLMM Tick/Price Math".to_string(),
                         "Bit-shift operation on price/liquidity/tick math without overflow validation. \
                          Bit-shifts bypass Solidity 0.8+ overflow checks. An attacker can pass extreme \
                          values causing silent overflow. Real-world: Cetus $223M exploit.".to_string(),
@@ -4892,7 +4887,7 @@ impl AdvancedAnalyzer {
     fn detect_inconsistent_rounding(&self, content: &str) -> Vec<Vulnerability> {
         let mut vulns = Vec::new();
         let lines: Vec<&str> = content.lines().collect();
-        let fn_re = Regex::new(r"function\s+\w+").unwrap();
+        let fn_re = re!(r"function\s+\w+");
         let mut func_start = 0;
         let mut brace_depth: i32 = 0;
         let mut in_function = false;
@@ -4938,7 +4933,7 @@ impl AdvancedAnalyzer {
     fn detect_donation_attack(&self, content: &str) -> Vec<Vulnerability> {
         let mut vulns = Vec::new();
         let balance_of_this_re =
-            Regex::new(r"balanceOf\s*\(\s*address\s*\(\s*this\s*\)\s*\)").unwrap();
+            re!(r"balanceOf\s*\(\s*address\s*\(\s*this\s*\)\s*\)");
 
         for (idx, line) in content.lines().enumerate() {
             if line.trim().starts_with("//") {
@@ -4994,8 +4989,7 @@ impl AdvancedAnalyzer {
         // Only flag swap/liquidity operations that actually involve price-sensitive exchanges.
         // Plain deposit() and stake() functions just transfer tokens at 1:1, no slippage risk.
         let swap_fn_re =
-            Regex::new(r"function\s+(swap|addLiquidity|removeLiquidity|zap)\s*\(([^)]*)\)")
-                .unwrap();
+            re!(r"function\s+(swap|addLiquidity|removeLiquidity|zap)\s*\(([^)]*)\)");
 
         for (idx, line) in content.lines().enumerate() {
             if line.trim().starts_with("//") {
@@ -5044,9 +5038,7 @@ impl AdvancedAnalyzer {
     fn detect_arbitrary_receiver_callback(&self, content: &str) -> Vec<Vulnerability> {
         let mut vulns = Vec::new();
         let lines: Vec<&str> = content.lines().collect();
-        let callback_re = Regex::new(
-            r"\.(onFlashLoan|onERC721Received|onERC1155Received|tokensReceived|afterExecution|callback|notify)\s*\("
-        ).unwrap();
+        let callback_re = re!(r"\.(onFlashLoan|onERC721Received|onERC1155Received|tokensReceived|afterExecution|callback|notify)\s*\(");
 
         for (idx, line) in lines.iter().enumerate() {
             if line.trim().starts_with("//") {
@@ -5055,9 +5047,7 @@ impl AdvancedAnalyzer {
             if callback_re.is_match(line) {
                 let end = (idx + 10).min(lines.len());
                 let after_callback: String = lines[(idx + 1)..end].join("\n");
-                let state_mod_re = Regex::new(
-                    r"(\w+\s*[\[.]\s*\w+\s*\]\s*=|\w+\s*=\s*[^=]|\w+\s*\+=|\w+\s*-=|totalSupply|_mint|_burn)"
-                ).unwrap();
+                let state_mod_re = re!(r"(\w+\s*[\[.]\s*\w+\s*\]\s*=|\w+\s*=\s*[^=]|\w+\s*\+=|\w+\s*-=|totalSupply|_mint|_burn)");
                 if state_mod_re.is_match(&after_callback) {
                     vulns.push(Vulnerability::new(
                         VulnerabilitySeverity::High,
@@ -5079,7 +5069,7 @@ impl AdvancedAnalyzer {
 
     fn detect_iscontract_post_pectra(&self, content: &str) -> Vec<Vulnerability> {
         let mut vulns = Vec::new();
-        let iscontract_re = Regex::new(r"(extcodesize|isContract|\.code\.length)\s*").unwrap();
+        let iscontract_re = re!(r"(extcodesize|isContract|\.code\.length)\s*");
         let auth_like_patterns = [
             "function onlyeoa",
             "function onlyhuman",
@@ -5138,7 +5128,7 @@ impl AdvancedAnalyzer {
 
     fn detect_unsafe_multicall_delegatecall(&self, content: &str) -> Vec<Vulnerability> {
         let mut vulns = Vec::new();
-        let multicall_re = Regex::new(r"(?i)function\s+(multicall|batch|aggregate)\s*\(").unwrap();
+        let multicall_re = re!(r"(?i)function\s+(multicall|batch|aggregate)\s*\(");
 
         for (idx, line) in content.lines().enumerate() {
             if multicall_re.is_match(line) {
@@ -5177,7 +5167,7 @@ impl AdvancedAnalyzer {
 
     fn extract_functions(&self, content: &str) -> Vec<ExtractedFunction> {
         let lines: Vec<&str> = content.lines().collect();
-        let fn_re = Regex::new(r"^\s*function\s+([A-Za-z_]\w*)\b").unwrap();
+        let fn_re = re!(r"^\s*function\s+([A-Za-z_]\w*)\b");
         let mut functions = Vec::new();
         let mut idx = 0;
 
@@ -5190,21 +5180,33 @@ impl AdvancedAnalyzer {
 
             let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
             let start_line = idx + 1;
-            let signature = line.trim().to_string();
+            let mut signature_lines = vec![line.trim().to_string()];
             let mut body = String::new();
             let mut brace_depth: i32 = 0;
             let mut saw_open_brace = false;
+            let mut saw_signature_terminator = line.contains(';');
             let mut end_idx = idx;
 
             for (scan_idx, scan_line) in lines.iter().enumerate().skip(idx) {
+                if scan_idx > idx && !saw_open_brace {
+                    signature_lines.push(scan_line.trim().to_string());
+                }
                 body.push_str(scan_line);
                 body.push('\n');
                 brace_depth += scan_line.matches('{').count() as i32;
                 if scan_line.contains('{') {
                     saw_open_brace = true;
                 }
+                if scan_line.contains(';') {
+                    saw_signature_terminator = true;
+                }
                 brace_depth -= scan_line.matches('}').count() as i32;
                 end_idx = scan_idx;
+
+                if !saw_open_brace && saw_signature_terminator {
+                    body.clear();
+                    break;
+                }
 
                 if saw_open_brace && brace_depth <= 0 {
                     break;
@@ -5214,7 +5216,7 @@ impl AdvancedAnalyzer {
             functions.push(ExtractedFunction {
                 name,
                 start_line,
-                signature,
+                signature: signature_lines.join(" "),
                 body,
             });
             idx = end_idx + 1;
@@ -5225,9 +5227,7 @@ impl AdvancedAnalyzer {
 
     fn extract_state_variable_names(&self, content: &str) -> HashSet<String> {
         let mut vars = HashSet::new();
-        let var_re = Regex::new(
-            r"^\s*(?:mapping\s*\([^)]+\)|address|uint\d*|int\d*|bool|bytes\d*|string|bytes)\s+(?:(?:public|private|internal|constant|immutable)\s+)*([A-Za-z_]\w*)\b"
-        ).unwrap();
+        let var_re = re!(r"^\s*(?:mapping\s*\([^)]+\)|address|uint\d*|int\d*|bool|bytes\d*|string|bytes)\s+(?:(?:public|private|internal|constant|immutable)\s+)*([A-Za-z_]\w*)\b");
 
         for line in content.lines() {
             if let Some(caps) = var_re.captures(line) {
@@ -5238,6 +5238,88 @@ impl AdvancedAnalyzer {
         }
 
         vars
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AdvancedAnalyzer;
+
+    #[test]
+    fn extract_functions_skips_interface_prototypes() {
+        let analyzer = AdvancedAnalyzer::new(false);
+        let content = r#"
+interface IERC20Like {
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address to, uint256 amount) external returns (bool);
+}
+
+contract ExampleVault {
+    uint256 public weeklyRevenue;
+
+    function buyDbr(uint256 amount) external {
+        weeklyRevenue += amount;
+    }
+
+    function slash(address receiver, uint256 amount) external {
+        receiver;
+        amount;
+    }
+}
+"#;
+
+        let functions = analyzer.extract_functions(content);
+        let names: Vec<&str> = functions.iter().map(|function| function.name.as_str()).collect();
+
+        assert_eq!(names, vec!["balanceOf", "transfer", "buyDbr", "slash"]);
+        assert!(functions[0].body.is_empty(), "interface prototype should not absorb the rest of the file");
+        assert!(functions[1].body.is_empty(), "interface prototype should not absorb the rest of the file");
+        assert!(functions[2].body.contains("weeklyRevenue += amount;"));
+        assert!(functions[3].body.contains("receiver;"));
+    }
+
+    #[test]
+    fn detects_erc4626_liability_drift_after_interface_declarations() {
+        let analyzer = AdvancedAnalyzer::new(false);
+        let content = r#"// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+interface IERC20Like {
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address to, uint256 amount) external returns (bool);
+}
+
+contract ERC4626SlashLiabilityDrift {
+    IERC20Like public asset;
+    uint256 public totalSupply;
+    uint256 public weeklyRevenue;
+
+    function buyDbr(uint256 amount) external {
+        weeklyRevenue += amount;
+    }
+
+    function slash(address receiver, uint256 amount) external {
+        require(asset.transfer(receiver, amount), "transfer failed");
+    }
+
+    function totalAssets() public view returns (uint256) {
+        uint256 assets = asset.balanceOf(address(this));
+        return assets - weeklyRevenue;
+    }
+
+    function convertToShares(uint256 assets) external view returns (uint256) {
+        if (totalSupply == 0) {
+            return assets;
+        }
+
+        return assets * totalSupply / totalAssets();
+    }
+}
+"#;
+
+        let findings = analyzer.analyze_2025_exploit_patterns(content);
+
+        assert!(findings.iter().any(|finding| finding.title == "ERC4626 Liability Drift After Slash"));
     }
 }
 
@@ -5262,7 +5344,7 @@ impl CrossContractAnalyzer {
     // Detect circular dependencies
     pub fn detect_circular_dependencies(&self) -> Vec<String> {
         let mut issues = Vec::new();
-        let import_pattern = Regex::new(r#"import\s+["']([^"']+)["']"#).unwrap();
+        let import_pattern = re!(r#"import\s+["']([^"']+)["']"#);
 
         for (contract_name, content) in &self.contracts {
             let mut imports = HashSet::new();
@@ -5291,7 +5373,7 @@ impl CrossContractAnalyzer {
     // Detect inheritance conflicts
     pub fn detect_inheritance_conflicts(&self) -> Vec<String> {
         let mut issues = Vec::new();
-        let inheritance_pattern = Regex::new(r"contract\s+\w+\s+is\s+([^{]+)").unwrap();
+        let inheritance_pattern = re!(r"contract\s+\w+\s+is\s+([^{]+)");
 
         for (contract_name, content) in &self.contracts {
             if let Some(captures) = inheritance_pattern.captures(content) {

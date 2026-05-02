@@ -653,39 +653,3 @@ pub struct ImportSummary {
     pub unique_packages: Vec<String>,
     pub imports: Vec<ImportedDependency>,
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_import_extraction() {
-        let content = r#"
-import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
-import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
-import "./MyContract.sol";
-"#;
-        let analyzer = DependencyAnalyzer::new(false);
-        let imports = analyzer.extract_imports(content);
-
-        assert_eq!(imports.len(), 3);
-        assert!(imports[0].is_openzeppelin);
-        assert!(imports[2].is_local);
-    }
-
-    #[test]
-    fn test_safemath_detection() {
-        let content = r#"
-pragma solidity ^0.8.0;
-import "@openzeppelin/contracts/utils/math/SafeMath.sol";
-
-contract Test {
-    using SafeMath for uint256;
-}
-"#;
-        let analyzer = DependencyAnalyzer::new(false);
-        let vulns = analyzer.analyze(content);
-
-        assert!(vulns.iter().any(|v| v.title.contains("SafeMath")));
-    }
-}

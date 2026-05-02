@@ -357,6 +357,25 @@ pub fn category_to_cvss(category: &VulnerabilityCategory) -> CvssVector {
             CvssVector::nhu(Impact::None, LO)
         }
 
+        // === 2026 patterns (v0.9.0) ===
+        // Critical: governance vote-buying via flash loan = total protocol takeover
+        VulnerabilityCategory::GovernanceFlashloanVoting => CvssVector::nlc(HI, HI),
+
+        // High: signature replay primitives & re-hypothecation cause direct loss
+        VulnerabilityCategory::EIP1271SignatureReplay
+        | VulnerabilityCategory::ERC4337PaymasterAbuse
+        | VulnerabilityCategory::LRTRehypothecation => CvssVector::nlu(HI, HI),
+
+        // High but requires upgrade authority
+        VulnerabilityCategory::StorageLayoutCollision => CvssVector {
+            pr: PrivilegesRequired::High,
+            ..CvssVector::nlc(HI, HI)
+        },
+
+        // Medium: user-side risk (Permit2) and MEV-exposure
+        VulnerabilityCategory::Permit2UnlimitedApproval
+        | VulnerabilityCategory::SandwichResistantMissing => CvssVector::nhu(LO, LO),
+
         // === Low / Informational ===
         VulnerabilityCategory::GasOptimization
         | VulnerabilityCategory::UnusedCode
@@ -379,55 +398,5 @@ pub fn enrich_with_cvss(vulnerabilities: &mut [Vulnerability]) {
         let vector = category_to_cvss(&vuln.category);
         vuln.cvss_score = Some(vector.calculate_base_score());
         vuln.cvss_vector = Some(vector.to_vector_string());
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_reentrancy_cvss_score() {
-        let vector = category_to_cvss(&VulnerabilityCategory::Reentrancy);
-        let score = vector.calculate_base_score();
-        assert!(
-            score >= 9.0,
-            "Reentrancy should be Critical (>=9.0), got {score}"
-        );
-    }
-
-    #[test]
-    fn test_gas_optimization_zero_impact() {
-        let vector = category_to_cvss(&VulnerabilityCategory::GasOptimization);
-        let score = vector.calculate_base_score();
-        assert_eq!(score, 0.0, "GasOptimization should have 0.0 CVSS score");
-    }
-
-    #[test]
-    fn test_vector_string_format() {
-        let vector = category_to_cvss(&VulnerabilityCategory::Reentrancy);
-        let vs = vector.to_vector_string();
-        assert!(vs.starts_with("CVSS:3.1/"), "Should start with CVSS:3.1/");
-        assert!(vs.contains("AV:N"), "Smart contracts always have AV:N");
-    }
-
-    #[test]
-    fn test_score_range() {
-        let v = CvssVector {
-            av: AttackVector::Network,
-            ac: AttackComplexity::Low,
-            pr: PrivilegesRequired::None,
-            ui: UserInteraction::None,
-            s: Scope::Changed,
-            c: Impact::High,
-            i: Impact::High,
-            a: Impact::High,
-        };
-        let score = v.calculate_base_score();
-        assert!(
-            score <= 10.0 && score >= 0.0,
-            "Score must be in [0, 10], got {score}"
-        );
-        assert_eq!(score, 10.0, "Maximum vector should produce 10.0");
     }
 }

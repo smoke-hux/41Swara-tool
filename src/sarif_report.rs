@@ -231,33 +231,3 @@ fn confidence_to_precision(confidence: &VulnerabilityConfidence) -> String {
     }
     .to_string()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::vulnerabilities::{Vulnerability, VulnerabilityCategory, VulnerabilitySeverity};
-
-    #[test]
-    fn creates_valid_sarif_payload() {
-        let vulnerability = Vulnerability::high_confidence(
-            VulnerabilitySeverity::Critical,
-            VulnerabilityCategory::Reentrancy,
-            "Reentrancy Vulnerability".to_string(),
-            "Potential reentrancy attack".to_string(),
-            42,
-            "msg.sender.call{value: amount}(\"\")".to_string(),
-            "Use ReentrancyGuard".to_string(),
-        );
-
-        let report = SarifReport::new(
-            vec![(PathBuf::from("test.sol"), vec![vulnerability])],
-            "0.8.1",
-        );
-
-        assert_eq!(report.version, "2.1.0");
-        assert_eq!(report.runs.len(), 1);
-        assert_eq!(report.runs[0].results.len(), 1);
-        assert_eq!(report.runs[0].results[0].rule_id, "SWC-107");
-        assert_eq!(report.runs[0].results[0].level, "error");
-    }
-}

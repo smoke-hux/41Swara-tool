@@ -292,30 +292,3 @@
 //         },
 //     }
 // }
-
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
-
-//     #[test]
-//     fn test_sarif_creation() {
-//         let vuln = Vulnerability::high_confidence(
-//             VulnerabilitySeverity::Critical,
-//             VulnerabilityCategory::Reentrancy,
-//             "Reentrancy Vulnerability".to_string(),
-//             "Potential reentrancy attack".to_string(),
-//             42,
-//             "msg.sender.call{value: amount}(\"\")".to_string(),
-//             "Use ReentrancyGuard".to_string(),
-//         );
-
-//         let results = vec![(PathBuf::from("test.sol"), vec![vuln])];
-//         let report = SarifReport::new(results, "0.2.0");
-
-//         assert_eq!(report.version, "2.1.0");
-//         assert_eq!(report.runs.len(), 1);
-//         assert_eq!(report.runs[0].results.len(), 1);
-//         assert_eq!(report.runs[0].results[0].rule_id, "SWC-107");
-//         assert_eq!(report.runs[0].results[0].level, "error");
-//     }
-// }

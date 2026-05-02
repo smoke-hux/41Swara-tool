@@ -58,6 +58,8 @@ pub struct DetailedFinding {
     pub attack_path: Option<String>,
     /// Remediation priority label (P1/P2/P3).
     pub priority: String,
+    /// Composite risk score (CVSS x confidence x exploit-history), 0.0 - 10.0.
+    pub risk_score: f64,
 }
 
 impl ProfessionalReporter {
@@ -116,23 +118,13 @@ impl ProfessionalReporter {
         let code_snippet = vuln.code_snippet.clone();
         let category = vuln.category.clone();
 
-        // Calculate priority: CVSS * confidence / 100, bucketed
+        // Composite priority via Vulnerability::risk_score (CVSS x confidence x exploit history)
         let cvss_score = vuln.cvss_score;
         let cvss_vector = vuln.cvss_vector.clone();
         let exploit_references = vuln.exploit_references.clone();
         let attack_path = vuln.attack_path.clone();
-        let priority = if let Some(cvss) = cvss_score {
-            let ps = cvss * vuln.confidence_percent as f64 / 100.0;
-            if ps >= 7.0 {
-                "P1 - Immediate".to_string()
-            } else if ps >= 4.0 {
-                "P2 - Short-term".to_string()
-            } else {
-                "P3 - Backlog".to_string()
-            }
-        } else {
-            "P3 - Backlog".to_string()
-        };
+        let priority = vuln.priority_label().to_string();
+        let risk_score = vuln.risk_score();
 
         DetailedFinding {
             id,
@@ -145,7 +137,7 @@ impl ProfessionalReporter {
             impact,
             proof_of_concept,
             recommended_mitigation,
-            tools_used: "41Swara Smart Contract Scanner v0.8.1".to_string(),
+            tools_used: "41Swara Smart Contract Scanner v0.9.0".to_string(),
             line_number,
             code_snippet,
             category,
@@ -154,6 +146,7 @@ impl ProfessionalReporter {
             exploit_references,
             attack_path,
             priority,
+            risk_score,
         }
     }
 
@@ -570,13 +563,11 @@ function {}(string memory data) external {{
             "INFORMATIONAL"
         };
 
-        // Top 3 most severe findings
+        // Top findings ranked by composite risk score (CVSS x confidence x exploit history)
         let mut sorted = self.findings.clone();
         sorted.sort_by(|a, b| {
-            let a_score = a.cvss_score.unwrap_or(0.0);
-            let b_score = b.cvss_score.unwrap_or(0.0);
-            b_score
-                .partial_cmp(&a_score)
+            b.risk_score
+                .partial_cmp(&a.risk_score)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
 
@@ -587,18 +578,19 @@ function {}(string memory data) external {{
         ));
 
         if !sorted.is_empty() {
-            exec.push_str("### Top Findings by Severity\n\n");
-            exec.push_str("| # | Finding | CVSS | Priority |\n");
-            exec.push_str("|---|---------|------|----------|\n");
+            exec.push_str("### Top Findings by Risk Score\n\n");
+            exec.push_str("| # | Finding | Risk | CVSS | Priority |\n");
+            exec.push_str("|---|---------|------|------|----------|\n");
             for (i, f) in sorted.iter().take(5).enumerate() {
                 let cvss = f
                     .cvss_score
                     .map(|s| format!("{s:.1}"))
                     .unwrap_or_else(|| "-".into());
                 exec.push_str(&format!(
-                    "| {} | {} | {} | {} |\n",
+                    "| {} | {} | {:.1} | {} | {} |\n",
                     i + 1,
                     f.title,
+                    f.risk_score,
                     cvss,
                     f.priority
                 ));
@@ -620,16 +612,17 @@ function {}(string memory data) external {{
     fn generate_priority_matrix(&self) -> String {
         let mut matrix = String::from("## Remediation Priority Matrix\n\n");
         matrix.push_str(
-            "Sorted by priority score (CVSS x Confidence). Fix P1 items before deployment.\n\n",
+            "Sorted by composite **Risk Score** (CVSS x Confidence x Exploit-history). \
+             Fix P1 items before deployment.\n\n",
         );
-        matrix.push_str("| Priority | ID | Finding | CVSS | Confidence | Exploits Known |\n");
-        matrix.push_str("|----------|-----|---------|------|------------|----------------|\n");
+        matrix.push_str("| Priority | Risk | ID | Finding | CVSS | Exploits Known |\n");
+        matrix.push_str("|----------|------|-----|---------|------|----------------|\n");
 
         let mut sorted = self.findings.clone();
         sorted.sort_by(|a, b| {
-            let a_ps = a.cvss_score.unwrap_or(0.0) * 0.9; // proxy for priority
-            let b_ps = b.cvss_score.unwrap_or(0.0) * 0.9;
-            b_ps.partial_cmp(&a_ps).unwrap_or(std::cmp::Ordering::Equal)
+            b.risk_score
+                .partial_cmp(&a.risk_score)
+                .unwrap_or(std::cmp::Ordering::Equal)
         });
 
         for f in &sorted {
@@ -650,8 +643,8 @@ function {}(string memory data) external {{
                 "P3"
             };
             matrix.push_str(&format!(
-                "| {} | {} | {} | {} | - | {} |\n",
-                priority_short, f.id, f.title, cvss, exploits
+                "| {} | {:.1} | {} | {} | {} | {} |\n",
+                priority_short, f.risk_score, f.id, f.title, cvss, exploits
             ));
         }
 
@@ -838,12 +831,16 @@ The audit covered the complete smart contract codebase, including:
     fn generate_detailed_findings(&self) -> String {
         let mut report = String::new();
 
-        // Sort findings by severity
+        // Group by severity (Critical → Info), then within each severity sort by risk_score desc
         let mut sorted_findings = self.findings.clone();
         sorted_findings.sort_by(|a, b| {
             let a_severity = self.severity_to_number(&a.severity);
             let b_severity = self.severity_to_number(&b.severity);
-            a_severity.cmp(&b_severity)
+            a_severity.cmp(&b_severity).then_with(|| {
+                b.risk_score
+                    .partial_cmp(&a.risk_score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
         });
 
         let mut current_severity = None;

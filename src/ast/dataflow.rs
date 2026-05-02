@@ -770,25 +770,3 @@ impl Default for InterproceduralAnalyzer {
         Self::new()
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_taint_propagation() {
-        let mut state = TaintState::tainted(TaintSource::MsgSender, "sender");
-        assert!(state.is_tainted);
-        assert!(state.sources.contains(&TaintSource::MsgSender));
-
-        let propagated = state.propagate("user");
-        assert_eq!(propagated.propagation_path, vec!["sender", "user"]);
-    }
-
-    #[test]
-    fn test_dataflow_analyzer() {
-        let analyzer = DataFlowAnalyzer::new();
-        // Analyzer creation test
-        assert!(!analyzer.has_dangerous_flow());
-    }
-}

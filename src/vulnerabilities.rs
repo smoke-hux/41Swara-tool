@@ -233,6 +233,55 @@ impl Vulnerability {
         self
     }
 
+    /// Composite risk score on a 0..=10 scale, used to rank findings by exploitability
+    /// rather than by raw severity label.
+    ///
+    /// Combines CVSS base, confidence, and known-exploit history:
+    ///   `risk = CVSS * (0.5 + 0.5 * confidence/100) * exploit_multiplier`
+    ///
+    /// Where:
+    /// - confidence acts as a half-weight scaler — a 100%-confident bug retains its full
+    ///   CVSS, a 50%-confident bug counts at 75% — so noisy heuristics never outrank
+    ///   high-confidence findings of the same nominal severity.
+    /// - `exploit_multiplier` is 1.20 when `exploit_references` is non-empty, capping at 10.0.
+    ///   Patterns with documented real-world exploits (Cetus, Balancer, etc.) get a small
+    ///   boost over equivalent-CVSS findings without precedent.
+    ///
+    /// Findings with no CVSS score fall back to a coarse mapping from severity.
+    pub fn risk_score(&self) -> f64 {
+        let base = self.cvss_score.unwrap_or(match self.severity {
+            VulnerabilitySeverity::Critical => 9.0,
+            VulnerabilitySeverity::High => 7.0,
+            VulnerabilitySeverity::Medium => 4.5,
+            VulnerabilitySeverity::Low => 2.0,
+            VulnerabilitySeverity::Info => 0.5,
+        });
+        let conf = (self.confidence_percent as f64 / 100.0).clamp(0.0, 1.0);
+        let conf_factor = 0.5 + 0.5 * conf;
+        let exploit_mult = if self.exploit_references.is_empty() {
+            1.0
+        } else {
+            1.20
+        };
+        (base * conf_factor * exploit_mult).min(10.0)
+    }
+
+    /// Bucketed remediation priority derived from `risk_score()`.
+    ///
+    /// - `P1 - Immediate`: risk >= 7.0 (must fix before deploy / launch)
+    /// - `P2 - Short-term`: risk >= 4.0 (fix in next sprint)
+    /// - `P3 - Backlog`: everything else
+    pub fn priority_label(&self) -> &'static str {
+        let r = self.risk_score();
+        if r >= 7.0 {
+            "P1 - Immediate"
+        } else if r >= 4.0 {
+            "P2 - Short-term"
+        } else {
+            "P3 - Backlog"
+        }
+    }
+
     /// Extract context from content given a line number
     pub fn extract_context(
         content: &str,
@@ -583,6 +632,22 @@ pub enum VulnerabilityCategory {
     IsContractPostPectra,
     /// 41S-077: multicall with delegatecall without msg.value isolation.
     UnsafeMulticallDelegatecall,
+
+    // --- 2026 Exploit Patterns (v0.9.0) ---
+    /// 41S-078: ERC-4337 paymaster validation without context revoke / replay guard.
+    ERC4337PaymasterAbuse,
+    /// 41S-079: EIP-1271 isValidSignature without nonce / replay protection.
+    EIP1271SignatureReplay,
+    /// 41S-080: Permit2 used with type(uint).max allowance and no expiration.
+    Permit2UnlimitedApproval,
+    /// 41S-081: LRT/restaking re-hypothecation - same collateral counted twice.
+    LRTRehypothecation,
+    /// 41S-082: Storage layout collision risk from inheritance reorder in upgradeable proxy.
+    StorageLayoutCollision,
+    /// 41S-083: Governance vote-buying via flash loan without snapshot/checkpoint.
+    GovernanceFlashloanVoting,
+    /// 41S-084: Sandwich/MEV exposure on price-sensitive write without commit-reveal or TWAP.
+    SandwichResistantMissing,
 }
 
 impl VulnerabilityCategory {
@@ -1054,6 +1119,43 @@ impl VulnerabilityCategory {
                 "41S-077",
                 "Unsafe Multicall Delegatecall",
                 Some("CWE-841"),
+            )),
+
+            // 2026 exploit patterns (v0.9.0)
+            VulnerabilityCategory::ERC4337PaymasterAbuse => Some(SwcId::new(
+                "41S-078",
+                "ERC-4337 Paymaster Abuse",
+                Some("CWE-345"),
+            )),
+            VulnerabilityCategory::EIP1271SignatureReplay => Some(SwcId::new(
+                "41S-079",
+                "EIP-1271 Signature Replay",
+                Some("CWE-294"),
+            )),
+            VulnerabilityCategory::Permit2UnlimitedApproval => Some(SwcId::new(
+                "41S-080",
+                "Permit2 Unlimited Approval",
+                Some("CWE-863"),
+            )),
+            VulnerabilityCategory::LRTRehypothecation => Some(SwcId::new(
+                "41S-081",
+                "LRT Re-Hypothecation",
+                Some("CWE-682"),
+            )),
+            VulnerabilityCategory::StorageLayoutCollision => Some(SwcId::new(
+                "41S-082",
+                "Upgradeable Storage Layout Collision",
+                Some("CWE-665"),
+            )),
+            VulnerabilityCategory::GovernanceFlashloanVoting => Some(SwcId::new(
+                "41S-083",
+                "Governance Flash-Loan Voting",
+                Some("CWE-345"),
+            )),
+            VulnerabilityCategory::SandwichResistantMissing => Some(SwcId::new(
+                "41S-084",
+                "Missing Sandwich Resistance",
+                Some("CWE-362"),
             )),
 
             // Info/Quality categories (no standard SWC)
@@ -3145,6 +3247,89 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
         false,
     ).unwrap());
 
+    // ====================================================================
+    // 2026 Exploit Patterns (v0.9.0) - 41S-078..084
+    // ====================================================================
+
+    // 41S-078: ERC-4337 paymaster validation accepts any user op without nonce/replay guard
+    // Multiline because solc style commonly wraps `external` modifier onto its own line.
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::ERC4337PaymasterAbuse,
+        VulnerabilitySeverity::High,
+        r"function\s+validatePaymasterUserOp\s*\([^)]*\)[^{;]*(?:external|public)",
+        "ERC-4337 Paymaster Validation".to_string(),
+        "Paymaster validatePaymasterUserOp must enforce sender allowlist, signature freshness, and gas budget caps. Misconfigured paymasters have been drained by adversarial bundlers.".to_string(),
+        "Validate userOpHash against signed nonce, enforce per-sender daily budget, and revert on stale signatures (deadline). Pin verifying signer in storage.".to_string(),
+        true,
+    ).unwrap());
+
+    // 41S-079: EIP-1271 isValidSignature without replay/nonce
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::EIP1271SignatureReplay,
+        VulnerabilitySeverity::High,
+        r"function\s+isValidSignature\s*\([^)]*bytes(?:32)?[^)]*,\s*bytes[^)]*\)\s+(?:external|public)\s+view",
+        "EIP-1271 Signature Without Nonce Tracking".to_string(),
+        "Smart-wallet isValidSignature returning MAGICVALUE without nonce or used-hash tracking allows the same signature to authorize repeat actions across protocols.".to_string(),
+        "Track consumed signature hashes (mapping(bytes32 => bool)) and require deadlines. Bind sigs to chainId+verifyingContract via EIP-712.".to_string(),
+        false,
+    ).unwrap());
+
+    // 41S-080: Permit2 with unlimited (type(uint).max / max uint160) approval
+    // Use a wider span; the call site may include nested address(this), commas, etc.
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::Permit2UnlimitedApproval,
+        VulnerabilitySeverity::Medium,
+        r"(?i)permit2?\s*\.\s*approve\s*\([^;]*?type\s*\(\s*uint(?:160|256)?\s*\)\s*\.\s*max",
+        "Permit2 Unlimited Allowance".to_string(),
+        "Granting Permit2 a type(uint).max allowance bypasses the per-spender expiration model and converts a UX optimisation into a permanent drain primitive if any approved spender is compromised.".to_string(),
+        "Set finite amount with explicit expiration (uint48). Re-approve per-session rather than persisting infinite approval.".to_string(),
+        true,
+    ).unwrap());
+
+    // 41S-081: LRT re-hypothecation pattern - asset accounted twice
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::LRTRehypothecation,
+        VulnerabilitySeverity::High,
+        r"(?i)function\s+\w*(?:restake|delegate|deposit)\w*\s*\([^)]*\)\s+(?:external|public)[^{]*\{[^}]*(?:totalAssets|totalSupply|totalShares)\s*\+=",
+        "Possible LRT Re-Hypothecation".to_string(),
+        "Liquid restaking deposits that increment totalAssets/totalShares without a withdrawal queue or per-operator cap allow the same collateral to back multiple AVS commitments. EigenLayer-style accounting must net out outstanding obligations.".to_string(),
+        "Track delegated-amount per operator separately, require withdrawal queue with delay, and validate (totalAssets - delegated) >= pendingRedemptions.".to_string(),
+        true,
+    ).unwrap());
+
+    // 41S-082: Storage layout collision in upgradeable contracts (inheritance reorder)
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::StorageLayoutCollision,
+        VulnerabilitySeverity::High,
+        r"contract\s+\w+\s+is\s+[A-Za-z_][A-Za-z0-9_]*(?:\s*,\s*[A-Za-z_][A-Za-z0-9_]*){2,}[^{]*Upgradeable",
+        "Upgradeable Storage Layout Risk".to_string(),
+        "Multi-inheritance upgradeable contracts must keep the inheritance order stable across upgrades. Inserting or reordering parents shifts storage slots and corrupts state.".to_string(),
+        "Pin inheritance order, add per-base __gap[50], and run `forge inspect storage-layout` diff in CI between versions.".to_string(),
+        false,
+    ).unwrap());
+
+    // 41S-083: Governance vote based on current balance (flash-loan vote-buying)
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::GovernanceFlashloanVoting,
+        VulnerabilitySeverity::Critical,
+        r"(?i)function\s+(?:vote|castVote)\w*\s*\([^)]*\)[^{]*\{[^}]*balanceOf\s*\(\s*msg\.sender\s*\)",
+        "Governance Vote Uses Live balanceOf".to_string(),
+        "Reading balanceOf(msg.sender) at vote time lets an attacker borrow tokens via flash loan, vote, then repay in the same tx. Governance must use checkpointed/snapshotted balances at proposal creation.".to_string(),
+        "Use ERC20Votes (getPastVotes at proposal snapshot block) or Compound Bravo style checkpoints. Never read live balanceOf inside vote().".to_string(),
+        true,
+    ).unwrap());
+
+    // 41S-084: Price-sensitive write without commit-reveal / TWAP / minOut
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::SandwichResistantMissing,
+        VulnerabilitySeverity::Medium,
+        r"(?i)function\s+\w*(?:rebalance|harvest|compound|skim|rebase)\w*\s*\([^)]*\)\s+(?:external|public)",
+        "MEV-Exposed Rebalance/Harvest".to_string(),
+        "Public rebalance/harvest/compound entrypoints that touch AMM pools without a TWAP guard or commit-reveal can be sandwiched. Searchers extract value at LP expense each call.".to_string(),
+        "Restrict to keeper role, or enforce a TWAP price band (Chainlink/Univ3 oracle deviation < N bps) before pool interaction. For public callers add minOut/maxIn slippage params.".to_string(),
+        false,
+    ).unwrap());
+
     rules
 }
 
@@ -3320,6 +3505,14 @@ impl VulnerabilityCategory {
             VulnerabilityCategory::ArbitraryReceiverCallback => "Arbitrary Receiver Callback",
             VulnerabilityCategory::IsContractPostPectra => "isContract Post-Pectra",
             VulnerabilityCategory::UnsafeMulticallDelegatecall => "Unsafe Multicall Delegatecall",
+            // 2026 exploit patterns (v0.9.0)
+            VulnerabilityCategory::ERC4337PaymasterAbuse => "ERC-4337 Paymaster Abuse",
+            VulnerabilityCategory::EIP1271SignatureReplay => "EIP-1271 Signature Replay",
+            VulnerabilityCategory::Permit2UnlimitedApproval => "Permit2 Unlimited Approval",
+            VulnerabilityCategory::LRTRehypothecation => "LRT Re-Hypothecation",
+            VulnerabilityCategory::StorageLayoutCollision => "Upgradeable Storage Layout Collision",
+            VulnerabilityCategory::GovernanceFlashloanVoting => "Governance Flash-Loan Voting",
+            VulnerabilityCategory::SandwichResistantMissing => "Missing Sandwich Resistance",
         }
     }
 }

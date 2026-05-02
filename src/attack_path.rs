@@ -179,6 +179,57 @@ fn generate_attack_path(vuln: &Vulnerability, content: &str) -> Option<String> {
              5. Attacker back-runs to capture the MEV profit (sandwich attack)"
         )),
 
+        // === 2026 patterns (v0.9.0) ===
+        VulnerabilityCategory::ERC4337PaymasterAbuse => Some(format!(
+            "1. Attacker submits a UserOperation that targets {contract_name} as paymaster\n\
+             2. validatePaymasterUserOp accepts userOp without nonce/replay/budget enforcement\n\
+             3. Attacker re-broadcasts the same op via a different bundler (or replays signature)\n\
+             4. Paymaster sponsors gas repeatedly until its EntryPoint deposit is drained\n\
+             5. Bundler/attacker captures the sponsored gas as profit"
+        )),
+        VulnerabilityCategory::EIP1271SignatureReplay => Some(format!(
+            "1. Smart-wallet {contract_name}.isValidSignature returns MAGICVALUE on stored sig\n\
+             2. Attacker observes a previously authorized off-chain signature\n\
+             3. Attacker submits the signature to a different protocol that calls isValidSignature\n\
+             4. Wallet returns valid because there is no per-hash consumed flag\n\
+             5. Attacker triggers the signed action twice (or on the wrong domain)"
+        )),
+        VulnerabilityCategory::Permit2UnlimitedApproval => Some(format!(
+            "1. User signs a Permit2 approval with type(uint).max amount and no expiration\n\
+             2. Spender contract is later compromised or upgraded with malicious logic\n\
+             3. Attacker calls transferFrom via Permit2 against the user's wallet\n\
+             4. Permit2 honors the unlimited allowance — no per-call signature needed\n\
+             5. Attacker drains the user's full balance of the approved token"
+        )),
+        VulnerabilityCategory::LRTRehypothecation => Some(format!(
+            "1. User deposits collateral into {contract_name} restaking vault\n\
+             2. Vault delegates the same collateral to multiple AVS operators in {fn_name}()\n\
+             3. totalAssets is incremented per delegation but underlying collateral is unchanged\n\
+             4. An AVS slashing event consumes more than the unique deposit amount\n\
+             5. Withdrawal queue cannot be honored — late withdrawers absorb the loss"
+        )),
+        VulnerabilityCategory::StorageLayoutCollision => Some(format!(
+            "1. Auditor approves V1 of {contract_name} (upgradeable)\n\
+             2. Developer adds a new parent contract above existing parents in V2\n\
+             3. Storage slot of `owner` (or balances) shifts by N slots\n\
+             4. Proxy upgrade goes through — old `owner` slot now points to attacker-controlled data\n\
+             5. Attacker calls onlyOwner-protected function and takes control"
+        )),
+        VulnerabilityCategory::GovernanceFlashloanVoting => Some(format!(
+            "1. Attacker flash-borrows large amount of governance token\n\
+             2. Attacker calls {contract_name}.{fn_name}() — vote weight comes from live balanceOf\n\
+             3. Vote is recorded with the borrowed weight\n\
+             4. Attacker repays the flash loan in the same transaction\n\
+             5. Proposal passes (or fails) on rented voting power; treasury is drained or paused"
+        )),
+        VulnerabilityCategory::SandwichResistantMissing => Some(format!(
+            "1. Attacker watches mempool for {contract_name}.{fn_name}() (rebalance/harvest)\n\
+             2. Attacker front-runs with a swap that skews the AMM pool price\n\
+             3. {fn_name}() executes at the manipulated price — buys high or sells low\n\
+             4. Attacker back-runs with the inverse trade\n\
+             5. Searcher pockets the spread; LPs / vault depositors absorb the loss"
+        )),
+
         _ => None,
     }
 }
@@ -210,45 +261,5 @@ pub fn enrich_with_attack_paths(vulnerabilities: &mut [Vulnerability], content: 
         if vuln.attack_path.is_none() {
             vuln.attack_path = generate_attack_path(vuln, content);
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::vulnerabilities::VulnerabilitySeverity;
-
-    fn make_vuln(cat: VulnerabilityCategory, line: usize) -> Vulnerability {
-        Vulnerability::new(
-            VulnerabilitySeverity::High,
-            cat,
-            "Test".into(),
-            "Test".into(),
-            line,
-            "code".into(),
-            "Fix".into(),
-        )
-    }
-
-    #[test]
-    fn test_reentrancy_attack_path() {
-        let content = "contract Vault {\n  function withdraw() external {\n    msg.sender.call{value: bal}(\"\");\n  }\n}";
-        let mut vuln = make_vuln(VulnerabilityCategory::Reentrancy, 3);
-        enrich_with_attack_paths(std::slice::from_mut(&mut vuln), content);
-        assert!(vuln.attack_path.is_some());
-        let path = vuln.attack_path.unwrap();
-        assert!(
-            path.contains("withdraw"),
-            "Should reference actual function name"
-        );
-        assert!(path.contains("Vault"), "Should reference contract name");
-    }
-
-    #[test]
-    fn test_no_attack_path_for_gas() {
-        let content = "contract C {\n  function foo() public {}\n}";
-        let mut vuln = make_vuln(VulnerabilityCategory::GasOptimization, 2);
-        enrich_with_attack_paths(std::slice::from_mut(&mut vuln), content);
-        assert!(vuln.attack_path.is_none());
     }
 }

@@ -994,17 +994,3 @@ impl Default for CFGBuilder {
         Self::new()
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_cfg_construction() {
-        let builder = CFGBuilder::new();
-
-        // Test would construct a function and build CFG
-        // For now, just verify the builder can be created
-        assert!(true);
-    }
-}
