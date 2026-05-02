@@ -819,13 +819,11 @@ VulnerabilityCategory::YourCategory => {
 echo 'pragma solidity ^0.8.0;
 contract Test {
     // Add code that should trigger your rule
-}' > test_contracts/YourTest.sol
+}' > /tmp/YourTest.sol
 
-# Build and test
-cargo build && cargo run --bin 41swara -- test_contracts/YourTest.sol -v
-
-# Run the test suite
-cargo test
+# Build and scan
+cargo build --release
+cargo run --bin 41swara -- /tmp/YourTest.sol -v
 ```
 
 ### Regex Tips for Solidity Patterns
@@ -1117,8 +1115,8 @@ Check if the finding is about your code that interacts with OZ, not the OZ libra
 See [Section 10: Adding Custom Rules](#10-adding-custom-rules). In summary:
 1. Add regex rule to `src/vulnerabilities.rs`
 2. Add context filtering to `src/scanner.rs` if needed
-3. Create a test contract in `test_contracts/`
-4. Run `cargo test` and `cargo build`
+3. Create a sample contract outside the repository tree
+4. Run `cargo build --release` and scan the sample contract
 5. Submit a PR
 
 ---

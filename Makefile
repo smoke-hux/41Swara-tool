@@ -5,7 +5,7 @@ PREFIX ?= /usr/local
 BINDIR ?= $(PREFIX)/bin
 MANDIR ?= $(PREFIX)/share/man/man1
 
-.PHONY: all build release install install-bin install-man uninstall clean test help
+.PHONY: all build release install install-bin install-man uninstall clean help
 
 all: build
 
@@ -16,10 +16,6 @@ build:
 # Build release version (optimized)
 release:
 	cargo build --release
-
-# Run tests
-test:
-	cargo test
 
 # Install everything (binary + man pages)
 install: install-bin install-man
@@ -90,7 +86,6 @@ help:
 	@echo "  all           Build debug version (default)"
 	@echo "  build         Build debug version"
 	@echo "  release       Build optimized release version"
-	@echo "  test          Run test suite"
 	@echo "  install       Install binary and man pages (requires sudo)"
 	@echo "  install-user  Install to ~/.local (no sudo required)"
 	@echo "  install-bin   Install binary only"

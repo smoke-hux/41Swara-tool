@@ -281,8 +281,8 @@ security-scan:
 ```bash
 git clone https://github.com/41swara/smart-contract-scanner
 cd smart-contract-scanner
-cargo build && cargo test --all
-cargo run -- test_contracts/ -v --stats
+cargo build --release
+cargo run -- path/to/contracts/ -v --stats
 ```
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for internals.

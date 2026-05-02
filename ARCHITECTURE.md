@@ -131,16 +131,8 @@ smart-contract-scanner/
 │   ├── sarif.rs                   (340 lines)  SARIF 2.1.0 output (GitHub/CI)
 │   └── project_scanner.rs         (503 lines)  Cross-file project analysis
 │
-├── tests/
-│   ├── integration_tests.rs       (371 lines)  20 integration tests
-│   └── contracts/                              13 test Solidity contracts
-│       ├── reentrancy/                         Classic + safe reentrancy
-│       ├── access_control/                     Unprotected + Ownable-safe
-│       ├── defi/                               Vulnerable vault
-│       ├── false_positives/                    5 FP regression contracts      [v0.8.0]
-│       └── v07_exploits/                       Multicall + cross-chain
-│
-├── test_contracts/                             Sample vulnerable Solidity files
+├── tests/                                      Local/private-only regression assets (not tracked)
+├── test_contracts/                             Local/private-only sample corpora (not tracked)
 ├── scripts/                                    Build/deploy utilities
 ├── man/                                        Unix man pages (41.1, 41swara.1)
 ├── dist/                                       Distribution packaging

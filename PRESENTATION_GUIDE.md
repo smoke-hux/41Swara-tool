@@ -45,7 +45,7 @@ This guide will help you create a compelling 5-minute video presentation of the 
 
 ```bash
 # The ultimate command - runs ALL analysis features at once
-41 test_contracts/ --eip-analysis --strict-filter --defi-analysis --advanced-detectors -v --stats
+41 path/to/contracts/ --eip-analysis --strict-filter --defi-analysis --advanced-detectors -v --stats
 ```
 
 **Point out:** "This single command runs everything - EIP detection, DeFi analysis, advanced detectors, and filters out false positives automatically."
@@ -64,7 +64,7 @@ This guide will help you create a compelling 5-minute video presentation of the 
 clear
 
 # Scan a single contract with EIP analysis and false positive filtering
-41 test_contracts/Vault.sol --eip-analysis --strict-filter -v
+41 path/to/contracts/Vault.sol --eip-analysis --strict-filter -v
 ```
 
 **Pause and point out:**
@@ -78,7 +78,7 @@ clear
 
 ```bash
 # Scan entire test directory with statistics
-41 test_contracts/ --eip-analysis --strict-filter -v --stats
+41 path/to/contracts/ --eip-analysis --strict-filter -v --stats
 ```
 
 **Point out:**
@@ -101,21 +101,21 @@ clear
 clear
 
 # Show only high and critical severity with strict filtering
-41 test_contracts/ --min-severity high --strict-filter
+41 path/to/contracts/ --min-severity high --strict-filter
 ```
 
 **Point out:** "This shows only critical issues with false positives already removed."
 
 ```bash
 # Show only high-confidence findings (80%+) with EIP analysis
-41 test_contracts/ --confidence-threshold 80 --eip-analysis --strict-filter
+41 path/to/contracts/ --confidence-threshold 80 --eip-analysis --strict-filter
 ```
 
 **Point out:** "Combining confidence scoring with strict filtering gives us only the most reliable findings."
 
 ```bash
 # Filter by specific vulnerability type
-41 test_contracts/ --include-swc SWC-107 --strict-filter
+41 path/to/contracts/ --include-swc SWC-107 --strict-filter
 ```
 
 **Point out:** "SWC-107 is reentrancy. This shows only reentrancy vulnerabilities with false positives removed."
@@ -134,7 +134,7 @@ clear
 clear
 
 # Full DeFi analysis with EIP detection and false positive filtering
-41 test_contracts/ --defi-analysis --eip-analysis --strict-filter -v
+41 path/to/contracts/ --defi-analysis --eip-analysis --strict-filter -v
 ```
 
 **Point out:**
@@ -146,7 +146,7 @@ clear
 
 ```bash
 # Enable all advanced detectors
-41 test_contracts/ --defi-analysis --advanced-detectors --eip-analysis --strict-filter
+41 path/to/contracts/ --defi-analysis --advanced-detectors --eip-analysis --strict-filter
 ```
 
 **Point out:**
@@ -158,7 +158,7 @@ clear
 
 ```bash
 # Combined full analysis with severity filter
-41 test_contracts/ --defi-analysis --advanced-detectors --eip-analysis --strict-filter --min-severity high
+41 path/to/contracts/ --defi-analysis --advanced-detectors --eip-analysis --strict-filter --min-severity high
 ```
 
 **What to say:**
@@ -178,14 +178,14 @@ clear
 clear
 
 # JSON output with full analysis
-41 test_contracts/ --eip-analysis --strict-filter --format json | head -50
+41 path/to/contracts/ --eip-analysis --strict-filter --format json | head -50
 ```
 
 **Point out:** "JSON output includes detected EIPs and filtered results."
 
 ```bash
 # SARIF format for GitHub integration
-41 test_contracts/ --eip-analysis --strict-filter --format sarif -o results.sarif
+41 path/to/contracts/ --eip-analysis --strict-filter --format sarif -o results.sarif
 cat results.sarif | head -30
 ```
 
@@ -193,7 +193,7 @@ cat results.sarif | head -30
 
 ```bash
 # CI/CD fail-on mode with strict filtering
-41 test_contracts/ --eip-analysis --strict-filter --fail-on high -q
+41 path/to/contracts/ --eip-analysis --strict-filter --fail-on high -q
 echo "Exit code: $?"
 ```
 
@@ -221,11 +221,11 @@ clear
 
 # Single-threaded scan with full analysis
 echo "Single-threaded scan:"
-time 41 test_contracts/ -j 1 --eip-analysis --strict-filter --stats 2>/dev/null
+time 41 path/to/contracts/ -j 1 --eip-analysis --strict-filter --stats 2>/dev/null
 
 # Multi-threaded scan with full analysis
 echo "Multi-threaded scan (8 threads):"
-time 41 test_contracts/ -j 8 --eip-analysis --strict-filter --stats 2>/dev/null
+time 41 path/to/contracts/ -j 8 --eip-analysis --strict-filter --stats 2>/dev/null
 ```
 
 **Point out:** "Even with EIP analysis and filtering, parallel scanning gives us 4-10x speedup."
@@ -251,14 +251,14 @@ time 41 test_contracts/ -j 8 --eip-analysis --strict-filter --stats 2>/dev/null
 
 ```bash
 # Generate professional audit report with full analysis
-41 test_contracts/ --eip-analysis --strict-filter --audit --project "DeFi Protocol" --sponsor "Security Team"
+41 path/to/contracts/ --eip-analysis --strict-filter --audit --project "DeFi Protocol" --sponsor "Security Team"
 ```
 
 **Or alternatively:**
 
 ```bash
 # Generate markdown report
-41 test_contracts/ --eip-analysis --strict-filter --report
+41 path/to/contracts/ --eip-analysis --strict-filter --report
 ```
 
 **Closing statement:**
@@ -274,7 +274,7 @@ Copy these commands for easy access during recording:
 # ============ THE ULTIMATE COMMAND (ALL FEATURES) ============
 # This single command runs EVERYTHING: EIP analysis, DeFi detection,
 # advanced detectors, false positive filtering, verbose output, and stats
-41 test_contracts/ --eip-analysis --strict-filter --defi-analysis --advanced-detectors -v --stats
+41 path/to/contracts/ --eip-analysis --strict-filter --defi-analysis --advanced-detectors -v --stats
 
 # ============ SECTION 1: INTRO ============
 41 --version
@@ -282,36 +282,36 @@ Copy these commands for easy access during recording:
 
 # ============ SECTION 2: BASIC SCAN ============
 clear
-41 test_contracts/Vault.sol --eip-analysis --strict-filter -v
-41 test_contracts/ --eip-analysis --strict-filter -v --stats
+41 path/to/contracts/Vault.sol --eip-analysis --strict-filter -v
+41 path/to/contracts/ --eip-analysis --strict-filter -v --stats
 
 # ============ SECTION 3: FILTERING ============
 clear
-41 test_contracts/ --min-severity high --strict-filter
-41 test_contracts/ --confidence-threshold 80 --eip-analysis --strict-filter
-41 test_contracts/ --include-swc SWC-107 --strict-filter
+41 path/to/contracts/ --min-severity high --strict-filter
+41 path/to/contracts/ --confidence-threshold 80 --eip-analysis --strict-filter
+41 path/to/contracts/ --include-swc SWC-107 --strict-filter
 
 # ============ SECTION 4: DEFI & EIP ANALYSIS ============
 clear
-41 test_contracts/ --defi-analysis --eip-analysis --strict-filter -v
-41 test_contracts/ --defi-analysis --advanced-detectors --eip-analysis --strict-filter
-41 test_contracts/ --defi-analysis --advanced-detectors --eip-analysis --strict-filter --min-severity high
+41 path/to/contracts/ --defi-analysis --eip-analysis --strict-filter -v
+41 path/to/contracts/ --defi-analysis --advanced-detectors --eip-analysis --strict-filter
+41 path/to/contracts/ --defi-analysis --advanced-detectors --eip-analysis --strict-filter --min-severity high
 
 # ============ SECTION 5: CI/CD ============
 clear
-41 test_contracts/ --eip-analysis --strict-filter --format json | head -50
-41 test_contracts/ --eip-analysis --strict-filter --format sarif -o results.sarif
+41 path/to/contracts/ --eip-analysis --strict-filter --format json | head -50
+41 path/to/contracts/ --eip-analysis --strict-filter --format sarif -o results.sarif
 cat results.sarif | head -30
-41 test_contracts/ --eip-analysis --strict-filter --fail-on high -q; echo "Exit code: $?"
+41 path/to/contracts/ --eip-analysis --strict-filter --fail-on high -q; echo "Exit code: $?"
 41 --git-diff --eip-analysis --strict-filter --fail-on critical
 
 # ============ SECTION 6: PERFORMANCE ============
 clear
-echo "Single-threaded:"; time 41 test_contracts/ -j 1 --eip-analysis --strict-filter --stats 2>/dev/null
-echo "Multi-threaded:"; time 41 test_contracts/ -j 8 --eip-analysis --strict-filter --stats 2>/dev/null
+echo "Single-threaded:"; time 41 path/to/contracts/ -j 1 --eip-analysis --strict-filter --stats 2>/dev/null
+echo "Multi-threaded:"; time 41 path/to/contracts/ -j 8 --eip-analysis --strict-filter --stats 2>/dev/null
 
 # ============ SECTION 7: AUDIT REPORT ============
-41 test_contracts/ --eip-analysis --strict-filter --audit --project "DeFi Protocol" --sponsor "Security Team"
+41 path/to/contracts/ --eip-analysis --strict-filter --audit --project "DeFi Protocol" --sponsor "Security Team"
 ```
 
 ---
@@ -419,19 +419,19 @@ This single command:
 **If scanning returns no results:**
 ```bash
 # Check if test contracts exist
-ls test_contracts/
+ls path/to/contracts/
 ```
 
 **If colors don't show:**
 ```bash
 # Force color output
-41 test_contracts/ --eip-analysis --strict-filter --color always
+41 path/to/contracts/ --eip-analysis --strict-filter --color always
 ```
 
 **If tool not found:**
 ```bash
 # Run from project directory
-cargo run --bin 41 -- test_contracts/ --eip-analysis --strict-filter -v
+cargo run --bin 41 -- path/to/contracts/ --eip-analysis --strict-filter -v
 ```
 
 ---
