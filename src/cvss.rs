@@ -8,7 +8,7 @@
 //! - **C** = None usually (on-chain data is public)
 //! - **I** / **A** = primary impact axes (state/funds)
 
-use crate::vulnerabilities::{Vulnerability, VulnerabilityCategory};
+use crate::vulnerabilities::{Vulnerability, VulnerabilityCategory, VulnerabilitySeverity};
 
 #[derive(Debug, Clone, Copy)]
 #[allow(dead_code)]
@@ -251,10 +251,15 @@ fn roundup(val: f64) -> f64 {
 }
 
 /// Map a `VulnerabilityCategory` to its default CVSS 3.1 vector.
-pub fn category_to_cvss(category: &VulnerabilityCategory) -> CvssVector {
+///
+/// Returns `None` for categories without an explicit vector. Callers should
+/// fall back to [`severity_to_cvss`] in that case so a finding's CVSS (and the
+/// risk ranking derived from it) always tracks its severity instead of silently
+/// collapsing every unmapped category to a flat Medium score.
+pub fn category_to_cvss(category: &VulnerabilityCategory) -> Option<CvssVector> {
     use Impact::{High as HI, Low as LO};
 
-    match category {
+    let vector = match category {
         // === Critical: Direct fund theft / total contract compromise ===
         VulnerabilityCategory::Reentrancy
         | VulnerabilityCategory::CallbackReentrancy
@@ -387,15 +392,36 @@ pub fn category_to_cvss(category: &VulnerabilityCategory) -> CvssVector {
         | VulnerabilityCategory::MissingEvents
         | VulnerabilityCategory::PragmaIssues => CvssVector::zero(),
 
-        // Default for unmapped categories
-        _ => CvssVector::nhu(LO, LO),
+        // No explicit vector — let the caller fall back to severity_to_cvss so
+        // the score stays consistent with the finding's severity.
+        _ => return None,
+    };
+    Some(vector)
+}
+
+/// Coarse CVSS vector derived from a finding's severity.
+///
+/// Used as a fallback when a category has no explicit vector in
+/// [`category_to_cvss`]. Because the detection rules set `severity` per finding,
+/// this keeps an unmapped Critical finding scoring like a Critical (≈10.0, P1)
+/// rather than the old flat 4.8 (P3). Scores are monotone with severity:
+/// Critical 10.0 / High 7.4 / Medium 4.8 / Low 3.7 / Info 0.0.
+pub fn severity_to_cvss(severity: &VulnerabilitySeverity) -> CvssVector {
+    use Impact::{High as HI, Low as LO};
+    match severity {
+        VulnerabilitySeverity::Critical => CvssVector::nlc(HI, HI),
+        VulnerabilitySeverity::High => CvssVector::nhu(HI, HI),
+        VulnerabilitySeverity::Medium => CvssVector::nhu(LO, LO),
+        VulnerabilitySeverity::Low => CvssVector::nhu(Impact::None, LO),
+        VulnerabilitySeverity::Info => CvssVector::zero(),
     }
 }
 
 /// Enrich a list of vulnerabilities with CVSS scores and vector strings.
 pub fn enrich_with_cvss(vulnerabilities: &mut [Vulnerability]) {
     for vuln in vulnerabilities.iter_mut() {
-        let vector = category_to_cvss(&vuln.category);
+        let vector = category_to_cvss(&vuln.category)
+            .unwrap_or_else(|| severity_to_cvss(&vuln.severity));
         vuln.cvss_score = Some(vector.calculate_base_score());
         vuln.cvss_vector = Some(vector.to_vector_string());
     }

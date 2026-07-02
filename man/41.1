@@ -38,7 +38,7 @@ Parallel scanning with 4-10x speedup
 .IP \[bu]
 Multiple output formats (text, JSON, SARIF)
 .IP \[bu]
-Slither and Foundry integration
+Slither, Foundry, fuzzing, symbolic, formal, and monitoring integrations
 .SH OPTIONS
 .SS "Basic Options"
 .TP
@@ -109,6 +109,24 @@ Generate Foundry PoC tests for critical findings
 .TP
 .BR \-\-foundry\-correlate
 Correlate findings with Foundry test results
+.TP
+.BR \-\-dynamic\-analysis
+Run dynamic/fuzzing/symbolic/formal external tool orchestration
+.TP
+.BR \-\-dynamic\-list\-tools
+List supported dynamic-analysis tools and exit
+.TP
+.BR \-\-dynamic\-tool " " \fITOOL\fR
+Dynamic-analysis tools to run (comma-separated; use \fBall\fR for every tool)
+.TP
+.BR \-\-dynamic\-dry\-run
+Plan dynamic-analysis commands without executing external tools
+.TP
+.BR \-\-dynamic\-fork\-url " " \fIURL\fR
+RPC URL used by fork-capable dynamic tools
+.TP
+.BR \-\-dynamic\-diff\-target " " \fIPATH\fR
+Comparison target for Diffusc differential fuzzing
 .SS "Caching"
 .TP
 .BR \-\-cache
@@ -323,6 +341,18 @@ L2 Gas Oracle|41S-030|CWE-807
 
 # Generate Foundry PoC tests
 .B 41 . --generate-poc
+
+# List fuzzing, symbolic, formal, monitoring, differential, and PoC tools
+.B 41 --dynamic-list-tools
+
+# Plan a dynamic analysis pipeline without executing external tools
+.B 41 . --dynamic-analysis --dynamic-dry-run
+
+# Run selected local dynamic tools
+.B 41 . --dynamic-analysis --dynamic-tool echidna,forge-fuzz,halmos
+
+# Run fork-based exploit simulation
+.B 41 . --dynamic-analysis --dynamic-tool forge-fork --dynamic-fork-url "$RPC_URL"
 .fi
 .SH FILES
 .TP
@@ -393,8 +423,9 @@ Report bugs at:
 MIT License - Copyright (c) 2024-2026 41Swara Security Team
 .SH NOTES
 .SS "Offline Operation"
-This scanner is 100% offline and requires no API keys or network access.
-All analysis is performed locally for complete privacy.
+Static analysis is offline and requires no API keys or network access.
+Optional dynamic integrations run external local tools or service workflows only
+when explicitly requested.
 .SS "False Positive Reduction"
 The scanner automatically reduces false positives by detecting:
 .IP \[bu] 2

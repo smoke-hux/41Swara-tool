@@ -359,22 +359,29 @@ impl LogicAnalyzer {
             r"^\s*(mapping\s*\([^)]+\)|address|uint\d*|int\d*|bool|bytes\d*|string|bytes)\s+(public|private|internal)?\s*(constant|immutable)?\s*(\w+)"
         ).unwrap();
 
+        // Track brace depth: state variables live at contract level (depth 1).
+        // Anything deeper is a local declaration inside a function/block, and the
+        // `^\s*` anchor alone cannot tell them apart (both are indented).
+        let mut depth: i32 = 0;
         for (idx, line) in content.lines().enumerate() {
-            if let Some(caps) = var_pattern.captures(line) {
-                let var_type = caps.get(1).map_or("", |m| m.as_str()).to_string();
-                let visibility = caps.get(2).map_or("internal", |m| m.as_str()).to_string();
-                let modifier = caps.get(3).map_or("", |m| m.as_str());
-                let name = caps.get(4).map_or("", |m| m.as_str()).to_string();
+            if depth == 1 {
+                if let Some(caps) = var_pattern.captures(line) {
+                    let var_type = caps.get(1).map_or("", |m| m.as_str()).to_string();
+                    let visibility = caps.get(2).map_or("internal", |m| m.as_str()).to_string();
+                    let modifier = caps.get(3).map_or("", |m| m.as_str());
+                    let name = caps.get(4).map_or("", |m| m.as_str()).to_string();
 
-                vars.push(StateVariable {
-                    name,
-                    var_type,
-                    visibility,
-                    is_constant: modifier == "constant",
-                    is_immutable: modifier == "immutable",
-                    line: idx + 1,
-                });
+                    vars.push(StateVariable {
+                        name,
+                        var_type,
+                        visibility,
+                        is_constant: modifier == "constant",
+                        is_immutable: modifier == "immutable",
+                        line: idx + 1,
+                    });
+                }
             }
+            depth += line.matches('{').count() as i32 - line.matches('}').count() as i32;
         }
 
         vars
@@ -701,6 +708,13 @@ impl LogicAnalyzer {
 
         // Check for variables written by multiple functions with different patterns
         for (var_name, writing_funcs) in &write_map {
+            // Only consider declared state variables. state_writes is extracted with a
+            // heuristic that also captures local variables and named return values
+            // (e.g. `returns (uint48 timepoint) { timepoint = ...; }`), which are not
+            // shared state and cannot be "inconsistently" updated across functions.
+            if !state_vars.iter().any(|sv| sv.name == *var_name) {
+                continue;
+            }
             if writing_funcs.len() > 1 {
                 // Check if writes are inconsistent (some with checks, some without)
                 let funcs_with_checks: Vec<&&FunctionInfo> = writing_funcs

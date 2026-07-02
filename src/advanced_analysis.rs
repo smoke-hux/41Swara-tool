@@ -432,7 +432,33 @@ impl AdvancedAnalyzer {
                     || fn_body.contains("balances[msg.sender]")
                     || fn_body.contains("safeTransferFrom(msg.sender")
                     || fn_body.contains("transferFrom(msg.sender")
+                    // Token-standard self-service semantics: spending the caller's own
+                    // allowance/approval is the access control (transferFrom pattern).
+                    || fn_body.contains("_spendAllowance(")
+                    || fn_body.contains("isApprovedForAll")
+                    || fn_body.contains("_burn(msg.sender")
+                    || fn_body.contains("_burn(_msgSender()")
+                    // Caller acts on their own behalf: forwarding _msgSender()/msg.sender
+                    // as the subject is self-service, not an admin operation.
+                    || fn_body.contains("(_msgSender()")
+                    || fn_body.contains("(msg.sender,")
                 {
+                    continue;
+                }
+
+                // Interface/abstract declarations end with `;` before any body opens —
+                // nothing to protect (e.g. ITransparentUpgradeableProxy.upgradeToAndCall).
+                let semi = fn_body.find(';');
+                let brace = fn_body.find('{');
+                if matches!((semi, brace), (Some(s), Some(b)) if s < b) || brace.is_none() {
+                    continue;
+                }
+
+                // Thin overload wrappers forward to a same-name overload or an
+                // underscore-prefixed variant that carries the real authorization
+                // check (possibly beyond this 20-line window).
+                let body_after_sig = fn_body.split_once('{').map_or("", |(_, b)| b);
+                if body_after_sig.contains(&format!("{function_name}(")) {
                     continue;
                 }
 
@@ -460,29 +486,42 @@ impl AdvancedAnalyzer {
                     || full_sig.contains("onlyAdmin")
                     || full_sig.contains("whenNotPaused")
                     || full_sig.contains("initializer")
+                    || full_sig.contains("restricted")
                     || re!(r"\bonly\w+").is_match(&full_sig);
 
                 // Check visibility: skip private/internal functions
                 let is_private_or_internal =
                     full_sig.contains("private") || full_sig.contains("internal");
 
+                let fn_body: String = lines
+                    .iter()
+                    .skip(idx)
+                    .take(20)
+                    .copied()
+                    .collect::<Vec<_>>()
+                    .join("\n");
+
                 // Check if the function body uses msg.sender balance (user withdrawal, not admin)
-                let is_user_facing = {
-                    let fn_body: String = lines
-                        .iter()
-                        .skip(idx)
-                        .take(20)
-                        .copied()
-                        .collect::<Vec<_>>()
-                        .join("\n");
-                    fn_body.contains("msg.sender")
-                        && (fn_body.contains("balances[") || fn_body.contains("balance["))
-                };
+                let is_user_facing = fn_body.contains("msg.sender")
+                    && (fn_body.contains("balances[") || fn_body.contains("balance["));
+
+                // A tx.origin-based guard IS an (unsafe) authorization check — the
+                // dedicated TxOriginAuth detector reports the real problem, so don't
+                // double-report this as a missing-access-control finding.
+                let has_tx_origin_guard = fn_body.contains("tx.origin");
+
+                // An inline sender/role guard also counts as access control.
+                let has_inline_guard = fn_body.contains("require(msg.sender ==")
+                    || fn_body.contains("require(msg.sender==")
+                    || fn_body.contains("_checkOwner()")
+                    || fn_body.contains("_checkRole(");
 
                 if !has_modifier
                     && !has_known_modifier
                     && !is_user_facing
                     && !is_private_or_internal
+                    && !has_tx_origin_guard
+                    && !has_inline_guard
                 {
                     vulnerabilities.push(Vulnerability::high_confidence(
                         VulnerabilitySeverity::Critical,
@@ -515,23 +554,33 @@ impl AdvancedAnalyzer {
     pub fn analyze_storage_layout(&self, content: &str) -> Vec<Vulnerability> {
         let mut vulnerabilities = Vec::new();
 
-        // Check for upgradeable contract patterns
-        if content.contains("Initializable") || content.contains("upgradeable") {
-            // Check for proper storage gaps
-            if !content.contains("uint256[50] private __gap") && !content.contains("__gap") {
-                vulnerabilities.push(Vulnerability::new(
-                    VulnerabilitySeverity::High,
-                    VulnerabilityCategory::StateVariable,
-                    "Missing Storage Gap in Upgradeable Contract".to_string(),
-                    "Upgradeable contract lacks storage gap for future variables".to_string(),
-                    1,
-                    "contract ... is Upgradeable".to_string(),
-                    "Add 'uint256[50] private __gap;' at the end of storage variables".to_string(),
-                ));
-            }
+        // REMOVED: loose "Missing Storage Gap" duplicate. It fired whenever the file
+        // merely contained the word "Initializable"/"upgradeable" anywhere (imports,
+        // comments) and reported at line 1 with a fabricated snippet.
+        // detect_storage_collision_proxy() covers this with real contract-line checks.
 
-            // Check for constructor usage in upgradeable contracts
-            if content.contains("constructor(") || content.contains("constructor (") {
+        // Check for constructor usage in upgradeable contract patterns.
+        // Require an actual (non-comment) contract declaration inheriting an
+        // upgradeable/initializable base — merely mentioning "upgradeable" in prose or
+        // imports is not enough. Proxies/beacons legitimately have constructors.
+        let is_upgradeable_impl = content.lines().any(|l| {
+            let t = l.trim_start();
+            if t.starts_with("//") || t.starts_with('*') || t.starts_with("/*") {
+                return false;
+            }
+            re!(r"contract\s+(\w+)\s+is\s+[^{]*(Upgradeable|Initializable)")
+                .captures(l)
+                .is_some_and(|c| {
+                    let name = &c[1];
+                    !name.ends_with("Proxy") && !name.ends_with("Beacon")
+                })
+        });
+        if is_upgradeable_impl {
+            if (content.contains("constructor(") || content.contains("constructor ("))
+                // A constructor that calls _disableInitializers() is the OZ-recommended
+                // pattern for implementation contracts — not a defect.
+                && !content.contains("_disableInitializers")
+            {
                 vulnerabilities.push(Vulnerability::high_confidence(
                     VulnerabilitySeverity::Critical,
                     VulnerabilityCategory::StateVariable,
@@ -1089,6 +1138,22 @@ impl AdvancedAnalyzer {
     fn detect_parity_bug_pattern(&self, content: &str) -> Vec<Vulnerability> {
         let mut vulnerabilities = Vec::new();
 
+        // Proxy contracts (ERC-1967/beacon) and delegatecall utility libraries use
+        // delegatecall-to-stored-implementation by design — that's the proxy pattern,
+        // not the Parity wallet bug (which was an UNPROTECTED public library init).
+        // The library exemption only applies to library-ONLY files: a helper library
+        // bundled next to contracts must not disable analysis of those contracts.
+        let library_only = re!(r"(?m)^\s*library\s+\w+").is_match(content)
+            && !re!(r"(?m)^\s*(abstract\s+)?contract\s+\w+").is_match(content);
+        if content.contains("_IMPLEMENTATION_SLOT")
+            || content.contains("ERC1967")
+            || content.contains("IBeacon")
+            || library_only
+            || re!(r"(?m)^\s*abstract\s+contract\s+\w*Proxy\b").is_match(content)
+        {
+            return vulnerabilities;
+        }
+
         // Detect delegatecall with user-controlled address
         let delegatecall_pattern = re!(r"delegatecall");
 
@@ -1432,9 +1497,16 @@ impl AdvancedAnalyzer {
                     .iter()
                     .any(|l| l.contains(&format!("{array_param}.length")) && l.contains("require"));
 
-                if !has_length_check {
+                // Only a function that itself loops over the array can run into the
+                // gas-limit DoS this rule targets. Thin wrappers that forward the array
+                // to an internal function (e.g. burnBatch → _burnBatch) validate there.
+                let loops_over_array = next_lines
+                    .iter()
+                    .any(|l| l.contains("for") && l.contains(&format!("{array_param}.length")));
+
+                if !has_length_check && loops_over_array {
                     vulnerabilities.push(Vulnerability::new(
-                        VulnerabilitySeverity::High,
+                        VulnerabilitySeverity::Medium,
                         VulnerabilityCategory::InputValidationFailure,
                         format!("Missing Array Length Validation in {func_name}"),
                         "Array parameter without length validation - enables DoS and manipulation"
@@ -1954,9 +2026,12 @@ impl AdvancedAnalyzer {
             }
         }
 
-        // Check for bit shift operations in critical calculations
+        // Check for bit shift operations in critical calculations.
+        // Grouped alternation: the old `...=.*<<|>>\s*\d+` split at the top level, so
+        // ANY constant right-shift (e.g. `vs >> 255`) matched the second branch.
+        // Require assignment to a financial variable AND a variable shift amount.
         let shift_in_calc_pattern =
-            re!(r"(liquidity|price|amount|value|shares)\w*\s*=.*<<|>>\s*\d+");
+            re!(r"(liquidity|price|amount|value|shares)\w*\s*=.*(<<|>>)\s*[a-zA-Z_]");
 
         for (idx, line) in content.lines().enumerate() {
             if shift_in_calc_pattern.is_match(line) {
@@ -2088,6 +2163,22 @@ impl AdvancedAnalyzer {
     // Bridge Vulnerability Patterns
     fn detect_bridge_vulnerability_patterns(&self, content: &str) -> Vec<Vulnerability> {
         let mut vulnerabilities = Vec::new();
+
+        // Only meaningful in cross-chain code. `_execute` in the handler list is far
+        // too generic on its own (governors, ERC-4337 accounts, and meta-tx forwarders
+        // all define `_execute`), so require actual bridge indicators in the file.
+        let is_cross_chain = content.contains("LayerZero")
+            || content.contains("lzReceive")
+            || content.contains("Wormhole")
+            || content.contains("wormhole")
+            || content.contains("bridge")
+            || content.contains("Bridge")
+            || content.contains("srcChain")
+            || content.contains("crosschain")
+            || content.contains("CrossChain");
+        if !is_cross_chain {
+            return vulnerabilities;
+        }
 
         // Check for cross-chain message handlers
         let message_handler = re!(r"function\s+(lzReceive|_nonblockingLzReceive|receiveWormholeMessages?|_execute)\s*\(");
@@ -3259,8 +3350,11 @@ impl AdvancedAnalyzer {
                                     || content.contains("evm_version = \"shanghai\"");
 
                                 if !explicitly_shanghai {
+                                    // Info, not Medium: by 2026 nearly all major chains
+                                    // support Shanghai/PUSH0. This is a deployment note,
+                                    // not a vulnerability in the contract itself.
                                     vulnerabilities.push(Vulnerability::new(
-                                        VulnerabilitySeverity::Medium,
+                                        VulnerabilitySeverity::Info,
                                         VulnerabilityCategory::Push0Compatibility,
                                         "PUSH0 Opcode Compatibility Risk".to_string(),
                                         format!(
@@ -3599,13 +3693,20 @@ impl AdvancedAnalyzer {
             return vulnerabilities;
         }
 
-        // Check for withdrawal mechanism
+        // Check for withdrawal mechanism (including indirect ones: contracts that can
+        // make arbitrary/value-bearing calls — executors, wallets, proxies — can always
+        // move ETH out, so their ETH is not locked).
         let has_withdraw = content.contains("withdraw")
             || content.contains("transfer(")
             || content.contains(".send(")
             || content.contains(".call{value:")
             || content.contains("payable(")
-            || content.contains("selfdestruct");
+            || content.contains("selfdestruct")
+            || content.contains("functionCallWithValue")
+            || content.contains("sendValue")
+            || content.contains("delegatecall")
+            || content.contains("LowLevelCall")
+            || content.contains("execute");
 
         if !has_withdraw {
             // Find the payable function
@@ -3923,6 +4024,11 @@ impl AdvancedAnalyzer {
             return vulnerabilities;
         }
 
+        // ERC-7201 namespaced storage (OZ v5 style) replaces storage gaps entirely
+        if content.contains("@custom:storage-location") {
+            return vulnerabilities;
+        }
+
         // Check if this contract could be inherited (has state variables)
         let state_var_pattern =
             re!(r"^\s+(uint\d*|int\d*|address|bool|bytes\d*|string|mapping)\s+");
@@ -3932,9 +4038,19 @@ impl AdvancedAnalyzer {
         if has_state_vars {
             let contract_pattern = re!(r"contract\s+(\w+)\s+is");
             for (idx, line) in content.lines().enumerate() {
+                let trimmed = line.trim_start();
+                if trimmed.starts_with("//") || trimmed.starts_with('*') || trimmed.starts_with("/*")
+                {
+                    continue;
+                }
                 if let Some(caps) = contract_pattern.captures(line) {
+                    let name = caps.get(1).map_or("Unknown", |m| m.as_str());
+                    // Proxies and beacons hold no implementation state to gap; the
+                    // "Upgradeable" in their NAME does not make them upgradeable bases.
+                    if name.ends_with("Proxy") || name.ends_with("Beacon") {
+                        continue;
+                    }
                     if line.contains("Upgradeable") || line.contains("Initializable") {
-                        let name = caps.get(1).map_or("Unknown", |m| m.as_str());
                         vulnerabilities.push(Vulnerability::new(
                             VulnerabilitySeverity::High,
                             VulnerabilityCategory::MissingStorageGap,
@@ -4088,12 +4204,18 @@ impl AdvancedAnalyzer {
             || content.contains("ERC165")
             || content.contains("IERC165");
 
-        if !has_erc165 {
-            // Find the contract declaration line
-            let contract_pattern = re!(r"contract\s+(\w+)");
+        // Contracts inheriting an ERC-721/1155 base (or receiver interface) get
+        // supportsInterface from the base implementation — extensions don't redeclare it.
+        let inherits_nft_base = re!(r"contract\s+\w+\s+is\s+[^{]*(ERC721|ERC1155)").is_match(content);
+
+        if !has_erc165 && !inherits_nft_base {
+            // Find the contract declaration line (skip comments/prose like
+            // "the token contract is proxied", and abstract bases which inherit
+            // supportsInterface from their concrete parents elsewhere)
+            let contract_pattern = re!(r"^\s*contract\s+(\w+)");
             for (idx, line) in content.lines().enumerate() {
                 if let Some(caps) = contract_pattern.captures(line) {
-                    if !line.trim().starts_with("//") {
+                    {
                         let name = caps.get(1).map_or("Unknown", |m| m.as_str());
                         vulnerabilities.push(Vulnerability::new(
                             VulnerabilitySeverity::Low,
@@ -4248,6 +4370,164 @@ impl AdvancedAnalyzer {
         vulns.extend(self.detect_iscontract_post_pectra(content));
         vulns.extend(self.detect_unsafe_multicall_delegatecall(content));
 
+        vulns
+    }
+
+    /// Classic, timeless vulnerability patterns (SWC registry) that complement the
+    /// modern-exploit detectors. Kept precise (each requires an authorization/transfer
+    /// context) so they add signal without reintroducing false positives.
+    pub fn analyze_classic_patterns(&self, content: &str) -> Vec<Vulnerability> {
+        let mut vulns = Vec::new();
+        vulns.extend(self.detect_tx_origin_auth(content));
+        vulns.extend(self.detect_value_transfer_in_loop(content));
+        vulns.extend(self.detect_unlimited_approval_to_param(content));
+        vulns
+    }
+
+    /// SWC-115: `tx.origin` used for authorization. `tx.origin == owner` (or `!=`) lets a
+    /// malicious intermediary contract phish an authorized user into calling it, which
+    /// then calls the victim contract with the user still as `tx.origin`. Only the auth
+    /// comparison is flagged; the `tx.origin == msg.sender` EOA-check is a different
+    /// (EIP-7702) issue handled by detect_eip7702_txorigin_bypass.
+    fn detect_tx_origin_auth(&self, content: &str) -> Vec<Vulnerability> {
+        let mut vulns = Vec::new();
+        // tx.origin compared to something OTHER than msg.sender inside a guard.
+        let auth_re = re!(r"(require|assert|if)\s*\(.*tx\.origin\s*(==|!=)");
+        for (idx, line) in content.lines().enumerate() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("//") || trimmed.starts_with('*') || trimmed.starts_with("/*") {
+                continue;
+            }
+            if auth_re.is_match(line) && !line.contains("tx.origin == msg.sender")
+                && !line.contains("tx.origin != msg.sender")
+            {
+                vulns.push(Vulnerability::high_confidence(
+                    VulnerabilitySeverity::High,
+                    VulnerabilityCategory::TxOriginAuth,
+                    "tx.origin Used for Authorization".to_string(),
+                    "Authorization is based on tx.origin, which is the original external \
+                     account of the whole transaction. A malicious contract the victim is \
+                     tricked into calling can forward the call to this contract while \
+                     tx.origin still resolves to the victim, bypassing the check (phishing)."
+                        .to_string(),
+                    idx + 1,
+                    line.trim().to_string(),
+                    "Use msg.sender for authorization instead of tx.origin.".to_string(),
+                ));
+            }
+        }
+        vulns
+    }
+
+    /// SWC-113: an unbounded loop that performs a value transfer or external call to a
+    /// per-iteration recipient (push-payment). A single recipient that reverts (or a
+    /// contract with a costly fallback) bricks the whole batch, freezing everyone's funds.
+    fn detect_value_transfer_in_loop(&self, content: &str) -> Vec<Vulnerability> {
+        let mut vulns = Vec::new();
+        let loop_re = re!(r"\b(for|while)\s*\(");
+        let transfer_re = re!(r"\.(transfer|send)\s*\(|\.call\{\s*value");
+        let lines: Vec<&str> = content.lines().collect();
+
+        for (idx, line) in lines.iter().enumerate() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("//") || trimmed.starts_with('*') {
+                continue;
+            }
+            if !loop_re.is_match(line) {
+                continue;
+            }
+            // Walk the loop body by brace depth (bounded) and look for a value transfer.
+            let mut depth: i32 = 0;
+            let mut started = false;
+            let mut reported = false;
+            for probe in lines.iter().skip(idx).take(25) {
+                depth += probe.matches('{').count() as i32;
+                if probe.contains('{') {
+                    started = true;
+                }
+                if started && transfer_re.is_match(probe) {
+                    vulns.push(Vulnerability::new(
+                        VulnerabilitySeverity::Medium,
+                        VulnerabilityCategory::DoSAttacks,
+                        "Value Transfer Inside Loop (Push-Payment DoS)".to_string(),
+                        "A loop sends ETH (via .transfer/.send/.call{value}) to a recipient on \
+                         each iteration. If any single recipient reverts or is a contract with \
+                         an expensive fallback, the entire loop reverts and no one is paid, \
+                         freezing funds for all participants."
+                            .to_string(),
+                        idx + 1,
+                        line.trim().to_string(),
+                        "Use the pull-payment pattern: record amounts owed and let each \
+                         recipient withdraw individually, isolating a failing transfer."
+                            .to_string(),
+                    ));
+                    reported = true;
+                    break;
+                }
+                depth -= probe.matches('}').count() as i32;
+                if started && depth <= 0 {
+                    break;
+                }
+            }
+            let _ = reported;
+        }
+        vulns
+    }
+
+    /// Unlimited (`type(uint256).max`) ERC-20 approval granted to a spender that is a
+    /// function parameter — i.e. an address the caller chooses. This lets an attacker
+    /// pass their own address and receive unlimited allowance over the contract's tokens.
+    fn detect_unlimited_approval_to_param(&self, content: &str) -> Vec<Vulnerability> {
+        let mut vulns = Vec::new();
+        let func_re = re!(r"function\s+\w+\s*\(([^)]*)\)");
+        let approve_re =
+            re!(r"\.\s*(approve|safeApprove|forceApprove)\s*\(\s*(\w+)\s*,\s*type\s*\(\s*uint256\s*\)\s*\.\s*max");
+        let lines: Vec<&str> = content.lines().collect();
+
+        for (idx, line) in lines.iter().enumerate() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("//") || trimmed.starts_with('*') {
+                continue;
+            }
+            let caps = match approve_re.captures(line) {
+                Some(c) => c,
+                None => continue,
+            };
+            let spender = caps.get(2).map_or("", |m| m.as_str());
+            // Look back for the enclosing function signature and check whether `spender`
+            // is one of its address parameters (caller-controlled).
+            let start = idx.saturating_sub(25);
+            let mut param_controlled = false;
+            for prev in lines[start..=idx].iter().rev() {
+                if let Some(fc) = func_re.captures(prev) {
+                    let params = fc.get(1).map_or("", |m| m.as_str());
+                    if params.contains(&format!("address {spender}"))
+                        || params.contains(&format!("address {spender},"))
+                        || params.contains(&format!("address {spender})"))
+                    {
+                        param_controlled = true;
+                    }
+                    break;
+                }
+            }
+            if param_controlled {
+                vulns.push(Vulnerability::high_confidence(
+                    VulnerabilitySeverity::High,
+                    VulnerabilityCategory::LogicError,
+                    "Unlimited Approval to Caller-Controlled Spender".to_string(),
+                    "The contract grants an unlimited (type(uint256).max) token approval to a \
+                     spender address taken directly from a function parameter. A caller can \
+                     pass their own address and gain unlimited allowance over the contract's \
+                     token balance."
+                        .to_string(),
+                    idx + 1,
+                    line.trim().to_string(),
+                    "Approve only a trusted, hardcoded/immutable spender, and grant the exact \
+                     amount needed rather than an unlimited allowance."
+                        .to_string(),
+                ));
+            }
+        }
         vulns
     }
 
@@ -5320,75 +5600,5 @@ contract ERC4626SlashLiabilityDrift {
         let findings = analyzer.analyze_2025_exploit_patterns(content);
 
         assert!(findings.iter().any(|finding| finding.title == "ERC4626 Liability Drift After Slash"));
-    }
-}
-
-// Cross-contract vulnerability detection (reserved for future project-wide analysis)
-#[allow(dead_code)]
-pub struct CrossContractAnalyzer {
-    contracts: HashMap<String, String>,
-}
-
-#[allow(dead_code)]
-impl CrossContractAnalyzer {
-    pub fn new() -> Self {
-        Self {
-            contracts: HashMap::new(),
-        }
-    }
-
-    pub fn add_contract(&mut self, name: String, content: String) {
-        self.contracts.insert(name, content);
-    }
-
-    // Detect circular dependencies
-    pub fn detect_circular_dependencies(&self) -> Vec<String> {
-        let mut issues = Vec::new();
-        let import_pattern = re!(r#"import\s+["']([^"']+)["']"#);
-
-        for (contract_name, content) in &self.contracts {
-            let mut imports = HashSet::new();
-
-            for captures in import_pattern.captures_iter(content) {
-                if let Some(import) = captures.get(1) {
-                    imports.insert(import.as_str());
-                }
-            }
-
-            // Check if imported contracts import this contract back
-            for import in &imports {
-                if let Some(imported_content) = self.contracts.get(*import) {
-                    if imported_content.contains(&format!("import.*{contract_name}")) {
-                        issues.push(format!(
-                            "Circular dependency detected: {contract_name} <-> {import}"
-                        ));
-                    }
-                }
-            }
-        }
-
-        issues
-    }
-
-    // Detect inheritance conflicts
-    pub fn detect_inheritance_conflicts(&self) -> Vec<String> {
-        let mut issues = Vec::new();
-        let inheritance_pattern = re!(r"contract\s+\w+\s+is\s+([^{]+)");
-
-        for (contract_name, content) in &self.contracts {
-            if let Some(captures) = inheritance_pattern.captures(content) {
-                let inherited = captures.get(1).map_or("", |m| m.as_str());
-                let parents: Vec<&str> = inherited.split(',').map(|s| s.trim()).collect();
-
-                if parents.len() > 1 {
-                    // Check for diamond problem
-                    issues.push(format!(
-                        "Multiple inheritance detected in {contract_name}: {parents:?} - verify no conflicts"
-                    ));
-                }
-            }
-        }
-
-        issues
     }
 }

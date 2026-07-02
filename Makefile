@@ -5,7 +5,7 @@ PREFIX ?= /usr/local
 BINDIR ?= $(PREFIX)/bin
 MANDIR ?= $(PREFIX)/share/man/man1
 
-.PHONY: all build release install install-bin install-man uninstall clean help
+.PHONY: all build release install install-bin install-man uninstall clean web-install web-dev web-build web-preview help
 
 all: build
 
@@ -68,6 +68,22 @@ uninstall:
 clean:
 	cargo clean
 
+# Install frontend dependencies
+web-install:
+	cd web && npm install
+
+# Run the frontend workbench
+web-dev:
+	cd web && npm run dev
+
+# Build the frontend workbench
+web-build:
+	cd web && npm run build
+
+# Preview the production frontend build
+web-preview:
+	cd web && npm run preview
+
 # User-local installation (no sudo required)
 install-user:
 	@$(MAKE) install PREFIX=$(HOME)/.local MANDIR=$(HOME)/.local/share/man/man1
@@ -92,6 +108,10 @@ help:
 	@echo "  install-man   Install man pages only"
 	@echo "  uninstall     Remove installed files"
 	@echo "  clean         Remove build artifacts"
+	@echo "  web-install   Install frontend dependencies"
+	@echo "  web-dev       Run frontend workbench"
+	@echo "  web-build     Build frontend workbench"
+	@echo "  web-preview   Preview frontend production build"
 	@echo "  help          Show this help"
 	@echo ""
 	@echo "Examples:"

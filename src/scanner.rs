@@ -24,10 +24,13 @@ use crate::threat_model::ThreatModelGenerator;
 use crate::vulnerabilities::{
     create_version_specific_rules, create_vulnerability_rules, Vulnerability, VulnerabilityRule,
 };
+use crate::parser::CompilerVersion;
 use once_cell::sync::Lazy;
 use regex::Regex;
+use std::collections::HashMap;
 use std::io;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 
 type ParsedLine<'a> = (usize, &'a str);
 
@@ -72,6 +75,9 @@ static RE_CONTRACT: Lazy<Regex> = Lazy::new(|| {
 });
 static RE_LIBRARY: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"^\s*library\s+\w+").expect("invalid library regex"));
+static RE_CONTRACT_ONLY: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"^\s*(abstract\s+)?contract\s+\w+").expect("invalid contract-only regex")
+});
 static RE_SOLIDITY_08: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"pragma\s+solidity\s*[\^>=<]*\s*0\.([89]|[1-9]\d+)\.")
         .expect("invalid version regex")
@@ -84,6 +90,15 @@ static RE_STATE_MOD: Lazy<Regex> = Lazy::new(|| {
 });
 static RE_NAMED_RETURN: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"returns\s*\([^)]*\b\w+\s+\w+[^)]*\)").expect("invalid named return regex")
+});
+
+static RE_BOUNDED_SHIFT: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(<<|>>)\s*uint8\s*\(").expect("invalid bounded shift regex")
+});
+
+static RE_DOWNCAST_ARG: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"\b(?:uint|int)(?:8|16|24|32|48|64|96|128|160|192|224)\s*\(\s*(\w+)\s*\)")
+        .expect("invalid downcast arg regex")
 });
 
 /// Maximum file size (in bytes) the scanner will process.
@@ -139,6 +154,12 @@ pub struct ContractScanner {
     false_positive_filter: FalsePositiveFilter, // Multi-pass false positive reduction
     ast_bridge: crate::ast::bridge::ASTAnalysisBridge, // AST/CFG/taint structural analysis
     config: ScannerConfig,               // Feature toggle configuration
+    /// Memoized version-specific rule sets. `create_version_specific_rules` compiles
+    /// ~44 regexes; without this it ran once per scanned file. Keyed by the 5-variant
+    /// `CompilerVersion` enum, so at most 5 compilations happen per process. Shared
+    /// across rayon worker threads via `Mutex` (contention is negligible: a cache miss
+    /// only occurs the first time each version is seen).
+    version_rules_cache: Mutex<HashMap<CompilerVersion, Arc<Vec<VulnerabilityRule>>>>,
 }
 
 // =============================================================================
@@ -159,6 +180,80 @@ impl ContractScanner {
         content.contains("using SafeERC20 for")
             || content.contains("SafeERC20.")
             || content.contains("import") && content.contains("SafeERC20")
+    }
+
+    /// Replace comment text with spaces while preserving byte offsets and newlines,
+    /// so regex matches on the result map to the same line numbers as the original.
+    /// String literals are left intact (a `//` inside a string, e.g. a URL, is not a comment).
+    fn strip_comments(content: &str) -> String {
+        #[derive(PartialEq)]
+        enum State {
+            Code,
+            LineComment,
+            BlockComment,
+            DoubleQuote,
+            SingleQuote,
+        }
+        let mut out = String::with_capacity(content.len());
+        let mut state = State::Code;
+        let mut chars = content.chars().peekable();
+        while let Some(c) = chars.next() {
+            match state {
+                State::Code => match c {
+                    '/' if chars.peek() == Some(&'/') => {
+                        state = State::LineComment;
+                        out.push(' ');
+                    }
+                    '/' if chars.peek() == Some(&'*') => {
+                        state = State::BlockComment;
+                        out.push(' ');
+                    }
+                    '"' => {
+                        state = State::DoubleQuote;
+                        out.push(c);
+                    }
+                    '\'' => {
+                        state = State::SingleQuote;
+                        out.push(c);
+                    }
+                    _ => out.push(c),
+                },
+                State::LineComment => {
+                    if c == '\n' {
+                        state = State::Code;
+                        out.push('\n');
+                    } else {
+                        out.push(' ');
+                    }
+                }
+                State::BlockComment => {
+                    if c == '*' && chars.peek() == Some(&'/') {
+                        chars.next();
+                        out.push_str("  ");
+                        state = State::Code;
+                    } else if c == '\n' {
+                        out.push('\n');
+                    } else {
+                        out.push(' ');
+                    }
+                }
+                State::DoubleQuote | State::SingleQuote => {
+                    let quote = if state == State::DoubleQuote { '"' } else { '\'' };
+                    if c == '\\' {
+                        out.push(c);
+                        if let Some(next) = chars.next() {
+                            out.push(next);
+                        }
+                    } else {
+                        if c == quote || c == '\n' {
+                            state = State::Code;
+                        }
+                        out.push(c);
+                    }
+                }
+            }
+        }
+        out
     }
 
     /// Check if the given line index is a single-line comment (// or * or /*).
@@ -214,9 +309,15 @@ impl ContractScanner {
         has_interface && !has_contract
     }
 
-    /// Check if the file defines a Solidity `library` (stateless utility code).
+    /// Check if the file contains ONLY Solidity `library` code (stateless utility code).
+    /// A helper library bundled alongside contracts must not disable analysis of those
+    /// contracts, so files that also declare a contract are NOT treated as libraries.
     fn is_library(&self, content: &str) -> bool {
-        content.lines().any(|line| RE_LIBRARY.is_match(line))
+        let has_library = content.lines().any(|line| RE_LIBRARY.is_match(line));
+        let has_contract = content
+            .lines()
+            .any(|line| RE_CONTRACT_ONLY.is_match(line));
+        has_library && !has_contract
     }
 
     /// Check if this is a test or mock contract (Foundry/Hardhat test patterns).
@@ -292,6 +393,10 @@ impl ContractScanner {
         if content.contains("AccessControl") {
             modifiers.push("onlyRole".to_string());
         }
+        // AccessManaged (OZ v5) → restricted
+        if content.contains("AccessManaged") {
+            modifiers.push("restricted".to_string());
+        }
         // Initializable → initializer, reinitializer
         if content.contains("Initializable") {
             modifiers.push("initializer".to_string());
@@ -317,6 +422,9 @@ impl ContractScanner {
             "onlyOperator",
             "onlyProxy",
             "onlyDelegateCall",
+            "onlyEntryPoint",
+            "onlySelf",
+            "restricted",
             "private",
             "internal",
             "whenNotPaused",
@@ -370,6 +478,13 @@ impl ContractScanner {
             "revert AccessControlUnauthorizedAccount",
             "_checkOwner()",
             "_checkRole(",
+            "_checkCanCall(",
+            // tx.origin-based guards ARE authorization attempts (unsafe ones). The
+            // dedicated TxOriginAuth detector reports the real defect, so treat this
+            // as "has a check" here to avoid a redundant missing-access-control finding.
+            "tx.origin ==",
+            "tx.origin!=",
+            "tx.origin !=",
         ];
 
         for line in lines
@@ -381,6 +496,18 @@ impl ContractScanner {
                 if line.contains(pattern) {
                     return true;
                 }
+            }
+            // OZ v5 style: `address caller = _msgSender(); if (caller != ...) revert XxxUnauthorized(...)`
+            if line.contains("revert") && line.contains("Unauthorized") {
+                return true;
+            }
+            if (line.contains("caller !=")
+                || line.contains("caller ==")
+                || line.contains("msg.sender !=")
+                || line.contains("msg.sender =="))
+                && (line.contains("require") || line.contains("if") || line.contains("revert"))
+            {
+                return true;
             }
         }
 
@@ -469,6 +596,7 @@ impl ContractScanner {
             false_positive_filter: FalsePositiveFilter::new(FilterConfig::default()),
             ast_bridge: crate::ast::bridge::ASTAnalysisBridge::new(),
             config: ScannerConfig::default(),
+            version_rules_cache: Mutex::new(HashMap::new()),
         }
     }
 
@@ -491,7 +619,23 @@ impl ContractScanner {
             false_positive_filter: FalsePositiveFilter::new(filter_config),
             ast_bridge: crate::ast::bridge::ASTAnalysisBridge::new(),
             config,
+            version_rules_cache: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Return the memoized version-specific rule set for `version`, compiling it on
+    /// first use. See `version_rules_cache` for why this matters.
+    fn version_rules(&self, version: &CompilerVersion) -> Arc<Vec<VulnerabilityRule>> {
+        if let Ok(mut cache) = self.version_rules_cache.lock() {
+            if let Some(rules) = cache.get(version) {
+                return Arc::clone(rules);
+            }
+            let rules = Arc::new(create_version_specific_rules(version));
+            cache.insert(version.clone(), Arc::clone(&rules));
+            return rules;
+        }
+        // Lock poisoned (a worker panicked): fall back to a one-off compile.
+        Arc::new(create_version_specific_rules(version))
     }
 
     /// Add custom rules from TOML config to the scanner's rule set.
@@ -624,6 +768,13 @@ impl ContractScanner {
             };
         }
 
+        // Comment-stripped view of the source (offsets/line numbers preserved). Most
+        // analyzers match against this so prose in doc comments (e.g. "/// @dev executes
+        // a `delegatecall`") cannot trigger findings. Analyzers that intentionally read
+        // annotations (@custom:storage-location, evm-version notes) receive the original.
+        let stripped_content = Self::strip_comments(content);
+        let stripped: &str = &stripped_content;
+
         // Skip pure library contracts for many vulnerability types
         let is_library = self.is_library(content);
 
@@ -635,44 +786,44 @@ impl ContractScanner {
 
         // Run advanced analysis (skip some for libraries/tests)
         if !is_library {
-            vulnerabilities.extend(self.advanced_analyzer.analyze_control_flow(content));
+            vulnerabilities.extend(self.advanced_analyzer.analyze_control_flow(stripped));
         }
-        vulnerabilities.extend(self.advanced_analyzer.analyze_complexity(content));
+        vulnerabilities.extend(self.advanced_analyzer.analyze_complexity(stripped));
 
         if !is_test && !is_library {
-            vulnerabilities.extend(self.advanced_analyzer.analyze_access_control(content));
+            vulnerabilities.extend(self.advanced_analyzer.analyze_access_control(stripped));
         }
         vulnerabilities.extend(self.advanced_analyzer.analyze_storage_layout(content));
         vulnerabilities.extend(self.advanced_analyzer.analyze_gas_optimization(content));
 
         // Run DeFi-specific analysis (skip for test contracts)
         if self.config.enable_defi_analysis && !is_test {
-            vulnerabilities.extend(self.advanced_analyzer.analyze_defi_vulnerabilities(content));
+            vulnerabilities.extend(self.advanced_analyzer.analyze_defi_vulnerabilities(stripped));
         }
 
         // Run NFT-specific analysis
         if !is_test {
-            vulnerabilities.extend(self.advanced_analyzer.analyze_nft_vulnerabilities(content));
+            vulnerabilities.extend(self.advanced_analyzer.analyze_nft_vulnerabilities(stripped));
         }
 
         // Run known exploit pattern detection
-        vulnerabilities.extend(self.advanced_analyzer.detect_known_exploits(content));
+        vulnerabilities.extend(self.advanced_analyzer.detect_known_exploits(stripped));
 
         // Run REKT.NEWS real-world exploit pattern detection (HIGH PRIORITY)
         // Based on $3.1B+ in actual losses from 2024-2025
         if !is_test {
-            vulnerabilities.extend(self.advanced_analyzer.analyze_rekt_news_patterns(content));
+            vulnerabilities.extend(self.advanced_analyzer.analyze_rekt_news_patterns(stripped));
         }
 
         // Run 2025 OWASP Smart Contract Top 10 analysis
         // Based on $1.42B in losses documented in 2024 incidents
         if !is_test {
-            vulnerabilities.extend(self.advanced_analyzer.analyze_owasp_2025_patterns(content));
+            vulnerabilities.extend(self.advanced_analyzer.analyze_owasp_2025_patterns(stripped));
         }
 
         // Run Phase 6 modern detector suite (ERC4626, Permit2, LayerZero, EIP-4337, Merkle, etc.)
         if self.config.enable_phase6_analysis && !is_test {
-            vulnerabilities.extend(self.advanced_analyzer.analyze_phase6_patterns(content));
+            vulnerabilities.extend(self.advanced_analyzer.analyze_phase6_patterns(stripped));
         }
 
         // Run DeFi security research paper analysis (arXiv:2205.09524v1)
@@ -680,7 +831,7 @@ impl ContractScanner {
         if !is_test {
             vulnerabilities.extend(
                 self.advanced_analyzer
-                    .analyze_defi_paper_vulnerabilities(content),
+                    .analyze_defi_paper_vulnerabilities(stripped),
             );
         }
 
@@ -699,14 +850,20 @@ impl ContractScanner {
         if !is_test {
             vulnerabilities.extend(
                 self.advanced_analyzer
-                    .analyze_2025_exploit_patterns(content),
+                    .analyze_2025_exploit_patterns(stripped),
             );
+        }
+
+        // Run classic SWC-registry pattern analysis (tx.origin auth, push-payment DoS,
+        // unlimited approvals). Timeless bugs that complement the modern detectors.
+        if !is_test {
+            vulnerabilities.extend(self.advanced_analyzer.analyze_classic_patterns(stripped));
         }
 
         // Run DeFi-specific protocol analysis (AMM, Lending, Oracle, MEV)
         if self.config.enable_defi_analysis && !is_test && !is_library {
             let defi_analyzer = crate::defi::DeFiAnalyzer::new();
-            let defi_findings = defi_analyzer.analyze(content);
+            let defi_findings = defi_analyzer.analyze(stripped);
             // Deduplicate: skip DeFi findings within 3 lines of same-category existing findings
             for df in defi_findings {
                 let is_dup = vulnerabilities.iter().any(|existing| {
@@ -769,6 +926,22 @@ impl ContractScanner {
                     .trim()
                     .replace("pragma solidity ", "")
                     .replace(';', "");
+
+                // Floating constraints (^0.8.20, >=0.6.2) compile with newer patch
+                // releases in practice, so the floor version's known issues are
+                // advisory, not a defect of the contract. Only exact pins keep the
+                // computed severity.
+                let is_floating = version_str.contains('^') || version_str.contains(">=");
+                let severity = if is_floating
+                    && !matches!(
+                        severity,
+                        crate::vulnerabilities::VulnerabilitySeverity::Critical
+                    ) {
+                    crate::vulnerabilities::VulnerabilitySeverity::Info
+                } else {
+                    severity
+                };
+
                 let title = format!(
                     "Compiler: {} Known Issue{} for {}",
                     version_vulns.len(),
@@ -792,10 +965,10 @@ impl ContractScanner {
             }
         }
 
-        // Scan with general rules
+        // Scan with general rules (multiline rules use the comment-stripped view)
         for rule in &self.rules {
             if rule.multiline {
-                vulnerabilities.extend(self.scan_multiline_pattern(content, rule));
+                vulnerabilities.extend(self.scan_multiline_pattern(&stripped_content, rule));
             } else {
                 vulnerabilities.extend(self.scan_line_patterns(
                     content,
@@ -806,12 +979,17 @@ impl ContractScanner {
             }
         }
 
-        // Add version-specific vulnerability checks
-        if let Some(version) = compiler_version {
-            let version_rules = create_version_specific_rules(&version);
-            for rule in &version_rules {
+        // Add version-specific vulnerability checks.
+        // Skip them for open-ended constraints like `pragma solidity >=0.6.2;` (no upper
+        // bound): such files compile with current compilers, so rules targeting the old
+        // floor version (e.g. "0.6.x lacks overflow protection") do not apply.
+        let pragma_text = self.parser.get_pragma_version(content).unwrap_or_default();
+        let open_ended_pragma = pragma_text.contains(">=") && !pragma_text.contains('<');
+        if let Some(version) = compiler_version.filter(|_| !open_ended_pragma) {
+            let version_rules = self.version_rules(&version);
+            for rule in version_rules.iter() {
                 if rule.multiline {
-                    vulnerabilities.extend(self.scan_multiline_pattern(content, rule));
+                    vulnerabilities.extend(self.scan_multiline_pattern(&stripped_content, rule));
                 } else {
                     vulnerabilities.extend(self.scan_line_patterns(
                         content,
@@ -827,12 +1005,14 @@ impl ContractScanner {
         // Phase 6: Advanced Analysis Engine
         // ============================================================================
 
-        // Run logic vulnerability analysis (business logic bugs)
-        if self.config.enable_logic_analysis && !is_test {
+        // Run logic vulnerability analysis (business logic bugs).
+        // Libraries are skipped: they hold no state and take salts/params by design
+        // (e.g. Clones.cloneDeterministic legitimately accepts a caller-chosen salt).
+        if self.config.enable_logic_analysis && !is_test && !is_library {
             if self.verbose {
                 println!("  🧠 Running logic vulnerability analysis...");
             }
-            vulnerabilities.extend(self.logic_analyzer.analyze(content));
+            vulnerabilities.extend(self.logic_analyzer.analyze(stripped));
         }
 
         // Run dependency/import analysis
@@ -906,8 +1086,16 @@ impl ContractScanner {
         crate::exploit_db::enrich_with_exploits(&mut vulnerabilities);
         crate::attack_path::enrich_with_attack_paths(&mut vulnerabilities, content);
 
-        // Sort vulnerabilities by line number
-        vulnerabilities.sort_by(|a, b| a.line_number.cmp(&b.line_number));
+        // Sort by composite risk score (highest first) so the most dangerous
+        // findings surface at the top of every report, with line number as a
+        // stable tiebreaker. Risk enrichment above (CVSS + exploit history) is
+        // complete at this point, so risk_score() is fully resolved.
+        vulnerabilities.sort_by(|a, b| {
+            b.risk_score()
+                .partial_cmp(&a.risk_score())
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(a.line_number.cmp(&b.line_number))
+        });
 
         ScanResult {
             vulnerabilities,
@@ -1246,6 +1434,64 @@ impl ContractScanner {
                 if self.is_test_contract(full_content) {
                     return false;
                 }
+                // Interface-only files intentionally use open pragmas (>=x.y.z) so they
+                // can be imported by consumers on any compatible compiler version.
+                if self.is_interface_contract(full_content) {
+                    return false;
+                }
+                true
+            }
+
+            VulnerabilityCategory::ArbitraryExternalCall => {
+                // Governance executors (Governor/Timelock) make arbitrary calls BY
+                // DESIGN — the protection is the proposal/vote/timelock flow, not a
+                // target whitelist. Flagging every governor as Critical is noise.
+                if (full_content.contains("proposal") || full_content.contains("Proposal"))
+                    && (full_content.contains("Governor")
+                        || full_content.contains("quorum")
+                        || full_content.contains("timelock")
+                        || full_content.contains("Timelock"))
+                {
+                    return false;
+                }
+                true
+            }
+
+            VulnerabilityCategory::UncheckedMathOperation => {
+                // Shift amounts produced by a uint8 cast are bounded to 0-255 and cannot
+                // exceed the 256-bit shift range (e.g. `1 << uint8(enumValue)`).
+                if RE_BOUNDED_SHIFT.is_match(line) {
+                    return false;
+                }
+                true
+            }
+
+            VulnerabilityCategory::UnsafeDowncast => {
+                // Don't report if SafeCast is used
+                if full_content.contains("SafeCast") || full_content.contains("safeCast") {
+                    return false;
+                }
+                // Don't report in pure/view functions (less risky)
+                if self.is_view_or_pure_function(line) {
+                    return false;
+                }
+                // Don't report casts of constants/literals
+                if line.contains("(0)") || line.contains("(1)") || line.contains("(2)") {
+                    return false;
+                }
+                // Only flag downcasts of financial-looking values. Casting enums,
+                // addresses (uint160(target)), packed validation words, selectors etc.
+                // is deliberate bit manipulation, not a truncation-of-funds risk.
+                let financial = [
+                    "amount", "balance", "share", "price", "fee", "supply", "debt", "reward",
+                    "liquidity", "total", "wei", "assets",
+                ];
+                if let Some(caps) = RE_DOWNCAST_ARG.captures(line) {
+                    let var = caps.get(1).map_or("", |m| m.as_str()).to_lowercase();
+                    if !financial.iter().any(|f| var.contains(f)) {
+                        return false;
+                    }
+                }
                 true
             }
 
@@ -1379,6 +1625,15 @@ impl ContractScanner {
             }
 
             VulnerabilityCategory::InputValidationFailure => {
+                // `address(this).code.length == 0` inspects the contract's OWN code to
+                // detect constructor-time execution (OZ Initializable) — an attacker
+                // cannot bypass a self-check, so the construction-bypass rule is moot.
+                if let Some(title) = _title {
+                    if title.contains("Contract Check Bypassable") && line.contains("address(this)")
+                    {
+                        return false;
+                    }
+                }
                 // Don't report if function is internal/private
                 if self.is_internal_or_private(line) {
                     return false;
@@ -1450,22 +1705,6 @@ impl ContractScanner {
             VulnerabilityCategory::SelfdestructDeprecation => {
                 // Don't report in test/mock contracts
                 if self.is_test_contract(full_content) {
-                    return false;
-                }
-                true
-            }
-
-            VulnerabilityCategory::UnsafeDowncast => {
-                // Don't report if SafeCast is used
-                if full_content.contains("SafeCast") || full_content.contains("safeCast") {
-                    return false;
-                }
-                // Don't report in pure/view functions (less risky)
-                if self.is_view_or_pure_function(line) {
-                    return false;
-                }
-                // Don't report casts of constants/literals
-                if line.contains("(0)") || line.contains("(1)") || line.contains("(2)") {
                     return false;
                 }
                 true
