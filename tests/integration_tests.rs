@@ -443,6 +443,13 @@ fn scan_file_with_args(path: &str, extra_args: &[&str]) -> String {
     stdout
 }
 
+fn fake_tool_path(tool_name: &str) -> PathBuf {
+    let fake_bin = generated_fixture_root().join("fake-bin");
+    fs::create_dir_all(&fake_bin).expect("Failed to create fake tool dir");
+    fs::write(fake_bin.join(tool_name), "#!/bin/sh\nexit 0\n").expect("Failed to write fake tool");
+    fake_bin
+}
+
 /// Count findings of a given severity in JSON output.
 fn count_severity(json: &str, severity: &str) -> usize {
     let parsed: serde_json::Value = match serde_json::from_str(json) {
@@ -545,8 +552,7 @@ fn test_no_critical_reentrancy_with_guard() {
     let critical = count_severity(&output, "Critical");
     assert_eq!(
         critical, 0,
-        "False positive: safe_reentrancy.sol with nonReentrant guard should have 0 Critical, got {}",
-        critical
+        "False positive: safe_reentrancy.sol with nonReentrant guard should have 0 Critical, got {critical}"
     );
 }
 
@@ -577,8 +583,7 @@ fn test_no_critical_with_ownable() {
     let critical = count_severity(&output, "Critical");
     assert_eq!(
         critical, 0,
-        "False positive: ownable_safe.sol with onlyOwner should have 0 Critical, got {}",
-        critical
+        "False positive: ownable_safe.sol with onlyOwner should have 0 Critical, got {critical}"
     );
 }
 
@@ -742,8 +747,7 @@ fn test_no_critical_false_positives_safe_erc20() {
     let critical = count_severity(&output, "Critical");
     assert_eq!(
         critical, 0,
-        "False positive: safe_erc20_usage.sol should have 0 Critical findings, got {}",
-        critical
+        "False positive: safe_erc20_usage.sol should have 0 Critical findings, got {critical}"
     );
 }
 
@@ -820,6 +824,78 @@ fn test_sarif_output_is_valid() {
     assert!(sarif["runs"].is_array(), "SARIF should have runs array");
 }
 
+#[test]
+fn test_dynamic_tool_catalog_json() {
+    let output = Command::new(scanner_bin())
+        .args(["--dynamic-list-tools", "--format", "json"])
+        .output()
+        .expect("Failed to run scanner");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "dynamic tool catalog failed\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+
+    let catalog: serde_json::Value =
+        serde_json::from_str(&stdout).expect("catalog should be valid JSON");
+    let ids: Vec<&str> = catalog
+        .as_array()
+        .expect("catalog should be a JSON array")
+        .iter()
+        .filter_map(|tool| tool["id"].as_str())
+        .collect();
+
+    for expected in ["echidna", "forge-fuzz", "halmos", "certora", "forta"] {
+        assert!(ids.contains(&expected), "missing dynamic tool {expected}");
+    }
+}
+
+#[test]
+fn test_dynamic_dry_run_json_output() {
+    let resolved_path = resolve_test_path("tests/contracts/reentrancy/classic_reentrancy.sol");
+    let fake_bin = fake_tool_path("echidna-test");
+    let path = format!(
+        "{}:{}",
+        fake_bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+
+    let output = Command::new(scanner_bin())
+        .arg(&resolved_path)
+        .args([
+            "--format",
+            "json",
+            "--min-severity",
+            "info",
+            "--dynamic-analysis",
+            "--dynamic-dry-run",
+            "--dynamic-tool",
+            "echidna",
+        ])
+        .env("PATH", path)
+        .output()
+        .expect("Failed to run scanner");
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(
+        matches!(output.status.code(), Some(0..=3)),
+        "dynamic dry-run failed\nstatus: {}\nstdout:\n{}\nstderr:\n{}",
+        output.status,
+        stdout,
+        stderr
+    );
+
+    let parsed: serde_json::Value =
+        serde_json::from_str(&stdout).expect("dynamic dry-run output should be valid JSON");
+    let run = &parsed["dynamic_analysis"]["runs"][0];
+    assert_eq!(run["tool_id"].as_str(), Some("echidna"));
+    assert_eq!(run["status"].as_str(), Some("Planned"));
+    assert_eq!(run["command"].as_str(), Some("echidna-test"));
+}
+
 // =========================================================================
 // v0.8.0 False Positive Regression Tests
 // =========================================================================
@@ -831,13 +907,11 @@ fn test_fp_reentrancy_guard_no_critical() {
     let high = count_severity(&output, "High");
     assert_eq!(
         critical, 0,
-        "FP regression: fp_reentrancy_guard.sol with nonReentrant should have 0 Critical, got {}",
-        critical
+        "FP regression: fp_reentrancy_guard.sol with nonReentrant should have 0 Critical, got {critical}"
     );
     assert_eq!(
         high, 0,
-        "FP regression: fp_reentrancy_guard.sol with nonReentrant should have 0 High, got {}",
-        high
+        "FP regression: fp_reentrancy_guard.sol with nonReentrant should have 0 High, got {high}"
     );
 }
 
@@ -847,8 +921,7 @@ fn test_fp_ownable_functions_no_critical() {
     let critical = count_severity(&output, "Critical");
     assert_eq!(
         critical, 0,
-        "FP regression: fp_ownable_functions.sol with onlyOwner should have 0 Critical, got {}",
-        critical
+        "FP regression: fp_ownable_functions.sol with onlyOwner should have 0 Critical, got {critical}"
     );
 }
 
@@ -868,13 +941,11 @@ fn test_fp_view_functions_no_state_warnings() {
     let high = count_severity(&output, "High");
     assert_eq!(
         critical, 0,
-        "FP regression: view/pure contract should have 0 Critical, got {}",
-        critical
+        "FP regression: view/pure contract should have 0 Critical, got {critical}"
     );
     assert_eq!(
         high, 0,
-        "FP regression: view/pure contract should have 0 High, got {}",
-        high
+        "FP regression: view/pure contract should have 0 High, got {high}"
     );
 }
 
@@ -884,8 +955,7 @@ fn test_fp_transfer_2300_gas_no_reentrancy() {
     let critical = count_severity(&output, "Critical");
     assert_eq!(
         critical, 0,
-        "FP regression: .transfer()/.send() with 2300 gas should have 0 Critical reentrancy, got {}",
-        critical
+        "FP regression: .transfer()/.send() with 2300 gas should have 0 Critical reentrancy, got {critical}"
     );
 }
 
@@ -1001,8 +1071,7 @@ fn test_classic_reentrancy_bounded_findings() {
     let total = total_findings(&output);
     assert!(
         total <= 10,
-        "Finding flood: classic_reentrancy.sol should have ≤10 findings after dedup, got {}",
-        total
+        "Finding flood: classic_reentrancy.sol should have ≤10 findings after dedup, got {total}"
     );
 }
 
@@ -1023,8 +1092,7 @@ fn test_compiler_findings_consolidated() {
         .unwrap_or(0);
     assert!(
         compiler_count <= 1,
-        "Compiler findings should be consolidated to ≤1, got {}",
-        compiler_count
+        "Compiler findings should be consolidated to ≤1, got {compiler_count}"
     );
 }
 
@@ -1076,8 +1144,7 @@ fn test_cvss_vector_format() {
         if let Some(vector) = v["cvss_vector"].as_str() {
             assert!(
                 vector.starts_with("CVSS:3.1/"),
-                "CVSS vector should start with 'CVSS:3.1/', got: {}",
-                vector
+                "CVSS vector should start with 'CVSS:3.1/', got: {vector}"
             );
         }
     }
@@ -1094,7 +1161,6 @@ fn test_json_output_version_0_9() {
     let version = parsed["version"].as_str().unwrap_or("");
     assert_eq!(
         version, "0.9.0",
-        "Scanner version in JSON should be 0.9.0, got '{}'",
-        version
+        "Scanner version in JSON should be 0.9.0, got '{version}'"
     );
 }

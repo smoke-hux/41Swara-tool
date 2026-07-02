@@ -250,16 +250,15 @@ impl VulnerabilityReporter {
                 vuln.recommendation
             );
 
-            // CVSS score and priority label
-            let priority_label = if let Some(cvss) = vuln.cvss_score {
-                let priority_score = cvss * vuln.confidence_percent as f64 / 100.0;
-                if priority_score >= 7.0 {
-                    "P1".bright_red().bold()
-                } else if priority_score >= 4.0 {
-                    "P2".bright_yellow().bold()
-                } else {
-                    "P3".dimmed().bold()
-                }
+            // CVSS score and priority label.
+            // Use the composite Vulnerability::risk_score (CVSS x confidence x
+            // exploit history) so the console matches the professional reporter
+            // and the documented ranking, rather than a divergent CVSS-only formula.
+            let priority_full = vuln.priority_label();
+            let priority_label = if priority_full.starts_with("P1") {
+                "P1".bright_red().bold()
+            } else if priority_full.starts_with("P2") {
+                "P2".bright_yellow().bold()
             } else {
                 "P3".dimmed().bold()
             };
@@ -616,19 +615,9 @@ impl VulnerabilityReporter {
                         VulnerabilityConfidence::Low => "Low",
                     };
 
-                    // Priority calculation
-                    let priority_label = if let Some(cvss) = vuln.cvss_score {
-                        let ps = cvss * vuln.confidence_percent as f64 / 100.0;
-                        if ps >= 7.0 {
-                            "P1 - Immediate"
-                        } else if ps >= 4.0 {
-                            "P2 - Short-term"
-                        } else {
-                            "P3 - Backlog"
-                        }
-                    } else {
-                        "P3 - Backlog"
-                    };
+                    // Composite priority via Vulnerability::risk_score (CVSS x
+                    // confidence x exploit history) — consistent with all reporters.
+                    let priority_label = vuln.priority_label();
 
                     report.push_str(&format!(
                         "**{}.** {} — `{}`\n\n",

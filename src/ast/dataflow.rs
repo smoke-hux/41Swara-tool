@@ -4,12 +4,15 @@
 //! dangerous sinks like external calls, state writes, and require statements.
 
 #![allow(dead_code)]
-#![allow(unused_imports)]
 #![allow(unused_mut)]
 
-use super::cfg::CFGBuilder;
 use super::parser::{ContractDefinition, FunctionDefinition, SolidityAST, Statement, Visibility};
+use once_cell::sync::Lazy;
+use regex::Regex;
 use std::collections::{HashMap, HashSet};
+
+static IDENTIFIER_PATTERN: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"\b([a-zA-Z_][a-zA-Z0-9_]*)\b").unwrap());
 
 /// Taint sources - origins of potentially malicious data
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -101,7 +104,6 @@ impl TaintState {
 pub struct DataFlowAnalyzer {
     taint_map: HashMap<String, TaintState>,
     results: Vec<TaintResult>,
-    cfg_builder: CFGBuilder,
 }
 
 impl DataFlowAnalyzer {
@@ -109,13 +111,13 @@ impl DataFlowAnalyzer {
         Self {
             taint_map: HashMap::new(),
             results: Vec::new(),
-            cfg_builder: CFGBuilder::new(),
         }
     }
 
     /// Analyze an entire AST for taint flows
     pub fn analyze(&mut self, ast: &SolidityAST) -> Vec<TaintResult> {
         self.results.clear();
+        self.taint_map.clear();
 
         for contract in &ast.contracts {
             self.analyze_contract(contract);
@@ -126,6 +128,8 @@ impl DataFlowAnalyzer {
 
     /// Analyze a single contract
     fn analyze_contract(&mut self, contract: &ContractDefinition) {
+        self.taint_map.clear();
+
         // Initialize state variable taint (storage reads are taint sources)
         for var in &contract.state_variables {
             // Only public state variables are potentially tainted externally
@@ -145,8 +149,8 @@ impl DataFlowAnalyzer {
 
     /// Analyze a single function
     fn analyze_function(&mut self, function: &FunctionDefinition) {
-        // Reset taint map for function-local analysis
-        let mut local_taint: HashMap<String, TaintState> = HashMap::new();
+        // Seed each function with contract-level public storage taint, then track locals.
+        let mut local_taint = self.taint_map.clone();
 
         // Initialize taint from function parameters (calldata is taint source)
         for param in &function.parameters {
@@ -426,8 +430,7 @@ impl DataFlowAnalyzer {
         }
 
         // Check for tainted variables in expression
-        let var_pattern = regex::Regex::new(r"\b([a-zA-Z_][a-zA-Z0-9_]*)\b").unwrap();
-        for cap in var_pattern.captures_iter(expr) {
+        for cap in IDENTIFIER_PATTERN.captures_iter(expr) {
             if let Some(var_name) = cap.get(1) {
                 if let Some(var_taint) = taint_map.get(var_name.as_str()) {
                     result.merge(var_taint);
@@ -453,319 +456,9 @@ impl DataFlowAnalyzer {
             || name.contains("total")
             || name.contains("Total")
     }
-
-    /// Get all flows from a specific source type
-    pub fn get_flows_from_source(&self, source_type: TaintSource) -> Vec<&TaintResult> {
-        self.results
-            .iter()
-            .filter(|r| r.source == source_type)
-            .collect()
-    }
-
-    /// Get all flows to a specific sink type
-    pub fn get_flows_to_sink(&self, sink_type: TaintSink) -> Vec<&TaintResult> {
-        self.results
-            .iter()
-            .filter(|r| r.sink == sink_type)
-            .collect()
-    }
-
-    /// Check if there's a dangerous taint flow (source to dangerous sink)
-    pub fn has_dangerous_flow(&self) -> bool {
-        self.results.iter().any(|r| {
-            matches!(
-                r.sink,
-                TaintSink::ExternalCall
-                    | TaintSink::DelegateCall
-                    | TaintSink::Selfdestruct
-                    | TaintSink::Create
-                    | TaintSink::Create2
-            )
-        })
-    }
 }
 
 impl Default for DataFlowAnalyzer {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Inter-procedural analysis context
-pub struct InterproceduralAnalyzer {
-    call_graph: HashMap<String, Vec<String>>,
-    function_summaries: HashMap<String, FunctionSummary>,
-}
-
-#[derive(Debug, Clone)]
-pub struct FunctionSummary {
-    pub taint_sources: HashSet<TaintSource>,
-    pub taint_sinks: HashSet<TaintSink>,
-    pub tainted_params: Vec<usize>,
-    pub tainted_returns: bool,
-}
-
-impl InterproceduralAnalyzer {
-    pub fn new() -> Self {
-        Self {
-            call_graph: HashMap::new(),
-            function_summaries: HashMap::new(),
-        }
-    }
-
-    /// Build call graph from AST and compute function summaries with fixed-point taint propagation.
-    /// Propagates taint across internal function calls (max 10 iterations).
-    pub fn build_call_graph(&mut self, ast: &SolidityAST) {
-        for contract in &ast.contracts {
-            for function in &contract.functions {
-                let caller = format!("{}::{}", contract.name, function.name);
-                let callees = self.extract_callees(function);
-                self.call_graph.insert(caller.clone(), callees);
-
-                // Build initial function summary
-                let summary = self.summarize_function(function);
-                self.function_summaries.insert(caller, summary);
-            }
-        }
-
-        // Fixed-point iteration: propagate taint through call graph (max 10 rounds)
-        for _ in 0..10 {
-            let mut changed = false;
-            let keys: Vec<String> = self.function_summaries.keys().cloned().collect();
-            for caller_key in &keys {
-                if let Some(callees) = self.call_graph.get(caller_key).cloned() {
-                    for callee in &callees {
-                        // Try to find the callee summary (internal call within same contract)
-                        let callee_key = if callee.contains("::") {
-                            callee.clone()
-                        } else {
-                            // Resolve within same contract
-                            let contract_prefix = caller_key.split("::").next().unwrap_or("");
-                            format!("{}::{}", contract_prefix, callee)
-                        };
-
-                        if let Some(callee_summary) =
-                            self.function_summaries.get(&callee_key).cloned()
-                        {
-                            if let Some(caller_summary) =
-                                self.function_summaries.get_mut(caller_key)
-                            {
-                                // Propagate: if callee returns tainted data, mark caller's summary
-                                if callee_summary.tainted_returns {
-                                    let old_len = caller_summary.taint_sources.len();
-                                    caller_summary
-                                        .taint_sources
-                                        .extend(callee_summary.taint_sources.iter().cloned());
-                                    if caller_summary.taint_sources.len() > old_len {
-                                        changed = true;
-                                    }
-                                }
-                                // Propagate: if callee has dangerous sinks, caller inherits them
-                                let old_sink_len = caller_summary.taint_sinks.len();
-                                caller_summary
-                                    .taint_sinks
-                                    .extend(callee_summary.taint_sinks.iter().cloned());
-                                if caller_summary.taint_sinks.len() > old_sink_len {
-                                    changed = true;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            if !changed {
-                break;
-            }
-        }
-    }
-
-    /// Build a summary of a function's taint characteristics.
-    fn summarize_function(&self, function: &FunctionDefinition) -> FunctionSummary {
-        let mut sources = HashSet::new();
-        let mut sinks = HashSet::new();
-        let mut tainted_params = Vec::new();
-
-        // All external/public function parameters are tainted from calldata
-        for (i, _param) in function.parameters.iter().enumerate() {
-            if matches!(
-                function.visibility,
-                Visibility::External | Visibility::Public
-            ) {
-                tainted_params.push(i);
-                sources.insert(TaintSource::Calldata);
-            }
-        }
-
-        // Scan body for sinks
-        if let Some(body) = &function.body {
-            self.scan_statements_for_sinks(&body.statements, &mut sources, &mut sinks);
-        }
-
-        let tainted_returns = !sources.is_empty();
-
-        FunctionSummary {
-            taint_sources: sources,
-            taint_sinks: sinks,
-            tainted_params,
-            tainted_returns,
-        }
-    }
-
-    /// Scan statements for taint sources and sinks.
-    fn scan_statements_for_sinks(
-        &self,
-        statements: &[Statement],
-        sources: &mut HashSet<TaintSource>,
-        sinks: &mut HashSet<TaintSink>,
-    ) {
-        for stmt in statements {
-            match stmt {
-                Statement::ExternalCall { function, .. } => {
-                    if function == "delegatecall" {
-                        sinks.insert(TaintSink::DelegateCall);
-                    } else {
-                        sinks.insert(TaintSink::ExternalCall);
-                    }
-                }
-                Statement::Assignment { value, .. } => {
-                    if value.contains("msg.sender") {
-                        sources.insert(TaintSource::MsgSender);
-                    }
-                    if value.contains("msg.value") {
-                        sources.insert(TaintSource::MsgValue);
-                    }
-                    if value.contains("tx.origin") {
-                        sources.insert(TaintSource::TxOrigin);
-                    }
-                }
-                Statement::If {
-                    then_block,
-                    else_block,
-                    ..
-                } => {
-                    self.scan_statements_for_sinks(then_block, sources, sinks);
-                    if let Some(else_stmts) = else_block {
-                        self.scan_statements_for_sinks(else_stmts, sources, sinks);
-                    }
-                }
-                Statement::For { body, .. } | Statement::While { body, .. } => {
-                    self.scan_statements_for_sinks(body, sources, sinks);
-                }
-                Statement::Assembly { content, .. } => {
-                    if content.contains("selfdestruct") {
-                        sinks.insert(TaintSink::Selfdestruct);
-                    }
-                    if content.contains("sstore") {
-                        sinks.insert(TaintSink::StateWrite);
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    fn extract_callees(&self, function: &FunctionDefinition) -> Vec<String> {
-        let mut callees = Vec::new();
-
-        if let Some(body) = &function.body {
-            self.extract_callees_from_statements(&body.statements, &mut callees);
-        }
-
-        callees
-    }
-
-    fn extract_callees_from_statements(&self, statements: &[Statement], callees: &mut Vec<String>) {
-        for stmt in statements {
-            match stmt {
-                Statement::InternalCall { function, .. } => {
-                    callees.push(function.clone());
-                }
-                Statement::ExternalCall {
-                    target, function, ..
-                } => {
-                    callees.push(format!("{}.{}", target, function));
-                }
-                Statement::If {
-                    then_block,
-                    else_block,
-                    ..
-                } => {
-                    self.extract_callees_from_statements(then_block, callees);
-                    if let Some(else_stmts) = else_block {
-                        self.extract_callees_from_statements(else_stmts, callees);
-                    }
-                }
-                Statement::For { body, .. } | Statement::While { body, .. } => {
-                    self.extract_callees_from_statements(body, callees);
-                }
-                _ => {}
-            }
-        }
-    }
-
-    /// Get functions that can reach a target function
-    pub fn get_callers(&self, target: &str) -> Vec<&String> {
-        self.call_graph
-            .iter()
-            .filter(|(_, callees)| callees.contains(&target.to_string()))
-            .map(|(caller, _)| caller)
-            .collect()
-    }
-
-    /// Get functions called by a source function
-    pub fn get_callees(&self, source: &str) -> Option<&Vec<String>> {
-        self.call_graph.get(source)
-    }
-
-    /// Check if there's a path from source to target function
-    pub fn can_reach(&self, source: &str, target: &str) -> bool {
-        let mut visited = HashSet::new();
-        self.dfs_reach(source, target, &mut visited)
-    }
-
-    /// Check if a function has any dangerous taint flows based on summaries.
-    pub fn has_dangerous_flow_in(&self, function_key: &str) -> bool {
-        if let Some(summary) = self.function_summaries.get(function_key) {
-            summary.taint_sinks.iter().any(|s| {
-                matches!(
-                    s,
-                    TaintSink::ExternalCall | TaintSink::DelegateCall | TaintSink::Selfdestruct
-                )
-            })
-        } else {
-            false
-        }
-    }
-
-    /// Get function summaries for external consumption.
-    pub fn get_summary(&self, function_key: &str) -> Option<&FunctionSummary> {
-        self.function_summaries.get(function_key)
-    }
-
-    fn dfs_reach(&self, current: &str, target: &str, visited: &mut HashSet<String>) -> bool {
-        if current == target {
-            return true;
-        }
-
-        if visited.contains(current) {
-            return false;
-        }
-
-        visited.insert(current.to_string());
-
-        if let Some(callees) = self.call_graph.get(current) {
-            for callee in callees {
-                if self.dfs_reach(callee, target, visited) {
-                    return true;
-                }
-            }
-        }
-
-        false
-    }
-}
-
-impl Default for InterproceduralAnalyzer {
     fn default() -> Self {
         Self::new()
     }

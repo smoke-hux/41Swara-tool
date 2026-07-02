@@ -24,7 +24,7 @@ Static analysis for Solidity smart contracts, built for bug bounty hunters, audi
 - **L2 & cross-chain** &mdash; sequencer uptime, bridge validation, PUSH0 compatibility
 - **90%+ false positive reduction** &mdash; 3-layer filtering, version-aware, recognizes OpenZeppelin/Solmate/Solady
 - **Priority-based triage** &mdash; P1/P2/P3 remediation priorities (CVSS &times; confidence)
-- **Fully offline** &mdash; no network dependencies, no API keys
+- **Offline-first** &mdash; static analysis is local; optional dynamic integrations run external tools/services only when requested
 
 ---
 
@@ -69,7 +69,36 @@ git pull origin main && cargo install --path . --force
 
 # CI gate: fail if high/critical found
 41 . --fail-on high -q
+
+# Plan a fuzzing/symbolic pipeline without executing tools
+41 . --dynamic-analysis --dynamic-dry-run
+
+# Run selected dynamic tools when installed locally
+41 . --dynamic-analysis --dynamic-tool echidna,forge-fuzz,halmos
 ```
+
+---
+
+## Web Workbench
+
+The repository includes a Vite/React frontend in `web/` for configuring scans, selecting dynamic-analysis tools, generating CLI commands, and reviewing JSON output.
+
+```bash
+cd web
+npm install
+npm run dev
+```
+
+The browser app can:
+
+- Build scanner commands for static scans, audit reports, baselines, Slither correlation, Foundry PoC generation, and dynamic-analysis runs
+- Select fuzzing, symbolic, formal, monitoring, differential, and fork-simulation tools
+- Preview/copy exact `41` commands before execution
+- Upload or paste `41 --format json` output and inspect findings in tables
+- Display dynamic-analysis run metadata from the scanner JSON output
+- Attempt `POST http://127.0.0.1:4141/api/scan` for a future local API bridge, while falling back to the generated terminal command
+
+Static CLI analysis remains offline. Browser-based execution needs a local API bridge because browsers cannot directly spawn the Rust binary.
 
 ---
 
@@ -171,9 +200,44 @@ The `--audit` report now generates:
 41 . --no-eip-analysis                # Disable EIP-specific checks
 41 . --config rules.toml              # Load custom rules from TOML
 41 . --baseline prev.json             # Diff against previous scan
+41 --dynamic-list-tools               # Show supported fuzz/symbolic/formal/monitoring tools
+41 . --dynamic-analysis --dynamic-dry-run
+41 . --dynamic-analysis --dynamic-tool echidna,forge-fuzz,halmos
+41 . --dynamic-analysis --dynamic-tool forge-fork --dynamic-fork-url "$RPC_URL"
+41 . --dynamic-analysis --dynamic-tool diffusc --dynamic-diff-target contracts/V2.sol
 ```
 
 Run `41 --help` for the full CLI reference.
+
+---
+
+## Dynamic Analysis Orchestration
+
+41Swara can now coordinate external dynamic-analysis tools so the workflow is not limited to static scanning. It does not vendor or reimplement these systems; it discovers local CLIs, runs selected tools, captures stdout/stderr summaries, and reports missing or service-only tools cleanly.
+
+Supported tool families:
+
+| Family | Tools |
+|--------|-------|
+| Fuzzing | Echidna, Foundry forge fuzz, Medusa, Ityfuzz |
+| Symbolic execution | Manticore, Halmos, hevm |
+| Formal verification | Certora Prover, K Framework / KEVM |
+| Runtime monitoring | Tenderly, OpenZeppelin Defender, Forta, BlockSec Phalcon |
+| Differential testing | Diffusc |
+| Exploit simulation | Foundry fork tests, Ape Framework |
+
+Common commands:
+
+```bash
+41 --dynamic-list-tools
+41 --dynamic-list-tools -f json
+41 . --dynamic-analysis --dynamic-dry-run
+41 . --dynamic-analysis --dynamic-tool all --dynamic-dry-run
+41 . --dynamic-analysis --dynamic-tool echidna,medusa,halmos
+41 . --dynamic-analysis --dynamic-tool forge-fork --dynamic-fork-url "$RPC_URL"
+```
+
+Service integrations such as Tenderly, Defender, Forta, and Phalcon are reported as configuration-required because they need provider-side setup, API keys, bots, or watch rules. Formal tools are similarly skipped until required spec files are present.
 
 ---
 
@@ -205,7 +269,17 @@ Run `41 --help` for the full CLI reference.
       "line_number": 15,
       "confidence": 95
     }]
-  }]
+  }],
+  "dynamic_analysis": {
+    "dry_run": true,
+    "pipeline": ["echidna", "forge-fuzz"],
+    "runs": [{
+      "tool_id": "echidna",
+      "status": "Planned",
+      "command": "echidna-test",
+      "args": ["contracts/Vault.sol"]
+    }]
+  }
 }
 ```
 

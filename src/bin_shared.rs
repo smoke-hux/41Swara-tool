@@ -200,6 +200,30 @@ struct Args {
     #[arg(long)]
     foundry_correlate: bool,
 
+    /// Run dynamic/fuzzing/symbolic/formal external tool orchestration
+    #[arg(long)]
+    dynamic_analysis: bool,
+
+    /// List supported dynamic-analysis tools and exit
+    #[arg(long)]
+    dynamic_list_tools: bool,
+
+    /// Dynamic-analysis tools to run (comma-separated; use 'all' for every tool)
+    #[arg(long, value_name = "TOOL", value_delimiter = ',', action = clap::ArgAction::Append)]
+    dynamic_tool: Vec<String>,
+
+    /// Plan dynamic-analysis commands without executing external tools
+    #[arg(long)]
+    dynamic_dry_run: bool,
+
+    /// RPC URL used by fork-capable dynamic tools
+    #[arg(long, value_name = "URL")]
+    dynamic_fork_url: Option<String>,
+
+    /// Comparison target for Diffusc differential fuzzing
+    #[arg(long, value_name = "PATH")]
+    dynamic_diff_target: Option<PathBuf>,
+
     /// Enable DeFi-specific analysis (AMM, lending, oracle, MEV)
     #[arg(long)]
     defi_analysis: bool,
@@ -338,6 +362,12 @@ fn main() {
     // Handle --about flag
     if args.about {
         print_about();
+        return;
+    }
+
+    // Show supported dynamic-analysis tools if requested
+    if args.dynamic_list_tools {
+        print_dynamic_tool_catalog(args.format == "json");
         return;
     }
 
@@ -908,6 +938,163 @@ fn generate_foundry_pocs(vulnerabilities: &[Vulnerability], base_path: &Path, qu
     }
 }
 
+fn dynamic_analysis_requested(args: &Args) -> bool {
+    args.dynamic_analysis || !args.dynamic_tool.is_empty()
+}
+
+fn parse_dynamic_tools(
+    requested: &[String],
+) -> Result<Vec<integrations::dynamic::DynamicTool>, String> {
+    use integrations::dynamic::DynamicTool;
+
+    if requested.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut tools = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for raw in requested {
+        let raw = raw.trim();
+        if raw.is_empty() {
+            continue;
+        }
+        if raw.eq_ignore_ascii_case("default") {
+            for tool in DynamicTool::default_pipeline() {
+                if seen.insert(tool) {
+                    tools.push(tool);
+                }
+            }
+            continue;
+        }
+        if raw.eq_ignore_ascii_case("all") {
+            for tool in DynamicTool::all() {
+                if seen.insert(tool) {
+                    tools.push(tool);
+                }
+            }
+            continue;
+        }
+        let Some(tool) = DynamicTool::from_id(raw) else {
+            return Err(format!(
+                "Unknown dynamic analysis tool '{raw}'. Run --dynamic-list-tools to see supported ids."
+            ));
+        };
+        if seen.insert(tool) {
+            tools.push(tool);
+        }
+    }
+
+    Ok(tools)
+}
+
+fn run_dynamic_analysis(
+    target: &Path,
+    args: &Args,
+) -> Result<integrations::dynamic::DynamicAnalysisReport, String> {
+    use integrations::dynamic::{DynamicAnalysisOptions, DynamicAnalysisRunner};
+
+    let options = DynamicAnalysisOptions {
+        selected_tools: parse_dynamic_tools(&args.dynamic_tool)?,
+        dry_run: args.dynamic_dry_run,
+        fork_url: args.dynamic_fork_url.clone(),
+        diff_target: args.dynamic_diff_target.clone(),
+    };
+
+    Ok(DynamicAnalysisRunner::new(options).run(target))
+}
+
+fn dynamic_exit_code(report: Option<&integrations::dynamic::DynamicAnalysisReport>) -> i32 {
+    match report {
+        Some(report) if report.failed_count() > 0 => 1,
+        _ => 0,
+    }
+}
+
+fn merge_exit_codes(static_exit: i32, dynamic_exit: i32) -> i32 {
+    if static_exit == 10 {
+        10
+    } else if static_exit == 0 {
+        dynamic_exit
+    } else if dynamic_exit == 0 {
+        static_exit
+    } else {
+        static_exit.min(dynamic_exit)
+    }
+}
+
+fn print_dynamic_tool_catalog(json: bool) {
+    let catalog = integrations::dynamic::tool_catalog();
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&catalog).unwrap());
+        return;
+    }
+
+    println!("{}", "Dynamic Analysis Tool Catalog".bright_cyan().bold());
+    println!(
+        "{}",
+        "Use --dynamic-analysis --dynamic-tool <id> to run a local tool, or --dynamic-dry-run to inspect commands.".cyan()
+    );
+    println!();
+
+    for tool in catalog {
+        let command = tool.command.unwrap_or("service/API");
+        println!(
+            "{}  {} ({})",
+            tool.id.bright_white().bold(),
+            tool.name,
+            tool.category
+        );
+        println!("    command: {command}");
+        println!("    {}", tool.summary);
+    }
+}
+
+fn print_dynamic_analysis_report(report: &integrations::dynamic::DynamicAnalysisReport) {
+    println!("\n{}", "Dynamic Analysis Pipeline".bright_cyan().bold());
+    println!("{} {}", "Target:".cyan(), report.target);
+    if report.dry_run {
+        println!("{}", "Mode: dry-run (no external commands executed)".yellow());
+    }
+
+    for run in &report.runs {
+        let status = format!("{:?}", run.status);
+        let status = match run.status {
+            integrations::dynamic::DynamicRunStatus::Passed => status.green(),
+            integrations::dynamic::DynamicRunStatus::Failed
+            | integrations::dynamic::DynamicRunStatus::Error => status.red(),
+            integrations::dynamic::DynamicRunStatus::Planned => status.cyan(),
+            integrations::dynamic::DynamicRunStatus::Skipped
+            | integrations::dynamic::DynamicRunStatus::RequiresConfiguration => status.yellow(),
+        };
+
+        println!(
+            "  [{}] {} - {}",
+            status,
+            run.tool_name.bright_white(),
+            run.message
+        );
+
+        if let Some(command) = &run.command {
+            let args = if run.args.is_empty() {
+                String::new()
+            } else {
+                format!(" {}", run.args.join(" "))
+            };
+            println!("      command: {command}{args}");
+        }
+    }
+
+    println!(
+        "{} {} planned, {} skipped/config-needed, {} failed",
+        "Summary:".cyan(),
+        report.planned_count(),
+        report.skipped_count(),
+        report.failed_count()
+    );
+}
+
 /// Process a single file (either .sol or .json ABI).
 /// Returns an exit code: 0 = clean, 1 = critical/high, 2 = medium, 3 = low/info, 10 = error.
 fn process_file(args: &Args, path: &PathBuf) -> i32 {
@@ -959,6 +1146,18 @@ fn process_file(args: &Args, path: &PathBuf) -> i32 {
                         generate_foundry_pocs(&vulnerabilities, path, args.quiet);
                     }
 
+                    let dynamic_report = if dynamic_analysis_requested(args) {
+                        match run_dynamic_analysis(path, args) {
+                            Ok(report) => Some(report),
+                            Err(e) => {
+                                eprintln!("{} {}", "Dynamic analysis error:".red().bold(), e);
+                                return 10;
+                            }
+                        }
+                    } else {
+                        None
+                    };
+
                     // Export baseline if requested
                     if let Some(ref export_path) = args.export_baseline {
                         export_baseline(&[(path.clone(), vulnerabilities.clone())], export_path);
@@ -982,6 +1181,7 @@ fn process_file(args: &Args, path: &PathBuf) -> i32 {
                                 "file": path.to_string_lossy(),
                                 "vulnerabilities": &vulnerabilities,
                             }],
+                            "dynamic_analysis": dynamic_report.as_ref(),
                         });
                         println!("{}", serde_json::to_string_pretty(&json_output).unwrap());
                         reporter.add_file_results_silent(path, vulnerabilities.clone());
@@ -994,21 +1194,20 @@ fn process_file(args: &Args, path: &PathBuf) -> i32 {
                     } else {
                         reporter.add_file_results(path, vulnerabilities.clone());
                         reporter.print_summary();
+                        if let Some(report) = &dynamic_report {
+                            print_dynamic_analysis_report(report);
+                        }
                     }
 
                     // Auto-save markdown report with compiler info
                     save_markdown_report(&reporter, path, &args.output, args.quiet);
 
-                    // Calculate exit code
-                    if let Some(ref fail_severity) = args.fail_on {
+                    let static_exit = if let Some(ref fail_severity) = args.fail_on {
                         let has_failures = vulnerabilities
                             .iter()
                             .any(|v| fail_severity.matches(&v.severity));
-                        return if has_failures { 1 } else { 0 };
-                    }
-
-                    // Default exit code based on max severity
-                    if vulnerabilities.is_empty() {
+                        if has_failures { 1 } else { 0 }
+                    } else if vulnerabilities.is_empty() {
                         0
                     } else {
                         vulnerabilities
@@ -1016,7 +1215,9 @@ fn process_file(args: &Args, path: &PathBuf) -> i32 {
                             .map(|v| severity_to_exit_code(&v.severity))
                             .min()
                             .unwrap_or(0)
-                    }
+                    };
+
+                    merge_exit_codes(static_exit, dynamic_exit_code(dynamic_report.as_ref()))
                 }
                 Err(e) => {
                     eprintln!(
@@ -1304,7 +1505,8 @@ fn perform_quick_scan(scanner: &ContractScanner, dir: &PathBuf, args: &Args) {
 /// Supports git-diff mode, watch mode, project analysis, audit reports, and normal scanning.
 /// Returns exit code based on the highest severity finding discovered.
 fn process_directory(args: &Args, dir: &PathBuf) -> i32 {
-    if !args.quiet {
+    // Status messages must not pollute machine-readable output (json/sarif on stdout)
+    if !args.quiet && args.format != "json" && args.format != "sarif" {
         println!("\n{} {}", "Scanning directory:".green(), dir.display());
     }
 
@@ -1349,7 +1551,7 @@ fn process_directory(args: &Args, dir: &PathBuf) -> i32 {
                     .into_iter()
                     .filter(|f| !should_exclude_file(f, &exclude_patterns))
                     .collect();
-                if !args.quiet {
+                if !args.quiet && args.format != "json" && args.format != "sarif" {
                     println!(
                         "{} {} modified .sol files from git diff",
                         "Found".green(),
@@ -1381,7 +1583,7 @@ fn process_directory(args: &Args, dir: &PathBuf) -> i32 {
 
     if sol_files.is_empty() {
         if !args.quiet {
-            println!("{}", "No .sol files found in directory".yellow());
+            eprintln!("{}", "No .sol files found in directory".yellow());
         }
         return 0;
     }
@@ -1521,6 +1723,7 @@ fn process_directory(args: &Args, dir: &PathBuf) -> i32 {
         Ok(mutex) => mutex.into_inner().unwrap(),
         Err(arc) => arc.lock().unwrap().clone(),
     };
+    results.sort_by(|(left, _), (right, _)| left.cmp(right));
 
     // Slither correlation: merge findings if --slither-json is provided
     if let Some(ref slither_path) = args.slither_json {
@@ -1542,6 +1745,18 @@ fn process_directory(args: &Args, dir: &PathBuf) -> i32 {
             generate_foundry_pocs(&all_vulns, dir, args.quiet);
         }
     }
+
+    let dynamic_report = if dynamic_analysis_requested(args) {
+        match run_dynamic_analysis(dir, args) {
+            Ok(report) => Some(report),
+            Err(e) => {
+                eprintln!("{} {}", "Dynamic analysis error:".red().bold(), e);
+                return 10;
+            }
+        }
+    } else {
+        None
+    };
 
     let total_vulns: usize = results.iter().map(|(_, v)| v.len()).sum();
 
@@ -1567,6 +1782,7 @@ fn process_directory(args: &Args, dir: &PathBuf) -> i32 {
             "files_scanned": sol_files.len(),
             "total_vulnerabilities": total_vulns,
             "min_severity_filter": format!("{:?}", args.min_severity),
+            "dynamic_analysis": dynamic_report.as_ref(),
             "results": results.iter().map(|(path, vulns)| {
                 serde_json::json!({
                     "file": path.to_string_lossy(),
@@ -1584,6 +1800,9 @@ fn process_directory(args: &Args, dir: &PathBuf) -> i32 {
         println!("{}", serde_json::to_string_pretty(&sarif_report).unwrap());
     } else {
         reporter.print_summary();
+        if let Some(report) = &dynamic_report {
+            print_dynamic_analysis_report(report);
+        }
     }
 
     // Auto-save markdown report to file
@@ -1597,9 +1816,9 @@ fn process_directory(args: &Args, dir: &PathBuf) -> i32 {
             .iter()
             .any(|(_, vulns)| vulns.iter().any(|v| fail_severity.matches(&v.severity)));
         if has_failures {
-            return 1;
+            return merge_exit_codes(1, dynamic_exit_code(dynamic_report.as_ref()));
         }
-        return 0;
+        return dynamic_exit_code(dynamic_report.as_ref());
     }
 
     // Default exit codes based on max severity
@@ -1615,7 +1834,7 @@ fn process_directory(args: &Args, dir: &PathBuf) -> i32 {
         .min()
         .unwrap_or(0);
 
-    max_severity
+    merge_exit_codes(max_severity, dynamic_exit_code(dynamic_report.as_ref()))
 }
 
 /// Convert severity to exit code (lower is more severe)
@@ -2232,6 +2451,25 @@ fn show_examples() {
         "41 --project-analysis".bright_white()
     );
 
+    println!("\n{}", "Dynamic Analysis:".bright_green().bold());
+    println!(
+        "  {} List supported tools",
+        "41 --dynamic-list-tools".bright_white()
+    );
+    println!(
+        "  {} Plan the default pipeline",
+        "41 . --dynamic-analysis --dynamic-dry-run".bright_white()
+    );
+    println!(
+        "  {} Run selected fuzz/symbolic tools",
+        "41 . --dynamic-analysis --dynamic-tool echidna,forge-fuzz,halmos".bright_white()
+    );
+    println!(
+        "  {} Run fork-based exploit tests",
+        "41 . --dynamic-analysis --dynamic-tool forge-fork --dynamic-fork-url $RPC_URL"
+            .bright_white()
+    );
+
     println!(
         "\n{}",
         "Detected Vulnerabilities (SWC IDs):".bright_yellow().bold()
@@ -2283,7 +2521,7 @@ fn print_about() {
     );
     println!();
     println!();
-    println!("  - Fully offline, zero API keys, 100% local analysis");
+    println!("  - Offline-first static analysis; optional external dynamic tools on request");
     println!("  - Designed for bug bounty hunters, security auditors, and researchers");
     println!("  - Detects real-world exploit patterns from $3.1B+ in DeFi losses");
     println!();

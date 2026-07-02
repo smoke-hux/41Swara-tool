@@ -29,8 +29,12 @@ impl LendingAnalyzer {
             health_factor_pattern: Regex::new(r"healthFactor|health_factor|ltv|LTV").unwrap(),
             interest_rate_pattern: Regex::new(r"interestRate|interest_rate|borrowRate|supplyRate")
                 .unwrap(),
-            flash_loan_pattern: Regex::new(r"flashLoan|flash_loan|executeOperation|onFlashLoan")
-                .unwrap(),
+            // Word-bounded + call parens: bare substring matching flagged governance
+            // functions like `_executeOperations(` as Aave flash-loan callbacks.
+            flash_loan_pattern: Regex::new(
+                r"\b(flashLoan|flash_loan|executeOperation|onFlashLoan|receiveFlashLoan)\s*\(",
+            )
+            .unwrap(),
         }
     }
 

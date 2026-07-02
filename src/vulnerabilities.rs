@@ -1310,7 +1310,9 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
     rules.push(
         VulnerabilityRule::new(
             VulnerabilityCategory::PragmaIssues,
-            VulnerabilitySeverity::Medium,
+            // Low, not Medium: floating pragma is an informational finding in every
+            // professional tool (Slither: informational). Libraries intentionally float.
+            VulnerabilitySeverity::Low,
             r"pragma\s+solidity\s*\^",
             "Floating Pragma".to_string(),
             "Contract uses floating pragma which can lead to compilation with different versions"
@@ -2173,19 +2175,10 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
         .unwrap(),
     );
 
-    // State changes after callback-triggering operations
-    rules.push(
-        VulnerabilityRule::new(
-            VulnerabilityCategory::CallbackInjection,
-            VulnerabilitySeverity::High,
-            r"(safeTransferFrom|_safeMint|onERC\d+Received).*\n.*=",
-            "State Change After Callback Operation".to_string(),
-            "State modifications after callback operations enable reentrancy attacks".to_string(),
-            "Move all state changes before operations that trigger callbacks".to_string(),
-            true,
-        )
-        .unwrap(),
-    );
+    // REMOVED: "State Change After Callback Operation". In dotall mode
+    // `(safeTransferFrom|...).*\n.*=` matched from any callback NAME (including standard
+    // interface implementations and function declarations) to any `=` later in the file.
+    // Real callback reentrancy is covered by the CEI detector and CFG reentrancy analysis.
 
     // 3. ARBITRARY EXTERNAL CALLS ($21M across 18 incidents in 2024)
     // User-controlled call targets
@@ -2193,7 +2186,9 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
         VulnerabilityRule::new(
             VulnerabilityCategory::ArbitraryExternalCall,
             VulnerabilitySeverity::Critical,
-            r"function\s+\w+\([^)]*address\s+target[^)]*\).*\.call\(|\.delegatecall\(",
+            // The former `|\.delegatecall\(` alternative flagged EVERY delegatecall in
+            // the file (dotall mode); delegatecall risks are covered by DelegateCalls rules.
+            r"function\s+\w+\([^)]*address\s+target[^)]*\)[^}]*\.(call|delegatecall)\s*\(",
             "Arbitrary External Call to User Address".to_string(),
             "Function allows external calls to user-controlled addresses ($21M in 2024)"
                 .to_string(),
@@ -2218,21 +2213,10 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
         .unwrap(),
     );
 
-    // 4. INPUT VALIDATION FAILURES (34.6% of exploits, $69M in 2024)
-    // Array parameter detected - validated in advanced analyzer
-    rules.push(
-        VulnerabilityRule::new(
-            VulnerabilityCategory::InputValidationFailure,
-            VulnerabilitySeverity::High,
-            r"function\s+\w+\([^)]*\[\]\s+\w+[^)]*\)\s+(external|public)",
-            "Array Parameter Detected".to_string(),
-            "Function with array parameter - verify length validation (#1 exploit cause)"
-                .to_string(),
-            "Add require(array.length > 0 && array.length <= MAX_LENGTH) validation".to_string(),
-            false,
-        )
-        .unwrap(),
-    );
+    // REMOVED: "Array Parameter Detected" — flagged every external/public function with
+    // an array parameter as High. detect_input_validation_patterns() in
+    // advanced_analysis.rs handles the dangerous case (function loops over the array
+    // without a length bound) with proper context checking.
 
     // Address parameters - validated in advanced analyzer for zero-address checks
     // Removed negative lookahead - handled by context-aware analysis
@@ -2671,7 +2655,7 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
         VulnerabilityRule::new(
             VulnerabilityCategory::UncheckedMathOperation,
             VulnerabilitySeverity::Critical,
-            r"unchecked\s*\{[^}]*(<<|>>|\*\*|sqrt|exp)",
+            r"unchecked\s*\{[^}]*((<<|>>)\s*[a-zA-Z_]|\*\*|\bsqrt\s*\(|\bexp\s*\()",
             "Unchecked Complex Math Operation".to_string(),
             "Complex math in unchecked block - bit shifts and exponents don't revert on overflow"
                 .to_string(),
@@ -2761,19 +2745,11 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
         .unwrap(),
     );
 
-    // LP token manipulation in single transaction
-    rules.push(
-        VulnerabilityRule::new(
-            VulnerabilityCategory::LiquidityManipulation,
-            VulnerabilitySeverity::Critical,
-            r"mint.*burn|burn.*mint|addLiquidity.*removeLiquidity",
-            "LP Token Manipulation in Single Transaction".to_string(),
-            "Minting and burning LP tokens in same context enables flash LP attacks".to_string(),
-            "Add per-block minting/burning limits or same-block transfer restrictions".to_string(),
-            true,
-        )
-        .unwrap(),
-    );
+    // REMOVED: "LP Token Manipulation in Single Transaction" (mint.*burn dotall regex).
+    // In multiline mode this matched any FILE containing both words "mint" and "burn"
+    // anywhere — including comments and standard token/bridge contracts that legitimately
+    // mint and burn (24 Critical false positives on OpenZeppelin bridges/wrappers).
+    // Flash-LP attacks are covered by the first-depositor and flash-loan rules.
 
     // First depositor/LP attack vector
     rules.push(
@@ -2962,17 +2938,10 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
         false,
     ).unwrap());
 
-    // Missing Return Value - Table I from paper
-    // Function declares return but doesn't return on all paths
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::MissingReturnValue,
-        VulnerabilitySeverity::Medium,
-        r"function\s+\w+\([^)]*\)[^{]*returns\s*\([^)]+\)[^{]*\{[^}]*if\s*\([^)]*\)\s*\{[^}]*\}[^}]*\}",
-        "Conditional Without Return in All Paths".to_string(),
-        "Function with returns declaration has conditional logic that may not return on all paths".to_string(),
-        "Ensure all code paths return a value or use explicit revert".to_string(),
-        true,
-    ).unwrap());
+    // REMOVED: "Conditional Without Return in All Paths" (MissingReturnValue).
+    // Determining whether all code paths return requires control-flow analysis; a regex
+    // with [^}]* cannot handle nested braces and matched nearly every function containing
+    // an if-block (76 false positives on OpenZeppelin alone, ~0 true positives).
 
     // REMOVED: "Payable Receive/Fallback" flagged every receive()/fallback() as a greedy
     // contract risk. Checking if a withdraw mechanism exists requires cross-function analysis
@@ -3083,7 +3052,10 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
     rules.push(VulnerabilityRule::new(
         VulnerabilityCategory::LogicError,
         VulnerabilitySeverity::Critical,
-        r"(for|while)\s*\([^)]*\)\s*\{[\s\S]*?msg\.value[\s\S]*?\n\s*\}",
+        // [^}]* keeps the match inside the loop's own block: a `msg.value` that appears
+        // after any closing brace (i.e. outside the loop or in a later function) no
+        // longer matches. Conservative for nested blocks, but eliminates cross-function FPs.
+        r"(for|while)\s*\([^)]*\)\s*\{[^}]*msg\.value",
         "msg.value Reused in Loop".to_string(),
         "msg.value is constant across loop iterations - each iteration uses the full value, not a fraction".to_string(),
         "Track total sent and decrement from msg.value, or use a separate amount per iteration".to_string(),
@@ -3132,18 +3104,10 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
     // Security Hardening Rules (v0.6.0) - New Detections
     // ====================================================================
 
-    // 41S-050: Missing storage gap in upgradeable base contracts
-    // Upgradeable contracts that serve as base contracts need __gap to prevent
-    // storage collision when new state variables are added in future upgrades.
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::MissingStorageGap,
-        VulnerabilitySeverity::High,
-        r"contract\s+\w+\s+is\s+[^{]*Upgradeable[^{]*\{",
-        "Missing Storage Gap in Upgradeable Contract".to_string(),
-        "Upgradeable base contracts should reserve storage slots with __gap to prevent storage collision in future upgrades".to_string(),
-        "Add `uint256[50] private __gap;` at the end of the contract's state variables".to_string(),
-        false,
-    ).unwrap());
+    // REMOVED: 41S-050 regex variant of "Missing Storage Gap". It fired on every
+    // `contract X is ...Upgradeable...` line without ever checking whether __gap (or
+    // ERC-7201 namespaced storage) is present. detect_storage_collision_proxy() in
+    // advanced_analysis.rs performs the same detection with the __gap check.
 
     // 41S-052: selfdestruct deprecation (EIP-6780)
     // Post-Dencun, selfdestruct only sends ETH without destroying the contract
@@ -4098,10 +4062,10 @@ fn add_cross_version_attacks(rules: &mut Vec<VulnerabilityRule>, version: &Compi
     rules.push(
         VulnerabilityRule::new(
             VulnerabilityCategory::UnsafeExternalCalls,
-            VulnerabilitySeverity::Critical,
-            r"abi\.encodePacked\([^)]*,\s*[^)]*\)",
+            VulnerabilitySeverity::Medium,
+            r"(keccak256|sha256)\s*\(\s*abi\.encodePacked\s*\([^)]*,\s*[^)]*\)",
             "Hash Collision Attack Risk".to_string(),
-            "abi.encodePacked with multiple dynamic types can cause hash collisions".to_string(),
+            "abi.encodePacked with multiple dynamic types can cause hash collisions when hashed".to_string(),
             "Use abi.encode() instead of abi.encodePacked() or add fixed separators".to_string(),
             false,
         )

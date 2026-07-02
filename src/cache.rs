@@ -278,29 +278,3 @@ impl Drop for ScanCache {
         let _ = self.save_to_disk();
     }
 }
-
-/// Batch cache operations for parallel scanning
-pub struct BatchCache {
-    cache: Arc<ScanCache>,
-}
-
-impl BatchCache {
-    pub fn new(cache: Arc<ScanCache>) -> Self {
-        Self { cache }
-    }
-
-    /// Batch check for cached files
-    pub fn batch_check(&self, files: &[(&str, &str)]) -> Vec<bool> {
-        files
-            .iter()
-            .map(|(path, content)| self.cache.is_cached(path, content))
-            .collect()
-    }
-
-    /// Batch put results
-    pub fn batch_put(&self, results: &[(&str, &str, &[Vulnerability])]) {
-        for (path, content, vulns) in results {
-            self.cache.put(path, content, vulns);
-        }
-    }
-}

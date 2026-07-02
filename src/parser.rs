@@ -3,7 +3,7 @@ use std::fs;
 use std::io::Result;
 use std::path::Path;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum CompilerVersion {
     V04, // 0.4.x - Very old, many issues
     V05, // 0.5.x - Breaking changes from 0.4

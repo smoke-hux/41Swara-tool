@@ -4,21 +4,23 @@
 //! Enables path-sensitive analysis and dead code detection.
 
 #![allow(dead_code)]
-#![allow(unused_imports)]
 #![allow(unused_variables)]
 
 use super::parser::{FunctionDefinition, Statement};
+use once_cell::sync::Lazy;
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::Direction;
+use regex::Regex;
 use std::collections::{HashMap, HashSet};
+
+static IDENTIFIER_PATTERN: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"\b([a-zA-Z_][a-zA-Z0-9_]*)\b").unwrap());
 
 /// Control Flow Graph for a function
 #[derive(Debug, Clone)]
 pub struct ControlFlowGraph {
     graph: DiGraph<CFGNode, CFGEdge>,
     entry: NodeIndex,
-    exits: Vec<NodeIndex>,
-    node_map: HashMap<usize, NodeIndex>, // Line number to node index
 }
 
 /// CFG Node representing a basic block or control point
@@ -152,8 +154,6 @@ impl CFGBuilder {
         ControlFlowGraph {
             graph,
             entry,
-            exits,
-            node_map,
         }
     }
 
@@ -838,13 +838,12 @@ impl CFGBuilder {
     }
 
     fn extract_variables(&self, expr: &str) -> Vec<String> {
-        let var_pattern = regex::Regex::new(r"\b([a-zA-Z_][a-zA-Z0-9_]*)\b").unwrap();
         let keywords = [
             "if", "else", "for", "while", "return", "require", "revert", "true", "false", "msg",
             "block", "tx",
         ];
 
-        var_pattern
+        IDENTIFIER_PATTERN
             .captures_iter(expr)
             .filter_map(|cap| cap.get(1).map(|m| m.as_str().to_string()))
             .filter(|v| !keywords.contains(&v.as_str()))
@@ -853,66 +852,27 @@ impl CFGBuilder {
 }
 
 impl ControlFlowGraph {
-    /// Get all paths from entry to any exit
-    pub fn get_all_paths(&self) -> Vec<Vec<NodeIndex>> {
-        let mut paths = Vec::new();
-        let mut current_path = vec![self.entry];
-        self.dfs_paths(
-            self.entry,
-            &mut current_path,
-            &mut paths,
-            &mut HashSet::new(),
-        );
-        paths
-    }
-
-    fn dfs_paths(
-        &self,
-        node: NodeIndex,
-        current_path: &mut Vec<NodeIndex>,
-        all_paths: &mut Vec<Vec<NodeIndex>>,
-        visited: &mut HashSet<NodeIndex>,
-    ) {
-        if visited.contains(&node) {
-            return; // Avoid cycles
-        }
-
-        if self.exits.contains(&node) {
-            all_paths.push(current_path.clone());
-            return;
-        }
-
-        visited.insert(node);
-
-        for neighbor in self.graph.neighbors_directed(node, Direction::Outgoing) {
-            current_path.push(neighbor);
-            self.dfs_paths(neighbor, current_path, all_paths, visited);
-            current_path.pop();
-        }
-
-        visited.remove(&node);
-    }
-
     /// Find all external calls that occur before state changes
     pub fn find_reentrancy_patterns(&self) -> Vec<(usize, usize)> {
         let mut patterns = Vec::new();
+        let mut seen = HashSet::new();
+        let nodes: Vec<NodeIndex> = self.graph.node_indices().collect();
 
-        for path in self.get_all_paths() {
-            let mut last_external_call: Option<usize> = None;
+        for call_node in &nodes {
+            for call_stmt in &self.graph[*call_node].statements {
+                if call_stmt.calls.iter().any(|call| call.is_external) {
+                    for write_node in &nodes {
+                        if !self.path_exists(*call_node, *write_node) {
+                            continue;
+                        }
 
-            for node_idx in path {
-                let node = &self.graph[node_idx];
-
-                for stmt in &node.statements {
-                    // Check for external call
-                    if !stmt.calls.is_empty() && stmt.calls.iter().any(|c| c.is_external) {
-                        last_external_call = Some(stmt.line);
-                    }
-
-                    // Check for state modification after external call
-                    if let Some(call_line) = last_external_call {
-                        if !stmt.writes.is_empty() && stmt.line > call_line {
-                            patterns.push((call_line, stmt.line));
+                        for write_stmt in &self.graph[*write_node].statements {
+                            if !write_stmt.writes.is_empty() && write_stmt.line > call_stmt.line {
+                                let pattern = (call_stmt.line, write_stmt.line);
+                                if seen.insert(pattern) {
+                                    patterns.push(pattern);
+                                }
+                            }
                         }
                     }
                 }

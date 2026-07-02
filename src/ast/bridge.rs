@@ -33,13 +33,15 @@ impl ASTAnalysisBridge {
             return findings;
         }
 
+        let lines: Vec<&str> = content.lines().collect();
+
         // Run taint analysis across all contracts
         let mut taint_analyzer = DataFlowAnalyzer::new();
         let taint_results = taint_analyzer.analyze(&ast);
 
         // Convert dangerous taint flows to vulnerability findings
         for result in taint_results {
-            if let Some(vuln) = self.taint_to_vulnerability(&result, content) {
+            if let Some(vuln) = self.taint_to_vulnerability(&result, &lines) {
                 findings.push(vuln);
             }
         }
@@ -53,7 +55,7 @@ impl ASTAnalysisBridge {
                 // Path-sensitive reentrancy detection (CEI violation on all paths)
                 let reentrancy_patterns = cfg.find_reentrancy_patterns();
                 for (call_line, write_line) in reentrancy_patterns {
-                    let snippet = get_line_content(content, call_line);
+                    let snippet = get_line_content(&lines, call_line);
                     findings.push(Vulnerability {
                         severity: VulnerabilitySeverity::High,
                         category: VulnerabilityCategory::Reentrancy,
@@ -61,7 +63,7 @@ impl ASTAnalysisBridge {
                         description: format!(
                             "Path-sensitive analysis confirms external call at line {} \
                              followed by state write at line {} in function '{}'. \
-                             All execution paths through this function exhibit this pattern.",
+                             A reachable execution path through this function exhibits this pattern.",
                             call_line, write_line, function.name
                         ),
                         line_number: call_line,
@@ -103,7 +105,7 @@ impl ASTAnalysisBridge {
     fn taint_to_vulnerability(
         &self,
         result: &crate::ast::dataflow::TaintResult,
-        content: &str,
+        lines: &[&str],
     ) -> Option<Vulnerability> {
         let (severity, category, title) = match (&result.source, &result.sink) {
             // Critical: user-controlled delegatecall target
@@ -146,7 +148,7 @@ impl ASTAnalysisBridge {
             _ => return None,
         };
 
-        let snippet = get_line_content(content, result.sink_line);
+        let snippet = get_line_content(lines, result.sink_line);
 
         Some(Vulnerability {
             severity,
@@ -175,10 +177,10 @@ impl ASTAnalysisBridge {
 }
 
 /// Get a line's content from the source (1-indexed).
-fn get_line_content(content: &str, line: usize) -> String {
-    content
-        .lines()
-        .nth(line.saturating_sub(1))
+fn get_line_content(lines: &[&str], line: usize) -> String {
+    lines
+        .get(line.saturating_sub(1))
+        .copied()
         .unwrap_or("")
         .trim()
         .to_string()

@@ -338,10 +338,10 @@ impl FalsePositiveFilter {
         let has_contract = content.lines().any(|line| contract_pattern.is_match(line));
         ctx.is_interface_only = has_interface && !has_contract;
 
-        // Detect library declarations (libraries have restricted capabilities)
-        ctx.is_library = re!(r"^\s*library\s+\w+")
-            .find(content)
-            .is_some();
+        // Detect library-ONLY files (libraries have restricted capabilities). Files that
+        // bundle a helper library next to contracts keep full analysis of the contracts.
+        // (?m) so ^ anchors per line, not just at the start of the file.
+        ctx.is_library = re!(r"(?m)^\s*library\s+\w+").is_match(content) && !has_contract;
 
         // Detect test contracts (Foundry, Hardhat, DSTest frameworks)
         ctx.is_test_contract = content.contains("import \"forge-std")
@@ -509,7 +509,7 @@ impl FalsePositiveFilter {
         }
 
         // Stage 4: remove exact duplicates and merge related nearby findings
-        self.deduplicate(&mut filtered);
+        self.deduplicate(&mut filtered, content);
 
         filtered
     }
@@ -691,6 +691,9 @@ impl FalsePositiveFilter {
                 | VulnerabilityCategory::ReadOnlyReentrancy
                 | VulnerabilityCategory::MissingEvents
                 | VulnerabilityCategory::MissingEmergencyStop
+                // Audited math libraries (OZ Math, solady) use unchecked/shift tricks
+                // deliberately; the caller-facing contract is where math risk surfaces.
+                | VulnerabilityCategory::UncheckedMathOperation
                 | VulnerabilityCategory::IsContractPostPectra => return false,
                 _ => {
                     // Also suppress CEI/state-after-call findings in libraries
@@ -1600,7 +1603,7 @@ impl FalsePositiveFilter {
     /// 1. Exact (line, category) dedup
     /// 2. Related-category merge within the same function (or 5-line fallback)
     /// 3. Threat model suppression when specific detections exist
-    fn deduplicate(&self, vulnerabilities: &mut Vec<Vulnerability>) {
+    fn deduplicate(&self, vulnerabilities: &mut Vec<Vulnerability>, content: &str) {
         // Pass 1: exact (line, category) dedup
         let mut seen: HashSet<(usize, String)> = HashSet::new();
         vulnerabilities.retain(|v| {
@@ -1613,13 +1616,48 @@ impl FalsePositiveFilter {
             }
         });
 
-        // Build function boundary map for function-scope merging
-        // Each entry: (start_line, end_line) — 1-based
-        let func_boundaries: Vec<(usize, usize)> = {
-            // We don't have the content here, so use line numbers from findings
-            // to group. We'll use the helper below with a generous window.
-            Vec::new()
+        // Build a map of contract/library boundaries (1-based line ranges) so that
+        // findings in DIFFERENT contracts are never merged together, even when their
+        // line numbers happen to fall within the merge window. Without this, e.g. a
+        // finding at the end of contract A and one at the start of contract B could be
+        // collapsed into one, silently dropping a real finding.
+        let contract_boundaries: Vec<(usize, usize)> = {
+            let mut spans = Vec::new();
+            let decl = re!(r"^\s*(abstract\s+)?(contract|library|interface)\s+\w+");
+            let mut starts: Vec<usize> = Vec::new();
+            for (idx, line) in content.lines().enumerate() {
+                if decl.is_match(line) {
+                    starts.push(idx + 1);
+                }
+            }
+            let total = content.lines().count();
+            for (i, &s) in starts.iter().enumerate() {
+                let end = starts.get(i + 1).map_or(total, |&n| n - 1);
+                spans.push((s, end));
+            }
+            spans
         };
+        // Two findings are "co-located" if they live in the same contract span (or if
+        // we couldn't determine any spans, fall back to permitting the merge).
+        let same_contract = |a: usize, b: usize| -> bool {
+            if contract_boundaries.is_empty() {
+                return true;
+            }
+            let span_of = |ln: usize| {
+                contract_boundaries
+                    .iter()
+                    .position(|&(s, e)| ln >= s && ln <= e)
+            };
+            match (span_of(a), span_of(b)) {
+                (Some(x), Some(y)) => x == y,
+                // A finding at line 1 (file-level, e.g. compiler) has no contract span;
+                // allow those to merge as before.
+                _ => true,
+            }
+        };
+
+        // Function-scope map retained for the merge-window heuristic below.
+        let func_boundaries: Vec<(usize, usize)> = contract_boundaries.clone();
 
         // Pass 2: Merge related categories within the same function or 15-line window
         let category_group = |cat: &VulnerabilityCategory| -> u8 {
@@ -1763,6 +1801,13 @@ impl FalsePositiveFilter {
                 }
                 let gj = effective_group(&vulnerabilities[j]);
                 if gi != gj {
+                    continue;
+                }
+                // Never merge findings that live in different contracts/libraries.
+                if !same_contract(
+                    vulnerabilities[i].line_number,
+                    vulnerabilities[j].line_number,
+                ) {
                     continue;
                 }
                 let line_diff = (vulnerabilities[i].line_number as isize
