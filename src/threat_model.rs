@@ -24,9 +24,24 @@
 
 #![allow(dead_code)]
 
+use once_cell::sync::Lazy;
 use crate::vulnerabilities::{Vulnerability, VulnerabilityCategory, VulnerabilitySeverity};
 use regex::Regex;
 use std::collections::HashSet;
+
+/// Per-call-site regex cache. Each macro expansion creates its own `static Lazy<Regex>`,
+/// so the pattern is compiled exactly once for the lifetime of the process — even when
+/// the surrounding function runs once per scanned file in a 1,000-file sweep.
+///
+/// Use only with `'static` string literals. For dynamic patterns (e.g. `format!`-built),
+/// fall back to `Regex::new(...)` directly.
+macro_rules! re {
+    ($pat:expr) => {{
+        static RE: Lazy<Regex> = Lazy::new(|| Regex::new($pat).unwrap());
+        &*RE
+    }};
+}
+
 
 /// Primary classification of a smart contract based on its functionality.
 ///
@@ -535,17 +550,14 @@ impl ThreatModelGenerator {
     /// Also extracts the names of public entry point functions (up to 20).
     fn analyze_attack_surface(&self, content: &str) -> AttackSurface {
         // Match functions with the `external` visibility modifier
-        let external_pattern = Regex::new(r"function\s+\w+\s*\([^)]*\)\s*external").unwrap();
+        let external_pattern = re!(r"function\s+\w+\s*\([^)]*\)\s*external");
         // Match functions with `public` or `external` visibility
         let public_pattern =
-            Regex::new(r"function\s+\w+\s*\([^)]*\)\s*(?:public|external)").unwrap();
+            re!(r"function\s+\w+\s*\([^)]*\)\s*(?:public|external)");
         // Match functions with the `payable` modifier (accepts ETH)
-        let payable_pattern = Regex::new(r"function\s+\w+\s*\([^)]*\)[^{]*payable").unwrap();
+        let payable_pattern = re!(r"function\s+\w+\s*\([^)]*\)[^{]*payable");
         // Match admin-like functions by common naming prefixes
-        let admin_pattern = Regex::new(
-            r"function\s+(set|update|change|modify|withdraw|transfer|mint|burn|pause|upgrade)\w*",
-        )
-        .unwrap();
+        let admin_pattern = re!(r"function\s+(set|update|change|modify|withdraw|transfer|mint|burn|pause|upgrade)\w*");
 
         let external_count = external_pattern.captures_iter(content).count();
         let public_count = public_pattern.captures_iter(content).count();
@@ -567,7 +579,7 @@ impl ThreatModelGenerator {
 
         // Count low-level external calls that bypass Solidity's safety checks
         let external_call_pattern =
-            Regex::new(r"\.call\{|\.delegatecall\(|\.staticcall\(").unwrap();
+            re!(r"\.call\{|\.delegatecall\(|\.staticcall\(");
         let external_calls = external_call_pattern.captures_iter(content).count();
 
         // Extract function names that serve as public entry points.
@@ -576,7 +588,7 @@ impl ThreatModelGenerator {
         let entry_points: Vec<String> = public_pattern
             .captures_iter(content)
             .filter_map(|_| {
-                let func_name_pattern = Regex::new(r"function\s+(\w+)").unwrap();
+                let func_name_pattern = re!(r"function\s+(\w+)");
                 func_name_pattern
                     .captures(content)
                     .and_then(|c| c.get(1))
@@ -835,7 +847,7 @@ impl ThreatModelGenerator {
     /// Extract names of external/public functions from the contract source.
     /// Returns up to 10 function names.
     fn find_external_functions(&self, content: &str) -> Vec<String> {
-        let pattern = Regex::new(r"function\s+(\w+)\s*\([^)]*\)\s*(?:external|public)").unwrap();
+        let pattern = re!(r"function\s+(\w+)\s*\([^)]*\)\s*(?:external|public)");
         pattern
             .captures_iter(content)
             .filter_map(|c| c.get(1).map(|m| m.as_str().to_string()))
@@ -847,7 +859,7 @@ impl ThreatModelGenerator {
     /// Returns up to 10 function names.
     fn find_admin_functions(&self, content: &str) -> Vec<String> {
         let pattern =
-            Regex::new(r"function\s+(\w+)\s*\([^)]*\)[^{]*(onlyOwner|onlyAdmin|onlyRole)").unwrap();
+            re!(r"function\s+(\w+)\s*\([^)]*\)[^{]*(onlyOwner|onlyAdmin|onlyRole)");
         pattern
             .captures_iter(content)
             .filter_map(|c| c.get(1).map(|m| m.as_str().to_string()))
@@ -863,7 +875,7 @@ impl ThreatModelGenerator {
     fn find_external_call_functions(&self, content: &str) -> Vec<String> {
         let mut functions = Vec::new();
         let lines: Vec<&str> = content.lines().collect();
-        let func_pattern = Regex::new(r"function\s+(\w+)").unwrap();
+        let func_pattern = re!(r"function\s+(\w+)");
 
         // Track which function we are currently inside
         let mut current_function = String::new();

@@ -1,7 +1,12 @@
+use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::Result;
 use std::path::Path;
+
+// Compiled once per process — version parsing runs for every scanned file.
+static VERSION_TRIPLE_RE: Lazy<regex::Regex> =
+    Lazy::new(|| regex::Regex::new(r"(\d+)\.(\d+)\.(\d+)").unwrap());
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum CompilerVersion {
@@ -254,9 +259,7 @@ impl SolidityParser {
         if let Some(pragma) = self.get_pragma_version(content) {
             // Extract version number from pragma
             // Handles formats like: "^0.8.19", ">=0.8.0", "0.8.20", etc.
-            let version_regex = regex::Regex::new(r"(\d+)\.(\d+)\.(\d+)").ok()?;
-
-            if let Some(captures) = version_regex.captures(&pragma) {
+            if let Some(captures) = VERSION_TRIPLE_RE.captures(&pragma) {
                 let major = captures.get(1)?.as_str().parse().ok()?;
                 let minor = captures.get(2)?.as_str().parse().ok()?;
                 let patch = captures.get(3)?.as_str().parse().ok()?;

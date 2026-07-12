@@ -1155,12 +1155,69 @@ fn test_cvss_vector_format() {
 // =========================================================================
 
 #[test]
-fn test_json_output_version_0_9() {
+fn test_json_output_version_0_10() {
     let output = scan_file("tests/contracts/reentrancy/classic_reentrancy.sol");
     let parsed: serde_json::Value = serde_json::from_str(&output).unwrap_or_default();
     let version = parsed["version"].as_str().unwrap_or("");
     assert_eq!(
-        version, "0.9.0",
-        "Scanner version in JSON should be 0.9.0, got '{version}'"
+        version, "0.10.0",
+        "Scanner version in JSON should be 0.10.0, got '{version}'"
+    );
+}
+
+// =========================================================================
+// v0.10.0 Mid-2026 Exploit Detections (41S-085 .. 41S-089)
+// =========================================================================
+
+/// Collect every finding title across all results in the JSON output.
+fn finding_titles(output: &str) -> Vec<String> {
+    let parsed: serde_json::Value = serde_json::from_str(output).unwrap_or_default();
+    parsed["results"]
+        .as_array()
+        .map(|results| {
+            results
+                .iter()
+                .flat_map(|r| r["vulnerabilities"].as_array())
+                .flatten()
+                .filter_map(|v| v["title"].as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[test]
+fn test_2026_midyear_exploits_detected() {
+    let output = scan_file("test_contracts/test_2026_midyear_exploits.sol");
+    let titles = finding_titles(&output);
+    let joined = titles.join("\n");
+
+    for needle in [
+        "Transient Storage Clearing Bug", // 41S-085
+        "EIP-7702 Delegate Uses Raw Storage Slots", // 41S-086
+        "LayerZero Single Required DVN", // 41S-087
+        "fill() Decodes originData Without Validation", // 41S-088
+        "V4 Flash Accounting take() to Caller-Controlled Recipient", // 41S-089
+    ] {
+        assert!(
+            joined.contains(needle),
+            "Expected a mid-2026 finding containing {needle:?}; got:\n{joined}"
+        );
+    }
+}
+
+#[test]
+fn test_2026_midyear_mitigations_suppressed() {
+    let output = scan_file("tests/contracts/modern/safe_2026_mitigated.sol");
+    let joined = finding_titles(&output).join("\n");
+
+    // ERC-7201 namespaced storage mitigates 41S-086.
+    assert!(
+        !joined.contains("EIP-7702 Delegate Uses Raw Storage Slots"),
+        "ERC-7201 namespaced delegate should suppress 41S-086; got:\n{joined}"
+    );
+    // orderId binding + filled-order tracking mitigates 41S-088.
+    assert!(
+        !joined.contains("fill() Decodes originData Without Validation"),
+        "Validated settler should suppress 41S-088; got:\n{joined}"
     );
 }

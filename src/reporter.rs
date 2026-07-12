@@ -385,7 +385,7 @@ impl VulnerabilityReporter {
 
             println!("\n{}", "📂 CATEGORY BREAKDOWN".bright_cyan().bold());
             let mut categories: Vec<_> = self.get_category_breakdown().into_iter().collect();
-            categories.sort_by(|a, b| b.1.cmp(&a.1)); // Sort by count descending
+            categories.sort_by_key(|(_, count)| std::cmp::Reverse(*count)); // count descending
 
             for (category, count) in categories.iter().take(10) {
                 // Show top 10 categories
@@ -551,7 +551,7 @@ impl VulnerabilityReporter {
 
         // Category breakdown
         let mut categories: Vec<_> = self.get_category_breakdown().into_iter().collect();
-        categories.sort_by(|a, b| b.1.cmp(&a.1));
+        categories.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
         if !categories.is_empty() {
             report.push_str("## Category Breakdown\n\n");
             report.push_str("| Category | Count |\n");

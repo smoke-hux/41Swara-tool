@@ -381,6 +381,21 @@ pub fn category_to_cvss(category: &VulnerabilityCategory) -> Option<CvssVector> 
         VulnerabilityCategory::Permit2UnlimitedApproval
         | VulnerabilityCategory::SandwichResistantMissing => CvssVector::nhu(LO, LO),
 
+        // === Mid-2026 patterns (v0.10.0) ===
+        // High, direct fund loss: single-DVN trust, unvalidated cross-chain fill,
+        // and V4 flash-accounting drains are all network-reachable value theft.
+        VulnerabilityCategory::LayerZeroSingleDVN
+        | VulnerabilityCategory::ERC7683UnvalidatedFill
+        | VulnerabilityCategory::ERC6909FlashAccountingDrain => CvssVector::nlu(HI, HI),
+
+        // High but conditional: the 7702 collision needs the user to re-delegate,
+        // and the compiler bug needs a specific clear-ordering to trigger.
+        VulnerabilityCategory::EIP7702DelegateStorageCollision
+        | VulnerabilityCategory::TransientStorageCompilerBug => CvssVector {
+            ui: UserInteraction::Required,
+            ..CvssVector::nlu(HI, HI)
+        },
+
         // === Low / Informational ===
         VulnerabilityCategory::GasOptimization
         | VulnerabilityCategory::UnusedCode
