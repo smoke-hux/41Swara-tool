@@ -68,6 +68,13 @@ struct ScanContext {
 // Pre-compiled regex patterns (compiled once, reused across all scans)
 // Prevents ReDoS risk from repeated compilation and improves performance.
 // =============================================================================
+
+/// The master rule set, compiled once per process. `create_vulnerability_rules`
+/// compiles ~300 regexes (~200ms); every `ContractScanner` after the first gets
+/// a cheap clone (`regex::Regex` is internally reference-counted). This matters
+/// most for the test suite, which constructs dozens of scanners in one process.
+static MASTER_RULES: Lazy<Vec<VulnerabilityRule>> = Lazy::new(create_vulnerability_rules);
+
 static RE_INTERFACE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"^\s*interface\s+\w+").expect("invalid interface regex"));
 static RE_CONTRACT: Lazy<Regex> = Lazy::new(|| {
@@ -153,6 +160,7 @@ pub struct ContractScanner {
     eip_analyzer: EIPAnalyzer,           // ERC standard compliance checks
     false_positive_filter: FalsePositiveFilter, // Multi-pass false positive reduction
     ast_bridge: crate::ast::bridge::ASTAnalysisBridge, // AST/CFG/taint structural analysis
+    defi_analyzer: crate::defi::DeFiAnalyzer, // AMM/lending/oracle/MEV protocol analysis
     config: ScannerConfig,               // Feature toggle configuration
     /// Memoized version-specific rule sets. `create_version_specific_rules` compiles
     /// ~44 regexes; without this it ran once per scanned file. Keyed by the 5-variant
@@ -583,18 +591,25 @@ impl ContractScanner {
 impl ContractScanner {
     /// Create a new scanner with default configuration (all analysis features enabled).
     pub fn new(verbose: bool) -> Self {
+        // The two regex-heavy constructions (master rules: ~300 compiles; EIP +
+        // DeFi analyzers: ~100) run concurrently the first time in a process.
+        let (rules, (eip_analyzer, defi_analyzer)) = rayon::join(
+            || MASTER_RULES.clone(),
+            || (EIPAnalyzer::new(verbose), crate::defi::DeFiAnalyzer::new()),
+        );
         Self {
             parser: SolidityParser::new(),
-            rules: create_vulnerability_rules(),
+            rules,
             verbose,
             advanced_analyzer: AdvancedAnalyzer::new(verbose),
             logic_analyzer: LogicAnalyzer::new(verbose),
             reachability_analyzer: ReachabilityAnalyzer::new(verbose),
             dependency_analyzer: DependencyAnalyzer::new(verbose),
             threat_model_generator: ThreatModelGenerator::new(verbose),
-            eip_analyzer: EIPAnalyzer::new(verbose),
+            eip_analyzer,
             false_positive_filter: FalsePositiveFilter::new(FilterConfig::default()),
             ast_bridge: crate::ast::bridge::ASTAnalysisBridge::new(),
+            defi_analyzer,
             config: ScannerConfig::default(),
             version_rules_cache: Mutex::new(HashMap::new()),
         }
@@ -606,18 +621,23 @@ impl ContractScanner {
             strict_mode: config.enable_strict_filter,
             ..FilterConfig::default()
         };
+        let (rules, (eip_analyzer, defi_analyzer)) = rayon::join(
+            || MASTER_RULES.clone(),
+            || (EIPAnalyzer::new(verbose), crate::defi::DeFiAnalyzer::new()),
+        );
         Self {
             parser: SolidityParser::new(),
-            rules: create_vulnerability_rules(),
+            rules,
             verbose,
             advanced_analyzer: AdvancedAnalyzer::new(verbose),
             logic_analyzer: LogicAnalyzer::new(verbose),
             reachability_analyzer: ReachabilityAnalyzer::new(verbose),
             dependency_analyzer: DependencyAnalyzer::new(verbose),
             threat_model_generator: ThreatModelGenerator::new(verbose),
-            eip_analyzer: EIPAnalyzer::new(verbose),
+            eip_analyzer,
             false_positive_filter: FalsePositiveFilter::new(filter_config),
             ast_bridge: crate::ast::bridge::ASTAnalysisBridge::new(),
+            defi_analyzer,
             config,
             version_rules_cache: Mutex::new(HashMap::new()),
         }
@@ -746,13 +766,26 @@ impl ContractScanner {
     /// regex rules, advanced analyzers, logic/reachability/dependency analysis,
     /// threat modeling, EIP checks, and false positive filtering.
     pub fn scan_content(&self, content: &str) -> ScanResult {
+        // Set SCAN_PROFILE=1 to print per-phase timings to stderr (perf diagnostics).
+        let profile = std::env::var_os("SCAN_PROFILE").is_some();
+        let mut phase_times: Vec<(&str, std::time::Duration)> = Vec::new();
+        macro_rules! timed {
+            ($name:expr, $e:expr) => {{
+                let t = std::time::Instant::now();
+                let r = $e;
+                if profile {
+                    phase_times.push(($name, t.elapsed()));
+                }
+                r
+            }};
+        }
         let mut vulnerabilities = Vec::new();
         let lines: Vec<ParsedLine<'_>> = content
             .lines()
             .enumerate()
             .map(|(idx, line)| (idx + 1, line))
             .collect();
-        let scan_context = self.build_scan_context(content, &lines);
+        let scan_context = timed!("build_scan_context", self.build_scan_context(content, &lines));
 
         // Extract compiler info early — used for version-aware analysis and returned in ScanResult
         let compiler_info = self.parser.extract_compiler_info(content);
@@ -772,7 +805,7 @@ impl ContractScanner {
         // analyzers match against this so prose in doc comments (e.g. "/// @dev executes
         // a `delegatecall`") cannot trigger findings. Analyzers that intentionally read
         // annotations (@custom:storage-location, evm-version notes) receive the original.
-        let stripped_content = Self::strip_comments(content);
+        let stripped_content = timed!("strip_comments", Self::strip_comments(content));
         let stripped: &str = &stripped_content;
 
         // Skip pure library contracts for many vulnerability types
@@ -786,84 +819,77 @@ impl ContractScanner {
 
         // Run advanced analysis (skip some for libraries/tests)
         if !is_library {
-            vulnerabilities.extend(self.advanced_analyzer.analyze_control_flow(stripped));
+            timed!("analyze_control_flow", vulnerabilities.extend(self.advanced_analyzer.analyze_control_flow(stripped)));
         }
-        vulnerabilities.extend(self.advanced_analyzer.analyze_complexity(stripped));
+        timed!("analyze_complexity", vulnerabilities.extend(self.advanced_analyzer.analyze_complexity(stripped)));
 
         if !is_test && !is_library {
-            vulnerabilities.extend(self.advanced_analyzer.analyze_access_control(stripped));
+            timed!("analyze_access_control", vulnerabilities.extend(self.advanced_analyzer.analyze_access_control(stripped)));
         }
-        vulnerabilities.extend(self.advanced_analyzer.analyze_storage_layout(content));
-        vulnerabilities.extend(self.advanced_analyzer.analyze_gas_optimization(content));
+        timed!("analyze_storage_layout", vulnerabilities.extend(self.advanced_analyzer.analyze_storage_layout(content)));
+        timed!("analyze_gas_optimization", vulnerabilities.extend(self.advanced_analyzer.analyze_gas_optimization(content)));
 
         // Run DeFi-specific analysis (skip for test contracts)
         if self.config.enable_defi_analysis && !is_test {
-            vulnerabilities.extend(self.advanced_analyzer.analyze_defi_vulnerabilities(stripped));
+            timed!("analyze_defi_vulnerabilities", vulnerabilities.extend(self.advanced_analyzer.analyze_defi_vulnerabilities(stripped)));
         }
 
         // Run NFT-specific analysis
         if !is_test {
-            vulnerabilities.extend(self.advanced_analyzer.analyze_nft_vulnerabilities(stripped));
+            timed!("analyze_nft_vulnerabilities", vulnerabilities.extend(self.advanced_analyzer.analyze_nft_vulnerabilities(stripped)));
         }
 
         // Run known exploit pattern detection
-        vulnerabilities.extend(self.advanced_analyzer.detect_known_exploits(stripped));
+        timed!("detect_known_exploits", vulnerabilities.extend(self.advanced_analyzer.detect_known_exploits(stripped)));
 
         // Run REKT.NEWS real-world exploit pattern detection (HIGH PRIORITY)
         // Based on $3.1B+ in actual losses from 2024-2025
         if !is_test {
-            vulnerabilities.extend(self.advanced_analyzer.analyze_rekt_news_patterns(stripped));
+            timed!("analyze_rekt_news_patterns", vulnerabilities.extend(self.advanced_analyzer.analyze_rekt_news_patterns(stripped)));
         }
 
         // Run 2025 OWASP Smart Contract Top 10 analysis
         // Based on $1.42B in losses documented in 2024 incidents
         if !is_test {
-            vulnerabilities.extend(self.advanced_analyzer.analyze_owasp_2025_patterns(stripped));
+            timed!("analyze_owasp_2025_patterns", vulnerabilities.extend(self.advanced_analyzer.analyze_owasp_2025_patterns(stripped)));
         }
 
         // Run Phase 6 modern detector suite (ERC4626, Permit2, LayerZero, EIP-4337, Merkle, etc.)
         if self.config.enable_phase6_analysis && !is_test {
-            vulnerabilities.extend(self.advanced_analyzer.analyze_phase6_patterns(stripped));
+            timed!("analyze_phase6_patterns", vulnerabilities.extend(self.advanced_analyzer.analyze_phase6_patterns(stripped)));
         }
 
         // Run DeFi security research paper analysis (arXiv:2205.09524v1)
         // Covers dForce ($24M), Grim Finance ($30M), Popsicle Finance ($25M), Wormhole ($326M) patterns
         if !is_test {
-            vulnerabilities.extend(
-                self.advanced_analyzer
-                    .analyze_defi_paper_vulnerabilities(stripped),
-            );
+            timed!("analyze_defi_paper_vulnerabilities", vulnerabilities.extend(self.advanced_analyzer.analyze_defi_paper_vulnerabilities(stripped)));
         }
 
         // Run L2/chain-specific analysis (PUSH0 compatibility, sequencer, etc.)
         if !is_test {
-            vulnerabilities.extend(self.advanced_analyzer.analyze_l2_patterns(content));
+            timed!("analyze_l2_patterns", vulnerabilities.extend(self.advanced_analyzer.analyze_l2_patterns(content)));
         }
 
         // Run security hardening analysis (storage gaps, timelocks, downcasts, etc.)
         if !is_test {
-            vulnerabilities.extend(self.advanced_analyzer.analyze_security_hardening(content));
+            timed!("analyze_security_hardening", vulnerabilities.extend(self.advanced_analyzer.analyze_security_hardening(content)));
         }
 
         // Run 2025-2026 exploit pattern analysis (v0.7.0)
         // Covers $400M+ real-world exploits: Abracadabra, Yearn, Cetus, Balancer, GMX, Atlas, etc.
         if !is_test {
-            vulnerabilities.extend(
-                self.advanced_analyzer
-                    .analyze_2025_exploit_patterns(stripped),
-            );
+            timed!("analyze_2025_exploit_patterns", vulnerabilities.extend(self.advanced_analyzer.analyze_2025_exploit_patterns(stripped)));
         }
 
         // Run classic SWC-registry pattern analysis (tx.origin auth, push-payment DoS,
         // unlimited approvals). Timeless bugs that complement the modern detectors.
         if !is_test {
-            vulnerabilities.extend(self.advanced_analyzer.analyze_classic_patterns(stripped));
+            timed!("analyze_classic_patterns", vulnerabilities.extend(self.advanced_analyzer.analyze_classic_patterns(stripped)));
         }
 
         // Run DeFi-specific protocol analysis (AMM, Lending, Oracle, MEV)
         if self.config.enable_defi_analysis && !is_test && !is_library {
-            let defi_analyzer = crate::defi::DeFiAnalyzer::new();
-            let defi_findings = defi_analyzer.analyze(stripped);
+            let defi_findings = timed!("defi_analyzer", self.defi_analyzer.analyze(stripped));
             // Deduplicate: skip DeFi findings within 3 lines of same-category existing findings
             for df in defi_findings {
                 let is_dup = vulnerabilities.iter().any(|existing| {
@@ -878,7 +904,7 @@ impl ContractScanner {
 
         // Run AST-based structural analysis (CFG reentrancy + taint tracking)
         if !is_test && !is_library {
-            let ast_findings = self.ast_bridge.analyze(content);
+            let ast_findings = timed!("ast_bridge", self.ast_bridge.analyze(content));
             // Deduplicate AST findings against regex-based findings
             for af in ast_findings {
                 let is_dup = vulnerabilities.iter().any(|existing| {
@@ -966,9 +992,10 @@ impl ContractScanner {
         }
 
         // Scan with general rules (multiline rules use the comment-stripped view)
+        let t_rules = std::time::Instant::now();
         for rule in &self.rules {
             if rule.multiline {
-                vulnerabilities.extend(self.scan_multiline_pattern(&stripped_content, rule));
+                vulnerabilities.extend(self.scan_multiline_pattern(&stripped_content, content, rule));
             } else {
                 vulnerabilities.extend(self.scan_line_patterns(
                     content,
@@ -978,6 +1005,9 @@ impl ContractScanner {
                 ));
             }
         }
+        if profile {
+            phase_times.push(("general_rules", t_rules.elapsed()));
+        }
 
         // Add version-specific vulnerability checks.
         // Skip them for open-ended constraints like `pragma solidity >=0.6.2;` (no upper
@@ -985,11 +1015,16 @@ impl ContractScanner {
         // floor version (e.g. "0.6.x lacks overflow protection") do not apply.
         let pragma_text = self.parser.get_pragma_version(content).unwrap_or_default();
         let open_ended_pragma = pragma_text.contains(">=") && !pragma_text.contains('<');
+        let t_vrules = std::time::Instant::now();
         if let Some(version) = compiler_version.filter(|_| !open_ended_pragma) {
             let version_rules = self.version_rules(&version);
             for rule in version_rules.iter() {
                 if rule.multiline {
-                    vulnerabilities.extend(self.scan_multiline_pattern(&stripped_content, rule));
+                    vulnerabilities.extend(self.scan_multiline_pattern(
+                        &stripped_content,
+                        content,
+                        rule,
+                    ));
                 } else {
                     vulnerabilities.extend(self.scan_line_patterns(
                         content,
@@ -999,6 +1034,9 @@ impl ContractScanner {
                     ));
                 }
             }
+        }
+        if profile {
+            phase_times.push(("version_rules", t_vrules.elapsed()));
         }
 
         // ============================================================================
@@ -1012,7 +1050,7 @@ impl ContractScanner {
             if self.verbose {
                 println!("  🧠 Running logic vulnerability analysis...");
             }
-            vulnerabilities.extend(self.logic_analyzer.analyze(stripped));
+            timed!("logic_analyzer", vulnerabilities.extend(self.logic_analyzer.analyze(stripped)));
         }
 
         // Run dependency/import analysis
@@ -1020,7 +1058,7 @@ impl ContractScanner {
             if self.verbose {
                 println!("  📦 Running dependency analysis...");
             }
-            vulnerabilities.extend(self.dependency_analyzer.analyze(content));
+            timed!("dependency_analyzer", vulnerabilities.extend(self.dependency_analyzer.analyze(content)));
         }
 
         // Generate threat model vulnerabilities
@@ -1028,10 +1066,16 @@ impl ContractScanner {
             if self.verbose {
                 println!("  🎯 Generating threat model...");
             }
-            let threat_model = self.threat_model_generator.generate(content);
-            vulnerabilities.extend(
-                self.threat_model_generator
-                    .to_vulnerabilities_with_content(&threat_model, content),
+            let threat_model = timed!(
+                "threat_model",
+                self.threat_model_generator.generate(content)
+            );
+            timed!(
+                "threat_model_vulns",
+                vulnerabilities.extend(
+                    self.threat_model_generator
+                        .to_vulnerabilities_with_content(&threat_model, content),
+                )
             );
         }
 
@@ -1040,17 +1084,14 @@ impl ContractScanner {
             if self.verbose {
                 println!("  🔗 Running reachability analysis...");
             }
-            vulnerabilities = self
-                .reachability_analyzer
-                .filter_unreachable_vulnerabilities(vulnerabilities, content);
-            self.reachability_analyzer
-                .adjust_confidence(&mut vulnerabilities, content);
-
-            // Also check for external call chain vulnerabilities
-            vulnerabilities.extend(
-                self.reachability_analyzer
-                    .analyze_external_call_chains(content),
-            );
+            let t_reach = std::time::Instant::now();
+            // Single-pass reachability: builds the call graph once and runs
+            // unreachable filtering, confidence adjustment, and external call
+            // chain detection against it.
+            vulnerabilities = self.reachability_analyzer.process(vulnerabilities, content);
+            if profile {
+                phase_times.push(("reachability", t_reach.elapsed()));
+            }
         }
 
         // ============================================================================
@@ -1062,7 +1103,7 @@ impl ContractScanner {
             if self.verbose {
                 println!("  📋 Running EIP vulnerability analysis...");
             }
-            vulnerabilities.extend(self.eip_analyzer.analyze(content));
+            timed!("eip_analyzer", vulnerabilities.extend(self.eip_analyzer.analyze(content)));
         }
 
         // Apply enhanced false positive filtering
@@ -1077,14 +1118,19 @@ impl ContractScanner {
                         .get_filter_stats(original_count, filtered_count)
                 );
             } else {
-                vulnerabilities = self.false_positive_filter.filter(vulnerabilities, content);
+                vulnerabilities = timed!(
+                    "fp_filter",
+                    self.false_positive_filter.filter(vulnerabilities, content)
+                );
             }
         }
 
         // Enrich all findings with CVSS scores, exploit references, and attack paths
-        crate::cvss::enrich_with_cvss(&mut vulnerabilities);
-        crate::exploit_db::enrich_with_exploits(&mut vulnerabilities);
-        crate::attack_path::enrich_with_attack_paths(&mut vulnerabilities, content);
+        timed!("enrichment", {
+            crate::cvss::enrich_with_cvss(&mut vulnerabilities);
+            crate::exploit_db::enrich_with_exploits(&mut vulnerabilities);
+            crate::attack_path::enrich_with_attack_paths(&mut vulnerabilities, content);
+        });
 
         // Sort by composite risk score (highest first) so the most dangerous
         // findings surface at the top of every report, with line number as a
@@ -1096,6 +1142,14 @@ impl ContractScanner {
                 .unwrap_or(std::cmp::Ordering::Equal)
                 .then(a.line_number.cmp(&b.line_number))
         });
+
+        if profile {
+            let mut out = String::from("SCAN_PROFILE");
+            for (name, dur) in &phase_times {
+                out.push_str(&format!(" {}={}", name, dur.as_micros()));
+            }
+            eprintln!("{out}");
+        }
 
         ScanResult {
             vulnerabilities,
@@ -1837,18 +1891,55 @@ impl ContractScanner {
                 true
             }
 
+            // 41S-086 / 41S-088 are multiline rules; their whole-file context
+            // guards live in `multiline_category_suppressed`, not here.
             _ => true, // Report all other categories by default
         }
     }
 
     /// Apply a multiline regex rule against the entire file content.
     /// Used for patterns that span multiple lines (e.g., state changes after external calls).
+    /// Content-level suppression for multiline rules. The line-based
+    /// `should_report_vulnerability_with_title` filter never sees multiline
+    /// matches, so category guards that depend only on whole-file context live
+    /// here. Returns `true` when the whole rule should be skipped for this file.
+    fn multiline_category_suppressed(
+        category: &crate::vulnerabilities::VulnerabilityCategory,
+        content: &str,
+    ) -> bool {
+        use crate::vulnerabilities::VulnerabilityCategory;
+        match category {
+            // 41S-086: mitigated by ERC-7201 namespaced storage.
+            VulnerabilityCategory::EIP7702DelegateStorageCollision => {
+                content.contains("erc7201:") || content.contains("@custom:storage-location")
+            }
+            // 41S-088: mitigated by binding originData to a verified orderId or
+            // tracking filled orders. These are precise idioms; a bare `require`
+            // elsewhere in the file is not evidence the fill path is guarded.
+            VulnerabilityCategory::ERC7683UnvalidatedFill => {
+                content.contains("keccak256(originData")
+                    || content.contains("keccak256(abi.encode(orderId")
+                    || content.contains("filledOrders")
+                    || content.contains("orderStatus")
+                    || content.contains("usedOrders")
+            }
+            _ => false,
+        }
+    }
+
     fn scan_multiline_pattern(
         &self,
         content: &str,
+        raw_content: &str,
         rule: &VulnerabilityRule,
     ) -> Vec<Vulnerability> {
         let mut vulnerabilities = Vec::new();
+
+        // Suppression consults the raw (un-stripped) source so mitigations that
+        // live in NatSpec annotations (e.g. @custom:storage-location) are visible.
+        if Self::multiline_category_suppressed(&rule.category, raw_content) {
+            return vulnerabilities;
+        }
 
         for mat in rule.pattern.find_iter(content) {
             // Find the line number where this match starts

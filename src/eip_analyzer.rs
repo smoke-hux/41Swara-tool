@@ -787,7 +787,7 @@ impl EIPAnalyzer {
         }
 
         // Remove duplicates based on line number and vulnerability ID
-        vulnerabilities.sort_by(|a, b| a.line_number.cmp(&b.line_number));
+        vulnerabilities.sort_by_key(|v| v.line_number);
         vulnerabilities.dedup_by(|a, b| a.line_number == b.line_number && a.title == b.title);
 
         if self.verbose && !vulnerabilities.is_empty() {

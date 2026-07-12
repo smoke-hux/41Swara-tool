@@ -648,6 +648,21 @@ pub enum VulnerabilityCategory {
     GovernanceFlashloanVoting,
     /// 41S-084: Sandwich/MEV exposure on price-sensitive write without commit-reveal or TWAP.
     SandwichResistantMissing,
+
+    // --- Mid-2026 Exploit Patterns (v0.10.0) ---
+    /// 41S-085: Solidity 0.8.28-0.8.33 IR codegen bug - clearing a persistent and a
+    /// transient variable of the same type can emit the wrong opcode (sstore/tstore swap).
+    TransientStorageCompilerBug,
+    /// 41S-086: EIP-7702 delegate implementation using raw slot-0 storage - collides
+    /// with other delegates the same EOA has pointed at (no ERC-7201 namespacing).
+    EIP7702DelegateStorageCollision,
+    /// 41S-087: LayerZero V2 OApp secured by a single required DVN (Kelp DAO $293M).
+    LayerZeroSingleDVN,
+    /// 41S-088: ERC-7683 destination settler fill() without settler/origin validation.
+    ERC7683UnvalidatedFill,
+    /// 41S-089: Uniswap V4 flash-accounting hook takes funds to a caller-controlled
+    /// recipient (ERC-6909 claim/raw-token accounting mismatch drain).
+    ERC6909FlashAccountingDrain,
 }
 
 impl VulnerabilityCategory {
@@ -1157,6 +1172,31 @@ impl VulnerabilityCategory {
                 "Missing Sandwich Resistance",
                 Some("CWE-362"),
             )),
+            VulnerabilityCategory::TransientStorageCompilerBug => Some(SwcId::new(
+                "41S-085",
+                "Transient Storage Compiler Bug (0.8.28-0.8.33)",
+                Some("CWE-1038"),
+            )),
+            VulnerabilityCategory::EIP7702DelegateStorageCollision => Some(SwcId::new(
+                "41S-086",
+                "EIP-7702 Delegate Storage Collision",
+                Some("CWE-665"),
+            )),
+            VulnerabilityCategory::LayerZeroSingleDVN => Some(SwcId::new(
+                "41S-087",
+                "LayerZero Single DVN Verification",
+                Some("CWE-654"),
+            )),
+            VulnerabilityCategory::ERC7683UnvalidatedFill => Some(SwcId::new(
+                "41S-088",
+                "ERC-7683 Unvalidated Fill",
+                Some("CWE-345"),
+            )),
+            VulnerabilityCategory::ERC6909FlashAccountingDrain => Some(SwcId::new(
+                "41S-089",
+                "ERC-6909 Flash Accounting Drain",
+                Some("CWE-682"),
+            )),
 
             // Info/Quality categories (no standard SWC)
             VulnerabilityCategory::GasOptimization
@@ -1181,6 +1221,10 @@ impl VulnerabilityCategory {
 /// iterates over all rules, matching `pattern` against either individual lines (single-line
 /// mode) or the full file content (multiline mode). Matched results are wrapped into
 /// `Vulnerability` instances for further filtering.
+///
+/// `Clone` is cheap: `regex::Regex` is internally reference-counted, so cloning a rule
+/// shares the compiled program instead of recompiling it.
+#[derive(Clone)]
 pub struct VulnerabilityRule {
     /// The vulnerability class this rule detects.
     pub category: VulnerabilityCategory,
@@ -3294,6 +3338,83 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
         false,
     ).unwrap());
 
+    // ========================================================================
+    // Mid-2026 Exploit Patterns (v0.10.0)
+    // ========================================================================
+
+    // 41S-085: Solidity 0.8.28-0.8.33 transient-storage clearing codegen bug.
+    // When a contract clears both a persistent and a transient variable of the same
+    // type via the IR pipeline, the shared Yul clearing helper collides and the
+    // compiler emits the wrong opcode (sstore<->tstore swap). Solidity blog 2026-02-18.
+    // Heuristic: affected pragma range + any `transient` state variable declaration.
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::TransientStorageCompilerBug,
+        VulnerabilitySeverity::High,
+        r"pragma\s+solidity\s*[^;]*0\.8\.(?:2[89]|3[0-3])\b[^;]*;[\s\S]*?\btransient\s+\w+\s*;",
+        "Transient Storage Clearing Bug (solc 0.8.28-0.8.33)".to_string(),
+        "Compilers 0.8.28-0.8.33 with the IR pipeline emit the wrong opcode (sstore instead of tstore, or vice versa) when a persistent and a transient variable of the same type are both cleared - the generated Yul clearing helpers share a name and one overwrites the other. State can silently corrupt or transient locks can persist.".to_string(),
+        "Upgrade to solc >= 0.8.34 (fixed release), or avoid clearing persistent and transient variables of the same type in one contract. Verify with the Solidity 2026-02-18 security advisory.".to_string(),
+        true,
+    ).unwrap());
+
+    // 41S-086: EIP-7702 delegate implementation with raw (non-namespaced) storage.
+    // A 7702 delegate runs in the EOA's storage context. If the user later re-delegates
+    // to a different implementation, slot-0 variables collide and are reinterpreted.
+    // Heuristic: the self-execution auth idiom (msg.sender == address(this)) that only
+    // 7702/account-abstraction delegates use, in a contract declaring plain state vars.
+    // The scanner-side context filter suppresses this when ERC-7201 namespaced storage
+    // (@custom:storage-location) is present in the file.
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::EIP7702DelegateStorageCollision,
+        VulnerabilitySeverity::High,
+        r"require\s*\(\s*msg\.sender\s*==\s*address\s*\(\s*this\s*\)|msg\.sender\s*==\s*address\s*\(\s*this\s*\)\s*(?:,|\))[\s\S]{0,600}?revert",
+        "EIP-7702 Delegate Uses Raw Storage Slots".to_string(),
+        "This contract authenticates via msg.sender == address(this), the EIP-7702 delegate self-execution idiom. Delegates execute in the EOA's own storage; when the EOA re-delegates to another implementation with a different layout, slot-0 state (owners, nonces, guards) is reinterpreted by the new code - a storage collision that can brick or hijack the account.".to_string(),
+        "Use ERC-7201 namespaced storage (@custom:storage-location erc7201:...) for all delegate state so independent implementations cannot collide. Include a storage-version marker and validate it on initialization.".to_string(),
+        true,
+    ).unwrap());
+
+    // 41S-087: LayerZero V2 OApp secured by a single required DVN.
+    // Kelp DAO lost $293M (April 2026) when its 1-of-1 verifier was isolated via DDoS
+    // and fed forged cross-chain messages. Flag explicit single-DVN configurations.
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::LayerZeroSingleDVN,
+        VulnerabilitySeverity::High,
+        r"(?i)requiredDVNs?\s*=\s*new\s+address\[\]\(\s*1\s*\)|requiredDVNCount\s*=\s*1\b|confirmations?\s*:\s*1\s*,\s*requiredDVN",
+        "LayerZero Single Required DVN".to_string(),
+        "The OApp security stack requires only one DVN to verify cross-chain messages. A single verifier is a single point of failure: Kelp DAO's 1-of-1 DVN was isolated with DDoS and fed forged messages, authorizing a $293M mint (April 2026).".to_string(),
+        "Require at least 2 independent DVNs (requiredDVNs) plus optional DVNs with a threshold. Prefer DVNs operated by unrelated infrastructure providers and monitor DVN liveness.".to_string(),
+        false,
+    ).unwrap());
+
+    // 41S-088: ERC-7683 destination settler that decodes originData in fill() without
+    // validating the caller/settler. Anyone can invoke fill() with crafted originData
+    // unless the settler restricts who may fill or verifies the order against the
+    // origin settlement contract. Context filter suppresses when an auth check exists
+    // inside the fill body.
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::ERC7683UnvalidatedFill,
+        VulnerabilitySeverity::High,
+        r"function\s+fill\s*\(\s*bytes32\s+\w+\s*,\s*bytes\s+calldata\s+originData[^)]*\)[^{]*\{[\s\S]{0,800}?abi\.decode\s*\(\s*originData",
+        "ERC-7683 fill() Decodes originData Without Validation".to_string(),
+        "The destination settler decodes caller-supplied originData directly. ERC-7683 delegates settlement security to the implementation: without validating the order hash against the origin settler, checking a filler allowlist, or replay-protecting the orderId, an attacker can craft originData that releases escrowed funds or double-fills an order.".to_string(),
+        "Verify orderId == keccak256(originData) binding, track filled orderIds in a mapping, and restrict fill() to authorized fillers or verify the origin-chain settlement proof before releasing funds.".to_string(),
+        true,
+    ).unwrap());
+
+    // 41S-089: Uniswap V4 flash-accounting hook takes funds to a caller-controlled
+    // recipient. Mismatched ERC-6909 claim vs raw ERC-20 accounting inside hooks lets
+    // an attacker sync/settle/take to drain the pool's underlying currency.
+    rules.push(VulnerabilityRule::new(
+        VulnerabilityCategory::ERC6909FlashAccountingDrain,
+        VulnerabilitySeverity::High,
+        r"(?i)poolManager\s*\.\s*take\s*\(\s*[^,]+,\s*(?:msg\.sender|\w*(?:recipient|receiver|_to)\w*)\s*,",
+        "V4 Flash Accounting take() to Caller-Controlled Recipient".to_string(),
+        "poolManager.take() sends real tokens against the transient delta. When the recipient is caller-controlled and the hook's ERC-6909 claim accounting does not exactly mirror raw ERC-20 balances, an attacker can sync, claim on behalf of the PoolManager, settle, and take - extracting the pool's underlying currency.".to_string(),
+        "Take to address(this) and distribute after reconciling deltas, or require the final currencyDelta to be zero for every touched currency before unlock returns. Fuzz claim-vs-raw accounting for rounding drift.".to_string(),
+        false,
+    ).unwrap());
+
     rules
 }
 
@@ -3477,6 +3598,17 @@ impl VulnerabilityCategory {
             VulnerabilityCategory::StorageLayoutCollision => "Upgradeable Storage Layout Collision",
             VulnerabilityCategory::GovernanceFlashloanVoting => "Governance Flash-Loan Voting",
             VulnerabilityCategory::SandwichResistantMissing => "Missing Sandwich Resistance",
+            VulnerabilityCategory::TransientStorageCompilerBug => {
+                "Transient Storage Compiler Bug"
+            }
+            VulnerabilityCategory::EIP7702DelegateStorageCollision => {
+                "EIP-7702 Delegate Storage Collision"
+            }
+            VulnerabilityCategory::LayerZeroSingleDVN => "LayerZero Single DVN Verification",
+            VulnerabilityCategory::ERC7683UnvalidatedFill => "ERC-7683 Unvalidated Fill",
+            VulnerabilityCategory::ERC6909FlashAccountingDrain => {
+                "ERC-6909 Flash Accounting Drain"
+            }
         }
     }
 }

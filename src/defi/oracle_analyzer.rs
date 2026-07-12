@@ -5,8 +5,23 @@
 
 #![allow(dead_code)]
 
+use once_cell::sync::Lazy;
 use crate::vulnerabilities::{Vulnerability, VulnerabilityCategory, VulnerabilitySeverity};
 use regex::Regex;
+
+/// Per-call-site regex cache. Each macro expansion creates its own `static Lazy<Regex>`,
+/// so the pattern is compiled exactly once for the lifetime of the process — even when
+/// the surrounding function runs once per scanned file in a 1,000-file sweep.
+///
+/// Use only with `'static` string literals. For dynamic patterns (e.g. `format!`-built),
+/// fall back to `Regex::new(...)` directly.
+macro_rules! re {
+    ($pat:expr) => {{
+        static RE: Lazy<Regex> = Lazy::new(|| Regex::new($pat).unwrap());
+        &*RE
+    }};
+}
+
 
 /// Oracle security analyzer
 pub struct OracleAnalyzer {
@@ -185,7 +200,7 @@ impl OracleAnalyzer {
                     {
                         // Try to find the window value
                         let window_pattern =
-                            Regex::new(r"(\d+)\s*(seconds?|minutes?|hours?)").unwrap();
+                            re!(r"(\d+)\s*(seconds?|minutes?|hours?)");
                         if let Some(caps) = window_pattern.captures(&func_context) {
                             let value: u64 = caps.get(1).unwrap().as_str().parse().unwrap_or(0);
                             let unit = caps.get(2).unwrap().as_str();
@@ -330,7 +345,7 @@ impl OracleAnalyzer {
         let mut vulnerabilities = Vec::new();
 
         // Find price variable assignments
-        let price_pattern = Regex::new(r"(price|Price|rate|Rate)\s*=").unwrap();
+        let price_pattern = re!(r"(price|Price|rate|Rate)\s*=");
 
         for (idx, line) in content.lines().enumerate() {
             if price_pattern.is_match(line) {

@@ -20,9 +20,24 @@
 
 #![allow(dead_code)]
 
+use once_cell::sync::Lazy;
 use crate::vulnerabilities::{Vulnerability, VulnerabilityCategory, VulnerabilitySeverity};
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
+
+/// Per-call-site regex cache. Each macro expansion creates its own `static Lazy<Regex>`,
+/// so the pattern is compiled exactly once for the lifetime of the process — even when
+/// the surrounding function runs once per scanned file in a 1,000-file sweep.
+///
+/// Use only with `'static` string literals. For dynamic patterns (e.g. `format!`-built),
+/// fall back to `Regex::new(...)` directly.
+macro_rules! re {
+    ($pat:expr) => {{
+        static RE: Lazy<Regex> = Lazy::new(|| Regex::new($pat).unwrap());
+        &*RE
+    }};
+}
+
 
 /// Classification of logic vulnerability types that go beyond simple pattern matching.
 ///
@@ -194,19 +209,17 @@ impl LogicAnalyzer {
         let mut functions = Vec::new();
 
         // Matches a Solidity function signature up to and including the opening brace.
-        let func_pattern = Regex::new(
-            r"function\s+(\w+)\s*\(([^)]*)\)\s*((?:external|public|internal|private|view|pure|payable|virtual|override|\s|,)*)\s*(?:returns\s*\(([^)]*)\))?\s*\{"
-        ).unwrap();
+        let func_pattern = re!(r"function\s+(\w+)\s*\(([^)]*)\)\s*((?:external|public|internal|private|view|pure|payable|virtual|override|\s|,)*)\s*(?:returns\s*\(([^)]*)\))?\s*\{");
 
         // Captures individual modifier identifiers (ignoring their arguments).
-        let modifier_pattern = Regex::new(r"(\w+)(?:\([^)]*\))?").unwrap();
+        let modifier_pattern = re!(r"(\w+)(?:\([^)]*\))?");
         // Heuristic for state reads: any lowercase identifier not followed by `=`.
-        let state_read_pattern = Regex::new(r"\b([a-z_]\w*)\s*[^=]").unwrap();
+        let state_read_pattern = re!(r"\b([a-z_]\w*)\s*[^=]");
         // Heuristic for state writes: identifier followed by `=` but NOT `==`.
-        let state_write_pattern = Regex::new(r"\b([a-z_]\w*)\s*=[^=]").unwrap();
+        let state_write_pattern = re!(r"\b([a-z_]\w*)\s*=[^=]");
         // Detects external call targets (address.call, .delegatecall, etc.).
         let external_call_pattern =
-            Regex::new(r"(\w+)\.(?:call|delegatecall|staticcall|transfer|send)\(").unwrap();
+            re!(r"(\w+)\.(?:call|delegatecall|staticcall|transfer|send)\(");
 
         let lines: Vec<&str> = content.lines().collect();
 
@@ -355,9 +368,7 @@ impl LogicAnalyzer {
     fn extract_state_variables(&self, content: &str) -> Vec<StateVariable> {
         let mut vars = Vec::new();
         // Pattern anchored to line start to avoid matching local variables inside functions.
-        let var_pattern = Regex::new(
-            r"^\s*(mapping\s*\([^)]+\)|address|uint\d*|int\d*|bool|bytes\d*|string|bytes)\s+(public|private|internal)?\s*(constant|immutable)?\s*(\w+)"
-        ).unwrap();
+        let var_pattern = re!(r"^\s*(mapping\s*\([^)]+\)|address|uint\d*|int\d*|bool|bytes\d*|string|bytes)\s+(public|private|internal)?\s*(constant|immutable)?\s*(\w+)");
 
         // Track brace depth: state variables live at contract level (depth 1).
         // Anything deeper is a local declaration inside a function/block, and the
@@ -404,7 +415,7 @@ impl LogicAnalyzer {
         };
 
         // Step 1: Find an enum whose name contains "state" (case-insensitive)
-        let enum_pattern = Regex::new(r"enum\s+(\w*[Ss]tate\w*)\s*\{([^}]+)\}").unwrap();
+        let enum_pattern = re!(r"enum\s+(\w*[Ss]tate\w*)\s*\{([^}]+)\}");
         if let Some(caps) = enum_pattern.captures(content) {
             let states_str = caps.get(2).map_or("", |m| m.as_str());
             for state in states_str.split(',') {
@@ -805,8 +816,8 @@ impl LogicAnalyzer {
     ) -> Vec<Vulnerability> {
         let mut vulnerabilities = Vec::new();
 
-        let divisor_pattern = Regex::new(r"/\s*(\w+)").unwrap();
-        let array_access_pattern = Regex::new(r"(\w+)\[(\w+)\]").unwrap();
+        let divisor_pattern = re!(r"/\s*(\w+)");
+        let array_access_pattern = re!(r"(\w+)\[(\w+)\]");
 
         for func in functions {
             // Check for division without zero check
@@ -1175,7 +1186,7 @@ impl LogicAnalyzer {
                     if pattern1.contains("uint") && func.body.contains("uint") {
                         // Check for actual < 0 comparison with uint
                         let uint_negative_check =
-                            Regex::new(r"uint\d*\s+\w+[^;]*<\s*0[^0-9]").unwrap();
+                            re!(r"uint\d*\s+\w+[^;]*<\s*0[^0-9]");
                         if uint_negative_check.is_match(&func.body) {
                             vulnerabilities.push(Vulnerability::new(
                                 VulnerabilitySeverity::Medium,

@@ -5,8 +5,23 @@
 
 #![allow(dead_code)]
 
+use once_cell::sync::Lazy;
 use crate::vulnerabilities::{Vulnerability, VulnerabilityCategory, VulnerabilitySeverity};
 use regex::Regex;
+
+/// Per-call-site regex cache. Each macro expansion creates its own `static Lazy<Regex>`,
+/// so the pattern is compiled exactly once for the lifetime of the process — even when
+/// the surrounding function runs once per scanned file in a 1,000-file sweep.
+///
+/// Use only with `'static` string literals. For dynamic patterns (e.g. `format!`-built),
+/// fall back to `Regex::new(...)` directly.
+macro_rules! re {
+    ($pat:expr) => {{
+        static RE: Lazy<Regex> = Lazy::new(|| Regex::new($pat).unwrap());
+        &*RE
+    }};
+}
+
 
 /// Lending protocol vulnerability analyzer
 pub struct LendingAnalyzer {
@@ -258,7 +273,7 @@ impl LendingAnalyzer {
 
         // Check for collateral deposit functions
         let deposit_pattern =
-            Regex::new(r"function\s+(deposit|addCollateral|supply)\w*\s*\(").unwrap();
+            re!(r"function\s+(deposit|addCollateral|supply)\w*\s*\(");
 
         for (idx, line) in content.lines().enumerate() {
             if deposit_pattern.is_match(line) {

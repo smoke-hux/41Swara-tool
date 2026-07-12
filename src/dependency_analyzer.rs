@@ -5,9 +5,24 @@
 
 #![allow(dead_code)]
 
+use once_cell::sync::Lazy;
 use crate::vulnerabilities::{Vulnerability, VulnerabilityCategory, VulnerabilitySeverity};
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
+
+/// Per-call-site regex cache. Each macro expansion creates its own `static Lazy<Regex>`,
+/// so the pattern is compiled exactly once for the lifetime of the process — even when
+/// the surrounding function runs once per scanned file in a 1,000-file sweep.
+///
+/// Use only with `'static` string literals. For dynamic patterns (e.g. `format!`-built),
+/// fall back to `Regex::new(...)` directly.
+macro_rules! re {
+    ($pat:expr) => {{
+        static RE: Lazy<Regex> = Lazy::new(|| Regex::new($pat).unwrap());
+        &*RE
+    }};
+}
+
 
 /// Represents an imported dependency
 #[derive(Debug, Clone)]
@@ -158,11 +173,10 @@ impl DependencyAnalyzer {
 
         // Standard import pattern
         let import_pattern =
-            Regex::new(r#"import\s*(?:\{([^}]+)\}\s*from\s*)?"([^"]+)"|import\s+"([^"]+)""#)
-                .unwrap();
+            re!(r#"import\s*(?:\{([^}]+)\}\s*from\s*)?"([^"]+)"|import\s+"([^"]+)""#);
 
         // Aliased import pattern
-        let alias_pattern = Regex::new(r#"import\s+"([^"]+)"\s+as\s+(\w+)"#).unwrap();
+        let alias_pattern = re!(r#"import\s+"([^"]+)"\s+as\s+(\w+)"#);
 
         for (idx, line) in content.lines().enumerate() {
             if let Some(caps) = import_pattern.captures(line) {
@@ -232,7 +246,7 @@ impl DependencyAnalyzer {
 
     /// Extract version from import path if present
     fn extract_version_from_path(&self, path: &str) -> Option<String> {
-        let version_pattern = Regex::new(r"@(\d+\.\d+\.\d+)").unwrap();
+        let version_pattern = re!(r"@(\d+\.\d+\.\d+)");
         version_pattern
             .captures(path)
             .and_then(|c| c.get(1))
@@ -330,7 +344,7 @@ impl DependencyAnalyzer {
         }
 
         // Check Solidity pragma vs dependency compatibility
-        let pragma_pattern = Regex::new(r"pragma\s+solidity\s*([^;]+)").unwrap();
+        let pragma_pattern = re!(r"pragma\s+solidity\s*([^;]+)");
         if let Some(caps) = pragma_pattern.captures(content) {
             let pragma_version = caps.get(1).map(|m| m.as_str()).unwrap_or("");
 
@@ -443,7 +457,7 @@ impl DependencyAnalyzer {
         let mut vulnerabilities = Vec::new();
 
         // Get current contract name
-        let contract_pattern = Regex::new(r"contract\s+(\w+)").unwrap();
+        let contract_pattern = re!(r"contract\s+(\w+)");
         let current_contract = contract_pattern
             .captures(content)
             .and_then(|c| c.get(1))

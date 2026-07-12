@@ -6,7 +6,19 @@
 #![allow(dead_code)]
 #![allow(unused_variables)]
 
+use once_cell::sync::Lazy;
 use regex::Regex;
+
+// Compiled once per process — parse_functions/extract_modifiers run for every
+// contract in every scanned file.
+static CONSTRUCTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"constructor\s*\((?P<params>[^)]*)\)\s*(?P<modifiers>[^{]*)?\{").unwrap()
+});
+static FALLBACK_DEF_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"fallback\s*\(\)\s*(?P<modifiers>[^{]*)?\{").unwrap());
+static RECEIVE_DEF_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"receive\s*\(\)\s*(?P<modifiers>[^{]*)?\{").unwrap());
+static MODIFIER_NAME_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(\w+)(?:\([^)]*\))?").unwrap());
 
 /// Represents a parsed Solidity contract
 #[derive(Debug, Clone)]
@@ -523,26 +535,10 @@ impl ASTParser {
         let mut functions = Vec::new();
 
         // Also check for constructor, fallback, and receive
-        let special_patterns = vec![
-            (
-                Regex::new(r"constructor\s*\((?P<params>[^)]*)\)\s*(?P<modifiers>[^{]*)?\{")
-                    .unwrap(),
-                true,
-                false,
-                false,
-            ),
-            (
-                Regex::new(r"fallback\s*\(\)\s*(?P<modifiers>[^{]*)?\{").unwrap(),
-                false,
-                true,
-                false,
-            ),
-            (
-                Regex::new(r"receive\s*\(\)\s*(?P<modifiers>[^{]*)?\{").unwrap(),
-                false,
-                false,
-                true,
-            ),
+        let special_patterns: [(&Regex, bool, bool, bool); 3] = [
+            (&CONSTRUCTOR_DEF_RE, true, false, false),
+            (&FALLBACK_DEF_RE, false, true, false),
+            (&RECEIVE_DEF_RE, false, false, true),
         ];
 
         for (pattern, is_constructor, is_fallback, is_receive) in special_patterns {
@@ -667,14 +663,13 @@ impl ASTParser {
 
     fn extract_modifiers(&self, modifiers_str: &str) -> Vec<String> {
         let mut modifiers = Vec::new();
-        let modifier_pattern = Regex::new(r"(\w+)(?:\([^)]*\))?").unwrap();
 
         let keywords = [
             "public", "private", "internal", "external", "pure", "view", "payable", "virtual",
             "override", "returns",
         ];
 
-        for captures in modifier_pattern.captures_iter(modifiers_str) {
+        for captures in MODIFIER_NAME_RE.captures_iter(modifiers_str) {
             if let Some(m) = captures.get(1) {
                 let modifier_name = m.as_str();
                 if !keywords.contains(&modifier_name) {

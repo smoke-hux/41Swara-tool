@@ -6,8 +6,23 @@
 #![allow(dead_code)]
 #![allow(unused_variables)]
 
+use once_cell::sync::Lazy;
 use crate::vulnerabilities::{Vulnerability, VulnerabilityCategory, VulnerabilitySeverity};
 use regex::Regex;
+
+/// Per-call-site regex cache. Each macro expansion creates its own `static Lazy<Regex>`,
+/// so the pattern is compiled exactly once for the lifetime of the process — even when
+/// the surrounding function runs once per scanned file in a 1,000-file sweep.
+///
+/// Use only with `'static` string literals. For dynamic patterns (e.g. `format!`-built),
+/// fall back to `Regex::new(...)` directly.
+macro_rules! re {
+    ($pat:expr) => {{
+        static RE: Lazy<Regex> = Lazy::new(|| Regex::new($pat).unwrap());
+        &*RE
+    }};
+}
+
 
 /// MEV vulnerability analyzer
 pub struct MEVAnalyzer {
@@ -189,7 +204,7 @@ impl MEVAnalyzer {
 
                 // Check for liquidation bonus that incentivizes frontrunning
                 if func_body.contains("bonus") || func_body.contains("incentive") {
-                    let bonus_pattern = Regex::new(r"(\d+)\s*%|(\d+)\s*bps|10\s*\*\*").unwrap();
+                    let bonus_pattern = re!(r"(\d+)\s*%|(\d+)\s*bps|10\s*\*\*");
                     if let Some(_caps) = bonus_pattern.captures(&func_body) {
                         vulnerabilities.push(Vulnerability::new(
                             VulnerabilitySeverity::Medium,
@@ -216,7 +231,7 @@ impl MEVAnalyzer {
 
         // Check for oracle update functions
         let oracle_update_pattern =
-            Regex::new(r"function\s+(setPrice|updatePrice|submitPrice|report)\w*\s*\(").unwrap();
+            re!(r"function\s+(setPrice|updatePrice|submitPrice|report)\w*\s*\(");
 
         for (idx, line) in content.lines().enumerate() {
             if oracle_update_pattern.is_match(line) {
@@ -271,8 +286,8 @@ impl MEVAnalyzer {
         }
 
         // Find commit function
-        let commit_pattern = Regex::new(r"function\s+commit\w*\s*\([^)]*\)").unwrap();
-        let reveal_pattern = Regex::new(r"function\s+reveal\w*\s*\([^)]*\)").unwrap();
+        let commit_pattern = re!(r"function\s+commit\w*\s*\([^)]*\)");
+        let reveal_pattern = re!(r"function\s+reveal\w*\s*\([^)]*\)");
 
         let has_commit = commit_pattern.is_match(content);
         let has_reveal = reveal_pattern.is_match(content);
@@ -368,7 +383,7 @@ impl MEVAnalyzer {
 
         // Check for mint functions
         let mint_pattern =
-            Regex::new(r"function\s+mint\w*\s*\([^)]*\)\s*(external|public)").unwrap();
+            re!(r"function\s+mint\w*\s*\([^)]*\)\s*(external|public)");
 
         if content.contains("ERC721") || content.contains("ERC1155") {
             for (idx, line) in content.lines().enumerate() {
@@ -506,7 +521,7 @@ impl MEVAnalyzer {
                 }
 
                 // Check for small time windows
-                let small_window_pattern = Regex::new(r"(\d+)\s*(seconds?|minutes?)").unwrap();
+                let small_window_pattern = re!(r"(\d+)\s*(seconds?|minutes?)");
                 if let Some(caps) = small_window_pattern.captures(&func_context) {
                     let value: u64 = caps.get(1).unwrap().as_str().parse().unwrap_or(0);
                     let unit = caps.get(2).unwrap().as_str();

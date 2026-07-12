@@ -19,8 +19,28 @@
 #![allow(dead_code)]
 
 use crate::vulnerabilities::Vulnerability;
+use once_cell::sync::Lazy;
 use regex::Regex;
 use std::collections::{HashMap, HashSet, VecDeque};
+
+// Compiled once per process — these run for every scanned file.
+static FUNC_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r"function\s+(\w+)\s*\(([^)]*)\)\s*((?:external|public|internal|private|view|pure|payable|virtual|override|\s|,)*)"
+    ).unwrap()
+});
+static CONSTRUCTOR_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"constructor\s*\(").unwrap());
+static FALLBACK_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"fallback\s*\(\s*\)").unwrap());
+static RECEIVE_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"receive\s*\(\s*\)\s*external\s*payable").unwrap());
+static INHERIT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"contract\s+\w+\s+is\s+([^{]+)").unwrap());
+static CALL_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\b([a-z_]\w*)\s*\(").unwrap());
+static MODIFIER_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"\b(only\w+|nonReentrant|whenNotPaused|whenPaused|initializer)\b").unwrap()
+});
+static EXTERNAL_CALL_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"\.call\{|\.delegatecall\(|\.staticcall\(|\.transfer\(|\.send\(").unwrap()
+});
 
 /// Represents a single function (or special function) as a node in the call graph.
 ///
@@ -39,6 +59,11 @@ pub struct CallGraphNode {
     pub modifiers: Vec<String>,
     /// The 1-indexed source line where this function is declared.
     pub line: usize,
+    /// The 1-indexed source line of the function's closing brace.
+    pub end_line: usize,
+    /// Whether this function's own body contains an external call
+    /// (`.call{`, `.delegatecall(`, `.staticcall(`, `.transfer(`, `.send(`).
+    pub makes_external_call: bool,
     /// Whether this is the contract constructor.
     pub is_constructor: bool,
     /// Whether this is the fallback function (invoked on calls with no matching selector).
@@ -138,25 +163,14 @@ impl ReachabilityAnalyzer {
         let mut entry_points = Vec::new();
         let inheritance_chain = self.extract_inheritance(content);
 
-        // Regex to match regular function declarations and capture:
-        //   Group 1: function name
-        //   Group 2: parameter list (unused here, but captured for completeness)
-        //   Group 3: visibility and modifier keywords after the parameter list
-        let func_pattern = Regex::new(
-            r"function\s+(\w+)\s*\(([^)]*)\)\s*((?:external|public|internal|private|view|pure|payable|virtual|override|\s|,)*)"
-        ).unwrap();
-
-        // Patterns for special Solidity functions that don't use the `function` keyword
-        let constructor_pattern = Regex::new(r"constructor\s*\(").unwrap();
-        let fallback_pattern = Regex::new(r"fallback\s*\(\s*\)").unwrap();
-        let receive_pattern = Regex::new(r"receive\s*\(\s*\)\s*external\s*payable").unwrap();
-
         let lines: Vec<&str> = content.lines().collect();
 
         for (idx, line) in lines.iter().enumerate() {
             // Check for constructor — always an entry point (called once at deployment)
-            if constructor_pattern.is_match(line) {
+            if CONSTRUCTOR_RE.is_match(line) {
                 let calls = self.extract_function_calls(&lines, idx);
+                let end_line = Self::body_end(&lines, idx);
+                let makes_external_call = Self::body_has_external_call(&lines, idx, end_line);
                 nodes.insert(
                     "constructor".to_string(),
                     CallGraphNode {
@@ -165,6 +179,8 @@ impl ReachabilityAnalyzer {
                         calls,
                         modifiers: vec![],
                         line: idx + 1, // Convert 0-indexed to 1-indexed line number
+                        end_line,
+                        makes_external_call,
                         is_constructor: true,
                         is_fallback: false,
                         is_receive: false,
@@ -174,8 +190,10 @@ impl ReachabilityAnalyzer {
             }
 
             // Check for fallback — entry point (called when no function selector matches)
-            if fallback_pattern.is_match(line) {
+            if FALLBACK_RE.is_match(line) {
                 let calls = self.extract_function_calls(&lines, idx);
+                let end_line = Self::body_end(&lines, idx);
+                let makes_external_call = Self::body_has_external_call(&lines, idx, end_line);
                 nodes.insert(
                     "fallback".to_string(),
                     CallGraphNode {
@@ -184,6 +202,8 @@ impl ReachabilityAnalyzer {
                         calls,
                         modifiers: vec![],
                         line: idx + 1,
+                        end_line,
+                        makes_external_call,
                         is_constructor: false,
                         is_fallback: true,
                         is_receive: false,
@@ -193,8 +213,10 @@ impl ReachabilityAnalyzer {
             }
 
             // Check for receive — entry point (called on plain Ether transfers with no calldata)
-            if receive_pattern.is_match(line) {
+            if RECEIVE_RE.is_match(line) {
                 let calls = self.extract_function_calls(&lines, idx);
+                let end_line = Self::body_end(&lines, idx);
+                let makes_external_call = Self::body_has_external_call(&lines, idx, end_line);
                 nodes.insert(
                     "receive".to_string(),
                     CallGraphNode {
@@ -203,6 +225,8 @@ impl ReachabilityAnalyzer {
                         calls,
                         modifiers: vec![],
                         line: idx + 1,
+                        end_line,
+                        makes_external_call,
                         is_constructor: false,
                         is_fallback: false,
                         is_receive: true,
@@ -212,7 +236,7 @@ impl ReachabilityAnalyzer {
             }
 
             // Check for regular named functions
-            if let Some(caps) = func_pattern.captures(line) {
+            if let Some(caps) = FUNC_RE.captures(line) {
                 let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
                 let modifiers_str = caps.get(3).map_or("", |m| m.as_str());
 
@@ -243,6 +267,8 @@ impl ReachabilityAnalyzer {
                     entry_points.push(name.clone());
                 }
 
+                let end_line = Self::body_end(&lines, idx);
+                let makes_external_call = Self::body_has_external_call(&lines, idx, end_line);
                 nodes.insert(
                     name.clone(),
                     CallGraphNode {
@@ -251,6 +277,8 @@ impl ReachabilityAnalyzer {
                         calls,
                         modifiers,
                         line: idx + 1,
+                        end_line,
+                        makes_external_call,
                         is_constructor: false,
                         is_fallback: false,
                         is_receive: false,
@@ -266,14 +294,45 @@ impl ReachabilityAnalyzer {
         }
     }
 
+    /// Find the 1-indexed line of a function's closing brace by brace counting
+    /// from its declaration line. Falls back to the last line if unbalanced.
+    fn body_end(lines: &[&str], start_idx: usize) -> usize {
+        let mut brace_count: i32 = 0;
+        let mut started = false;
+
+        for (i, line) in lines.iter().enumerate().skip(start_idx) {
+            for ch in line.chars() {
+                if ch == '{' {
+                    brace_count += 1;
+                    started = true;
+                } else if ch == '}' {
+                    brace_count -= 1;
+                }
+            }
+            if started && brace_count == 0 {
+                return i + 1; // Convert back to 1-indexed
+            }
+        }
+
+        lines.len()
+    }
+
+    /// Check whether any line of a function body (declaration line through the
+    /// closing brace, both 0-indexed start / 1-indexed end) makes an external call.
+    fn body_has_external_call(lines: &[&str], start_idx: usize, end_line: usize) -> bool {
+        lines
+            .iter()
+            .take(end_line)
+            .skip(start_idx)
+            .any(|line| EXTERNAL_CALL_RE.is_match(line))
+    }
+
     /// Extract the inheritance chain from a contract declaration.
     ///
     /// Parses `contract Foo is Bar, Baz(arg)` and returns `["Bar", "Baz"]`.
     /// Constructor arguments in the `is` clause are stripped.
     fn extract_inheritance(&self, content: &str) -> Vec<String> {
-        let inherit_pattern = Regex::new(r"contract\s+\w+\s+is\s+([^{]+)").unwrap();
-
-        if let Some(caps) = inherit_pattern.captures(content) {
+        if let Some(caps) = INHERIT_RE.captures(content) {
             let parents = caps.get(1).map_or("", |m| m.as_str());
             // Split by comma, strip constructor args (everything after '('), and trim whitespace
             return parents
@@ -300,8 +359,6 @@ impl ReachabilityAnalyzer {
     /// A deduplicated list of function names called within the function body.
     fn extract_function_calls(&self, lines: &[&str], start_idx: usize) -> Vec<String> {
         let mut calls = Vec::new();
-        // Match lowercase/underscore-starting identifiers followed by '(' — likely function calls
-        let call_pattern = Regex::new(r"\b([a-z_]\w*)\s*\(").unwrap();
 
         // Solidity keywords and built-in statements that look like function calls but aren't
         let keywords: HashSet<&str> = [
@@ -329,7 +386,7 @@ impl ReachabilityAnalyzer {
             }
 
             // Find function calls in this line
-            for caps in call_pattern.captures_iter(line) {
+            for caps in CALL_RE.captures_iter(line) {
                 if let Some(name) = caps.get(1) {
                     let func_name = name.as_str();
                     // Exclude Solidity keywords and avoid duplicates
@@ -354,10 +411,7 @@ impl ReachabilityAnalyzer {
     /// `whenNotPaused`, `whenPaused`, and `initializer`. These are used later
     /// to determine if a function already has reentrancy protection.
     fn extract_modifiers(&self, line: &str) -> Vec<String> {
-        let modifier_pattern =
-            Regex::new(r"\b(only\w+|nonReentrant|whenNotPaused|whenPaused|initializer)\b").unwrap();
-
-        modifier_pattern
+        MODIFIER_RE
             .captures_iter(line)
             .filter_map(|c| c.get(1))
             .map(|m| m.as_str().to_string())
@@ -383,38 +437,42 @@ impl ReachabilityAnalyzer {
         &self,
         call_graph: &CallGraph,
         target_line: usize,
-        content: &str,
+        _content: &str,
     ) -> ReachabilityResult {
         // Determine which function (if any) contains the target line
-        let target_function = self.find_function_at_line(call_graph, target_line, content);
+        let target_function = self.find_function_at_line(call_graph, target_line);
 
-        if target_function.is_none() {
-            // Lines outside functions (pragma, state variables, imports, etc.) are
-            // always reachable — they're contract-level declarations, not dead code.
-            return ReachabilityResult {
+        match target_function {
+            None => ReachabilityResult {
+                // Lines outside functions (pragma, state variables, imports, etc.) are
+                // always reachable — they're contract-level declarations, not dead code.
                 is_reachable: true,
                 call_paths: vec![],
                 entry_points: vec![],
                 confidence_adjustment: 0,
                 reason: "Contract-level declaration (outside function scope)".to_string(),
-            };
+            },
+            Some(target_func) => self.function_reachability(call_graph, &target_func),
         }
+    }
 
-        let target_func = target_function.unwrap();
-
+    /// Compute the reachability result for a named function. This is the
+    /// per-function core of `is_line_reachable`; callers that process many
+    /// findings memoize it per function name (see `apply_reachability`).
+    fn function_reachability(&self, call_graph: &CallGraph, target_func: &str) -> ReachabilityResult {
         // If the function itself is an entry point, it's directly reachable with high confidence
-        if call_graph.entry_points.contains(&target_func) {
+        if call_graph.entry_points.iter().any(|e| e == target_func) {
             return ReachabilityResult {
                 is_reachable: true,
-                call_paths: vec![vec![target_func.clone()]],
-                entry_points: vec![target_func],
+                call_paths: vec![vec![target_func.to_string()]],
+                entry_points: vec![target_func.to_string()],
                 confidence_adjustment: 20, // Boost confidence — directly callable
                 reason: "Directly callable external/public function".to_string(),
             };
         }
 
         // BFS from all entry points to find call paths reaching the target function
-        let paths = self.find_all_paths_to(call_graph, &target_func);
+        let paths = self.find_all_paths_to(call_graph, target_func);
 
         if paths.is_empty() {
             // No entry point can reach this function — it's dead code
@@ -461,67 +519,20 @@ impl ReachabilityAnalyzer {
     /// # Returns
     /// `Some(function_name)` if the line is inside a function, `None` if it's
     /// a contract-level declaration (state variable, pragma, import, etc.).
-    fn find_function_at_line(
-        &self,
-        call_graph: &CallGraph,
-        line: usize,
-        content: &str,
-    ) -> Option<String> {
+    fn find_function_at_line(&self, call_graph: &CallGraph, line: usize) -> Option<String> {
         let mut best_match: Option<(String, usize)> = None;
 
         for (name, node) in &call_graph.nodes {
-            if node.line <= line {
-                // Check if this function starts closer to the target line than any previous match
+            if node.line <= line && line <= node.end_line {
+                // Keep the function whose declaration starts closest to the target
+                // line — that's the innermost enclosing function.
                 if best_match.is_none() || node.line > best_match.as_ref().unwrap().1 {
-                    // Verify the target line is actually within this function's body
-                    let func_end = self.find_function_end(content, node.line);
-                    if line <= func_end {
-                        best_match = Some((name.clone(), node.line));
-                    }
+                    best_match = Some((name.clone(), node.line));
                 }
             }
         }
 
         best_match.map(|(name, _)| name)
-    }
-
-    /// Find the 1-indexed line number where a function's body ends (closing brace).
-    ///
-    /// Tracks brace depth starting from the function declaration line. When the
-    /// brace count returns to zero after being incremented, we've found the
-    /// matching closing brace.
-    ///
-    /// # Arguments
-    /// * `content` - The full contract source code.
-    /// * `start_line` - The 1-indexed line where the function is declared.
-    ///
-    /// # Returns
-    /// The 1-indexed line number of the function's closing brace, or the total
-    /// line count if no matching brace is found (malformed source).
-    fn find_function_end(&self, content: &str, start_line: usize) -> usize {
-        let lines: Vec<&str> = content.lines().collect();
-        let mut brace_count = 0;
-        let mut started = false;
-
-        // Start from the function declaration line (convert 1-indexed to 0-indexed with saturating_sub)
-        for (i, line) in lines.iter().enumerate().skip(start_line.saturating_sub(1)) {
-            for ch in line.chars() {
-                if ch == '{' {
-                    brace_count += 1;
-                    started = true;
-                } else if ch == '}' {
-                    brace_count -= 1;
-                }
-            }
-
-            // Balanced braces after entering the function body means we found the end
-            if started && brace_count == 0 {
-                return i + 1; // Convert back to 1-indexed
-            }
-        }
-
-        // Fallback: if no closing brace found, assume function extends to end of file
-        lines.len()
     }
 
     /// Find all call paths from any entry point to the target function.
@@ -610,19 +621,66 @@ impl ReachabilityAnalyzer {
         content: &str,
     ) -> Vec<Vulnerability> {
         let call_graph = self.build_call_graph(content);
+        let mut cache: HashMap<String, ReachabilityResult> = HashMap::new();
+        self.filter_with_graph(vulnerabilities, &call_graph, &mut cache)
+    }
 
+    /// One-pass reachability processing: builds the call graph a single time and
+    /// runs all three analyses against it (unreachable filtering, confidence
+    /// adjustment, and external call chain detection). This is what the scanner
+    /// calls; the individual `pub` methods remain for direct use but each
+    /// rebuilds the graph.
+    pub fn process(&self, vulnerabilities: Vec<Vulnerability>, content: &str) -> Vec<Vulnerability> {
+        let call_graph = self.build_call_graph(content);
+        // Reachability results only depend on the containing function, so memoize
+        // per function name — most contracts have far fewer functions than findings.
+        let mut cache: HashMap<String, ReachabilityResult> = HashMap::new();
+
+        let mut kept = self.filter_with_graph(vulnerabilities, &call_graph, &mut cache);
+        self.adjust_with_graph(&mut kept, &call_graph, &mut cache);
+        kept.extend(self.external_call_chains(&call_graph));
+        kept
+    }
+
+    /// Look up (or compute and cache) the reachability of the function containing
+    /// `line`. Contract-level lines (outside any function) are always reachable.
+    fn cached_line_reachability<'c>(
+        &self,
+        call_graph: &CallGraph,
+        cache: &'c mut HashMap<String, ReachabilityResult>,
+        line: usize,
+    ) -> Option<&'c ReachabilityResult> {
+        let func = self.find_function_at_line(call_graph, line)?;
+        Some(
+            cache
+                .entry(func.clone())
+                .or_insert_with(|| self.function_reachability(call_graph, &func)),
+        )
+    }
+
+    fn filter_with_graph(
+        &self,
+        vulnerabilities: Vec<Vulnerability>,
+        call_graph: &CallGraph,
+        cache: &mut HashMap<String, ReachabilityResult>,
+    ) -> Vec<Vulnerability> {
         vulnerabilities
             .into_iter()
             .filter(|vuln| {
-                let result = self.is_line_reachable(&call_graph, vuln.line_number, content);
-                // In verbose mode, log which vulnerabilities are being filtered out
-                if !result.is_reachable && self.verbose {
-                    println!(
-                        "  ⚠️  Filtering unreachable vulnerability at line {}: {}",
-                        vuln.line_number, result.reason
-                    );
-                }
-                result.is_reachable
+                let reachable = match self.cached_line_reachability(call_graph, cache, vuln.line_number) {
+                    None => true, // contract-level declaration
+                    Some(result) => {
+                        // In verbose mode, log which vulnerabilities are being filtered out
+                        if !result.is_reachable && self.verbose {
+                            println!(
+                                "  ⚠️  Filtering unreachable vulnerability at line {}: {}",
+                                vuln.line_number, result.reason
+                            );
+                        }
+                        result.is_reachable
+                    }
+                };
+                reachable
             })
             .collect()
     }
@@ -645,9 +703,22 @@ impl ReachabilityAnalyzer {
     /// * `content` - The full Solidity source code of the contract.
     pub fn adjust_confidence(&self, vulnerabilities: &mut [Vulnerability], content: &str) {
         let call_graph = self.build_call_graph(content);
+        let mut cache: HashMap<String, ReachabilityResult> = HashMap::new();
+        self.adjust_with_graph(vulnerabilities, &call_graph, &mut cache);
+    }
 
+    fn adjust_with_graph(
+        &self,
+        vulnerabilities: &mut [Vulnerability],
+        call_graph: &CallGraph,
+        cache: &mut HashMap<String, ReachabilityResult>,
+    ) {
         for vuln in vulnerabilities.iter_mut() {
-            let result = self.is_line_reachable(&call_graph, vuln.line_number, content);
+            let Some(result) =
+                self.cached_line_reachability(call_graph, cache, vuln.line_number)
+            else {
+                continue; // contract-level line: no adjustment
+            };
 
             // Clamp the adjusted confidence to the valid 0-100 range
             let new_confidence = (vuln.confidence_percent as i16
@@ -691,20 +762,19 @@ impl ReachabilityAnalyzer {
     /// A list of newly generated vulnerabilities for detected nested external call chains.
     pub fn analyze_external_call_chains(&self, content: &str) -> Vec<Vulnerability> {
         let call_graph = self.build_call_graph(content);
-        let mut vulnerabilities = Vec::new();
+        self.external_call_chains(&call_graph)
+    }
 
-        // Pattern matching Solidity external call syntaxes
-        let external_call_pattern =
-            Regex::new(r"\.call\{|\.delegatecall\(|\.staticcall\(|\.transfer\(|\.send\(").unwrap();
+    /// Core of `analyze_external_call_chains`, operating on a pre-built graph.
+    /// External-call information comes from each node's `makes_external_call`
+    /// flag (computed once during graph construction).
+    fn external_call_chains(&self, call_graph: &CallGraph) -> Vec<Vulnerability> {
+        let mut vulnerabilities = Vec::new();
 
         for (func_name, node) in &call_graph.nodes {
             // Check if this function or any function it transitively calls makes an external call
-            let makes_external_call = self.check_transitive_external_calls(
-                &call_graph,
-                func_name,
-                content,
-                &external_call_pattern,
-            );
+            let makes_external_call =
+                self.check_transitive_external_calls(call_graph, func_name);
 
             // Only flag if the function lacks nonReentrant protection
             if makes_external_call && !node.modifiers.iter().any(|m| m.contains("nonReentrant")) {
@@ -712,13 +782,9 @@ impl ReachabilityAnalyzer {
                 // this creates a nested external call chain (caller -> callee, both with external calls)
                 for (caller_name, caller_node) in &call_graph.nodes {
                     if caller_node.calls.contains(func_name) {
-                        // Check only the caller's function body (not the whole contract)
-                        // to avoid false positives from unrelated external calls
-                        let caller_body = self.get_function_body(content, caller_node.line);
-                        let caller_has_external = external_call_pattern.is_match(&caller_body);
-
-                        // Only report if the caller is externally accessible (entry point)
-                        if caller_has_external
+                        // Only report if the caller's own body makes an external call
+                        // (not the whole contract) and it's externally accessible
+                        if caller_node.makes_external_call
                             && matches!(
                                 caller_node.visibility,
                                 Visibility::External | Visibility::Public
@@ -744,93 +810,33 @@ impl ReachabilityAnalyzer {
 
     /// Check if a function or any function it transitively calls makes external calls.
     ///
-    /// Performs iterative DFS through the call graph starting from `func_name`.
-    /// For each visited function, extracts its body and checks for external call
-    /// patterns. Tracks visited nodes to avoid infinite loops from recursive calls.
-    ///
-    /// # Arguments
-    /// * `call_graph` - The contract's call graph.
-    /// * `func_name` - The function to start checking from.
-    /// * `content` - The full contract source (used to extract function bodies).
-    /// * `pattern` - Regex matching external call syntaxes.
-    ///
-    /// # Returns
-    /// `true` if any function in the transitive call chain makes an external call.
-    fn check_transitive_external_calls(
-        &self,
-        call_graph: &CallGraph,
-        func_name: &str,
-        content: &str,
-        pattern: &Regex,
-    ) -> bool {
+    /// Performs iterative DFS through the call graph starting from `func_name`,
+    /// consulting each node's precomputed `makes_external_call` flag. Tracks
+    /// visited nodes to avoid infinite loops from recursive calls.
+    fn check_transitive_external_calls(&self, call_graph: &CallGraph, func_name: &str) -> bool {
         let mut visited = HashSet::new();
-        let mut to_check = vec![func_name.to_string()];
+        let mut to_check = vec![func_name];
 
         // Iterative DFS to avoid stack overflow on deep call chains
         while let Some(current) = to_check.pop() {
-            if visited.contains(&current) {
+            if !visited.insert(current) {
                 continue;
             }
-            visited.insert(current.clone());
 
-            if let Some(node) = call_graph.nodes.get(&current) {
-                // Extract this function's body and check for external call patterns
-                let body = self.get_function_body(content, node.line);
-                if pattern.is_match(&body) {
+            if let Some(node) = call_graph.nodes.get(current) {
+                if node.makes_external_call {
                     return true;
                 }
 
                 // Enqueue all callees for transitive checking
                 for callee in &node.calls {
-                    if !visited.contains(callee) {
-                        to_check.push(callee.clone());
+                    if !visited.contains(callee.as_str()) {
+                        to_check.push(callee);
                     }
                 }
             }
         }
 
         false
-    }
-
-    /// Extract the full text of a function body starting from a given line.
-    ///
-    /// Tracks brace depth from the function declaration to its closing brace,
-    /// collecting all lines in between. Used by `check_transitive_external_calls`
-    /// and `analyze_external_call_chains` to scope pattern matching to a single
-    /// function rather than the entire contract.
-    ///
-    /// # Arguments
-    /// * `content` - The full contract source code.
-    /// * `start_line` - The 1-indexed line where the function is declared.
-    ///
-    /// # Returns
-    /// The full text of the function (declaration through closing brace).
-    fn get_function_body(&self, content: &str, start_line: usize) -> String {
-        let lines: Vec<&str> = content.lines().collect();
-        let mut body = String::new();
-        let mut brace_count = 0;
-        let mut started = false;
-
-        // Start from the declaration line (convert 1-indexed to 0-indexed)
-        for line in lines.iter().skip(start_line.saturating_sub(1)) {
-            for ch in line.chars() {
-                if ch == '{' {
-                    brace_count += 1;
-                    started = true;
-                } else if ch == '}' {
-                    brace_count -= 1;
-                }
-            }
-
-            body.push_str(line);
-            body.push('\n');
-
-            // Balanced braces after entering the body means we've captured the full function
-            if started && brace_count == 0 {
-                break;
-            }
-        }
-
-        body
     }
 }

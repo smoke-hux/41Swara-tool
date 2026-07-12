@@ -6,7 +6,12 @@
 //! *that* it exists.
 
 use crate::vulnerabilities::{Vulnerability, VulnerabilityCategory};
+use once_cell::sync::Lazy;
 use regex::Regex;
+
+// Compiled once per process — enrichment runs for every finding in every file.
+static NEARBY_FN_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"function\s+(\w+)\s*\(").unwrap());
+static CONTRACT_NAME_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"contract\s+(\w+)").unwrap());
 
 /// Generate an attack path narrative for a vulnerability.
 fn generate_attack_path(vuln: &Vulnerability, content: &str) -> Option<String> {
@@ -229,6 +234,41 @@ fn generate_attack_path(vuln: &Vulnerability, content: &str) -> Option<String> {
              4. Attacker back-runs with the inverse trade\n\
              5. Searcher pockets the spread; LPs / vault depositors absorb the loss"
         )),
+        VulnerabilityCategory::LayerZeroSingleDVN => Some(format!(
+            "1. {contract_name} configures a single required DVN to verify inbound messages\n\
+             2. Attacker DDoSes / isolates that DVN's RPC nodes so honest verification stalls\n\
+             3. Attacker feeds the isolated verifier a forged cross-chain message\n\
+             4. The single DVN attests the forged message as valid\n\
+             5. {contract_name} releases/mints funds to the attacker (Kelp DAO, $293M, 2026-04)"
+        )),
+        VulnerabilityCategory::EIP7702DelegateStorageCollision => Some(format!(
+            "1. User's EOA delegates (EIP-7702) to {contract_name}, which uses raw slot-0 storage\n\
+             2. User later re-delegates the same EOA to a second implementation with a different layout\n\
+             3. The new code reinterprets slot 0 — what was `owner` is now e.g. a `nonce`\n\
+             4. Guard/owner checks read attacker-favorable garbage or are silently bypassed\n\
+             5. Attacker drives {fn_name}() or a privileged path to seize or brick the account"
+        )),
+        VulnerabilityCategory::ERC7683UnvalidatedFill => Some(format!(
+            "1. Attacker crafts malicious `originData` for {contract_name}.{fn_name}()\n\
+             2. fill() abi.decodes originData without binding it to a verified orderId\n\
+             3. No filler allowlist / replay guard rejects the call\n\
+             4. Settler releases escrowed output tokens against the forged order\n\
+             5. Attacker double-fills or drains the destination settler's balance"
+        )),
+        VulnerabilityCategory::ERC6909FlashAccountingDrain => Some(format!(
+            "1. Attacker enters the V4 unlock callback and calls {contract_name}.{fn_name}()\n\
+             2. Hook's ERC-6909 claim accounting diverges from raw ERC-20 balances\n\
+             3. Attacker syncs, claims on behalf of the PoolManager, and settles the delta\n\
+             4. poolManager.take() sends real tokens to the attacker-controlled recipient\n\
+             5. The transient delta nets to zero on paper while the pool's currency is gone"
+        )),
+        VulnerabilityCategory::TransientStorageCompilerBug => Some(format!(
+            "1. {contract_name} compiles with solc 0.8.28-0.8.33 via the IR pipeline\n\
+             2. It clears a persistent and a transient variable of the same type\n\
+             3. The shared Yul clearing helper collides; one emits the wrong opcode (sstore<->tstore)\n\
+             4. A transient reentrancy lock persists, or persistent state is silently zeroed\n\
+             5. Attacker exploits the corrupted guard/state that the developer believed was cleared"
+        )),
 
         _ => None,
     }
@@ -236,7 +276,7 @@ fn generate_attack_path(vuln: &Vulnerability, content: &str) -> Option<String> {
 
 /// Extract the function name closest to a given line number.
 fn extract_nearby_function(content: &str, line_number: usize) -> Option<String> {
-    let re = Regex::new(r"function\s+(\w+)\s*\(").ok()?;
+    let re = &*NEARBY_FN_RE;
     let lines: Vec<&str> = content.lines().collect();
 
     // Search backwards from the vulnerability line to find the enclosing function
@@ -251,8 +291,9 @@ fn extract_nearby_function(content: &str, line_number: usize) -> Option<String> 
 
 /// Extract the contract name from source.
 fn extract_contract_name(content: &str) -> Option<String> {
-    let re = Regex::new(r"contract\s+(\w+)").ok()?;
-    re.captures(content).map(|caps| caps[1].to_string())
+    CONTRACT_NAME_RE
+        .captures(content)
+        .map(|caps| caps[1].to_string())
 }
 
 /// Enrich vulnerabilities with attack path narratives.
