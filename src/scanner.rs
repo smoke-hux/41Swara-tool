@@ -107,6 +107,51 @@ contract Treasury { uint256 public balance; }
     }
 
     #[test]
+    fn delegatecall_plus_a_proxy_name_does_not_collide_unrelated_contracts() {
+        // A file can contain a delegatecall and something named `*Proxy` while still holding
+        // contracts that have nothing to do with each other. Before the stem check these drew
+        // a High "Storage Slot Collision" against every other storage-bearing contract.
+        let path = fixture(
+            "unrelated-with-delegatecall.sol",
+            r#"pragma solidity ^0.8.20;
+contract Alpha { uint256 public totalSupply; }
+contract SomeProxy {
+    address public implementation;
+    fallback() external payable {
+        (bool ok,) = implementation.delegatecall(msg.data);
+        require(ok);
+    }
+}
+"#,
+        );
+        let result = ContractScanner::new(false)
+            .scan_file(&path)
+            .expect("scan succeeds");
+
+        assert!(
+            result
+                .vulnerabilities
+                .iter()
+                .all(|v| !v.title.starts_with("Storage Slot Collision:")),
+            "contracts with unrelated name stems must not be paired as proxy/implementation"
+        );
+    }
+
+    #[test]
+    fn contract_name_stems_identify_proxy_implementation_pairs() {
+        assert!(proxy_implementation_pair(
+            "VaultProxy",
+            "VaultImplementation"
+        ));
+        assert!(proxy_implementation_pair("TokenProxy", "TokenLogicV2"));
+        assert!(!proxy_implementation_pair("SomeProxy", "Alpha"));
+        assert!(
+            !proxy_implementation_pair("Vault", "VaultImplementation"),
+            "neither side is proxy-like, so there is no delegatecall relationship to assume"
+        );
+    }
+
+    #[test]
     fn delegatecall_proxy_layout_collision_is_retained() {
         let path = fixture(
             "proxy-layouts.sol",
@@ -130,6 +175,46 @@ contract VaultImplementation { uint256 public totalSupply; }
             .iter()
             .any(|v| v.title.starts_with("Storage Slot Collision:")));
     }
+}
+
+/// Strip the affixes that distinguish a proxy from the implementation it delegates into,
+/// leaving the shared stem. `VaultProxy` and `VaultImplementationV2` both reduce to `vault`.
+fn contract_name_stem(name: &str) -> String {
+    let mut stem = name.to_ascii_lowercase();
+    for affix in [
+        "upgradeable",
+        "implementation",
+        "transparent",
+        "beacon",
+        "proxy",
+        "impl",
+        "logic",
+    ] {
+        stem = stem.replace(affix, "");
+    }
+    // Drop trailing version markers (`v2`, `_v2`, `2`) and separators left behind.
+    let trimmed = stem.trim_matches(|c: char| c == '_' || c == '-' || c.is_ascii_digit());
+    let trimmed = trimmed.strip_suffix('v').unwrap_or(trimmed);
+    trimmed
+        .trim_matches(|c: char| c == '_' || c == '-')
+        .to_string()
+}
+
+/// Two contracts are a candidate proxy/implementation pair when one is named like a proxy
+/// and both reduce to the same stem.
+///
+/// The stem check is what keeps unrelated contracts apart: a file that merely *contains* a
+/// `delegatecall` and happens to declare something named `*Proxy` would otherwise report a
+/// high-severity storage collision against every other contract in the file. Proving the real
+/// call target is outside this scanner's model, so a shared name stem stands in for the
+/// relationship. It errs towards silence, which is the right direction for a High finding.
+fn proxy_implementation_pair(left: &str, right: &str) -> bool {
+    let (l, r) = (left.to_ascii_lowercase(), right.to_ascii_lowercase());
+    if !l.contains("proxy") && !r.contains("proxy") {
+        return false;
+    }
+    let (ls, rs) = (contract_name_stem(left), contract_name_stem(right));
+    !ls.is_empty() && ls == rs
 }
 
 /// The result of scanning a single Solidity file.
@@ -941,9 +1026,7 @@ impl ContractScanner {
 
         for (i, left) in storage_bearing.iter().enumerate() {
             for right in storage_bearing.iter().skip(i + 1) {
-                let proxy_pair = left.name.to_ascii_lowercase().contains("proxy")
-                    || right.name.to_ascii_lowercase().contains("proxy");
-                if !proxy_pair {
+                if !proxy_implementation_pair(&left.name, &right.name) {
                     continue;
                 }
                 for collision in left.storage.collisions_with(&right.storage) {

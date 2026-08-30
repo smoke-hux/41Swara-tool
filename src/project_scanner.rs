@@ -96,8 +96,24 @@ impl ProjectScanner {
 
         // Phase 1: Scan all files and extract information
         println!("\n{}", "📋 Phase 1: File Analysis".bright_cyan().bold());
+        // A file the scanner refuses (oversized, unreadable, bad encoding) must not abort the
+        // whole project. Report it and carry on, matching how the parallel directory scan in
+        // `cli.rs` treats per-file errors; otherwise one bad file hides every finding in the
+        // repository behind a non-zero exit.
+        let mut skipped = Vec::new();
         for file_path in &sol_files {
-            self.analyze_file(file_path)?;
+            if let Err(e) = self.analyze_file(file_path) {
+                eprintln!("  Error analyzing {}: {}", file_path.display(), e);
+                skipped.push(file_path.clone());
+            }
+        }
+        if !skipped.is_empty() {
+            println!(
+                "{} Skipped {} of {} files that could not be analyzed",
+                "⚠️".yellow(),
+                skipped.len(),
+                sol_files.len()
+            );
         }
 
         // Phase 2: Build dependency graph
@@ -548,5 +564,49 @@ impl ProjectScanner {
 
         println!("\n{}", "━".repeat(60).bright_blue());
         println!("{}", "✅ Analysis Complete".bright_green().bold());
+    }
+}
+
+#[cfg(test)]
+mod skip_regression_tests {
+    use super::*;
+
+    /// One file the scanner refuses must not abort analysis of the rest of the project.
+    #[test]
+    fn an_unanalyzable_file_does_not_abort_the_project_scan() {
+        let dir = std::env::temp_dir().join(format!(
+            "41swara-project-skip-{}-{:?}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("create project test directory");
+        std::fs::write(
+            dir.join("small.sol"),
+            "pragma solidity ^0.8.20;\ncontract Small { uint256 public x; }\n",
+        )
+        .expect("write small fixture");
+        // Comfortably over the 10 MB default limit so scan_file rejects it.
+        std::fs::write(
+            dir.join("oversized.sol"),
+            format!(
+                "pragma solidity ^0.8.20;\ncontract Oversized {{\n{}}}\n",
+                "    uint256 public filler;\n".repeat(520_000)
+            ),
+        )
+        .expect("write oversized fixture");
+
+        let result = ProjectScanner::new(dir.clone(), false)
+            .scan_project()
+            .expect("an oversized file must be skipped, not fatal");
+
+        assert!(
+            result.total_files >= 1,
+            "the analyzable file should still have been scanned"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
