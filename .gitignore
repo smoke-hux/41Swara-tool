@@ -192,7 +192,11 @@ tests/*
 # so `cargo test` could not pass on a fresh clone. Both are re-included here.
 !tests/integration_tests.rs
 !tests/contracts/
-test_contracts/
+# The integration suite scans fixtures in test_contracts/ by explicit path, so
+# the directory must be tracked. 11 of its 12 files were already committed; the
+# blanket rule silently dropped the 12th, and `cargo test` could not pass on a
+# fresh clone as a result. Same failure mode as the `tests/` rule above.
+!test_contracts/
 fuzz/corpus/
 
 # -----------------------------------------------------------------------------
