@@ -52,7 +52,9 @@ impl ASTAnalysisBridge {
                 let mut cfg_builder = CFGBuilder::new();
                 let cfg = cfg_builder.build_cfg(function);
 
-                // Path-sensitive reentrancy detection (CEI violation on all paths)
+                // CEI-violation detection: external call followed by a state write.
+                // The parser emits a flat statement list, so this is a linear scan
+                // over the function body rather than a path-sensitive analysis.
                 let reentrancy_patterns = cfg.find_reentrancy_patterns();
                 for (call_line, write_line) in reentrancy_patterns {
                     let snippet = get_line_content(&lines, call_line);
@@ -137,12 +139,6 @@ impl ASTAnalysisBridge {
                 VulnerabilitySeverity::High,
                 VulnerabilityCategory::LogicError,
                 "Taint Flow: User Input to CREATE2".to_string(),
-            ),
-            // Medium: unvalidated array index from external input
-            (TaintSource::FunctionParameter(_) | TaintSource::Calldata, TaintSink::ArrayIndex) => (
-                VulnerabilitySeverity::Medium,
-                VulnerabilityCategory::InputValidationFailure,
-                "Taint Flow: Unvalidated Array Index".to_string(),
             ),
             // Skip less dangerous flows to avoid noise
             _ => return None,

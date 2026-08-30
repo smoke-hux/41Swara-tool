@@ -3,10 +3,8 @@
 //! Detects vulnerabilities specific to lending protocols including
 //! Aave, Compound, and similar platforms.
 
-#![allow(dead_code)]
-
-use once_cell::sync::Lazy;
 use crate::vulnerabilities::{Vulnerability, VulnerabilityCategory, VulnerabilitySeverity};
+use once_cell::sync::Lazy;
 use regex::Regex;
 
 /// Per-call-site regex cache. Each macro expansion creates its own `static Lazy<Regex>`,
@@ -22,14 +20,12 @@ macro_rules! re {
     }};
 }
 
-
 /// Lending protocol vulnerability analyzer
 pub struct LendingAnalyzer {
     borrow_function: Regex,
     repay_function: Regex,
     liquidate_function: Regex,
     collateral_pattern: Regex,
-    health_factor_pattern: Regex,
     interest_rate_pattern: Regex,
     flash_loan_pattern: Regex,
 }
@@ -41,7 +37,6 @@ impl LendingAnalyzer {
             repay_function: Regex::new(r"function\s+repay\w*\s*\([^)]*\)").unwrap(),
             liquidate_function: Regex::new(r"function\s+liquidate\w*\s*\([^)]*\)").unwrap(),
             collateral_pattern: Regex::new(r"collateral|Collateral").unwrap(),
-            health_factor_pattern: Regex::new(r"healthFactor|health_factor|ltv|LTV").unwrap(),
             interest_rate_pattern: Regex::new(r"interestRate|interest_rate|borrowRate|supplyRate")
                 .unwrap(),
             // Word-bounded + call parens: bare substring matching flagged governance
@@ -272,8 +267,7 @@ impl LendingAnalyzer {
         let mut vulnerabilities = Vec::new();
 
         // Check for collateral deposit functions
-        let deposit_pattern =
-            re!(r"function\s+(deposit|addCollateral|supply)\w*\s*\(");
+        let deposit_pattern = re!(r"function\s+(deposit|addCollateral|supply)\w*\s*\(");
 
         for (idx, line) in content.lines().enumerate() {
             if deposit_pattern.is_match(line) {

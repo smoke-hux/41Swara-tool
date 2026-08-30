@@ -3,9 +3,6 @@
 //! Implements taint tracking for detecting user-controlled input reaching
 //! dangerous sinks like external calls, state writes, and require statements.
 
-#![allow(dead_code)]
-#![allow(unused_mut)]
-
 use super::parser::{ContractDefinition, FunctionDefinition, SolidityAST, Statement, Visibility};
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -21,7 +18,6 @@ pub enum TaintSource {
     MsgValue,
     MsgData,
     Calldata,
-    ExternalReturn,
     StorageRead,
     BlockTimestamp,
     BlockNumber,
@@ -40,10 +36,7 @@ pub enum TaintSink {
     Create2,
     Assembly,
     Transfer,
-    Send,
     RequireCondition,
-    ArrayIndex,
-    Division,
 }
 
 /// Result of taint analysis
@@ -52,7 +45,6 @@ pub struct TaintResult {
     pub source: TaintSource,
     pub sink: TaintSink,
     pub path: Vec<String>, // Variable names in taint propagation path
-    pub source_line: usize,
     pub sink_line: usize,
     pub description: String,
 }
@@ -186,7 +178,7 @@ impl DataFlowAnalyzer {
 
         // Analyze function body
         if let Some(body) = &function.body {
-            self.analyze_statements(&body.statements, &mut local_taint, function.start_line);
+            self.analyze_statements(&body.statements, &mut local_taint);
         }
     }
 
@@ -195,19 +187,9 @@ impl DataFlowAnalyzer {
         &mut self,
         statements: &[Statement],
         taint_map: &mut HashMap<String, TaintState>,
-        base_line: usize,
     ) {
         for stmt in statements {
             match stmt {
-                Statement::VariableDeclaration { name, value, .. } => {
-                    if let Some(val_expr) = value {
-                        let taint = self.compute_expression_taint(val_expr, taint_map);
-                        if taint.is_tainted {
-                            taint_map.insert(name.clone(), taint.propagate(name));
-                        }
-                    }
-                }
-
                 Statement::Assignment {
                     target,
                     value,
@@ -224,7 +206,6 @@ impl DataFlowAnalyzer {
                                     source: source.clone(),
                                     sink: TaintSink::StateWrite,
                                     path: propagated.propagation_path.clone(),
-                                    source_line: base_line,
                                     sink_line: *line,
                                     description: format!(
                                         "Tainted data from {:?} flows to state variable '{}'",
@@ -256,7 +237,6 @@ impl DataFlowAnalyzer {
                                         TaintSink::ExternalCall
                                     },
                                     path: target_taint.propagation_path.clone(),
-                                    source_line: base_line,
                                     sink_line: *line,
                                     description: format!(
                                         "CRITICAL: Tainted address used in external call - {:?} flows to {}.{}()",
@@ -277,7 +257,6 @@ impl DataFlowAnalyzer {
                                         source: source.clone(),
                                         sink: TaintSink::Transfer,
                                         path: value_taint.propagation_path.clone(),
-                                        source_line: base_line,
                                         sink_line: *line,
                                         description: format!(
                                             "External call with value transfer involving {:?}",
@@ -290,9 +269,7 @@ impl DataFlowAnalyzer {
                     }
                 }
 
-                Statement::Require {
-                    condition, line, ..
-                } => {
+                Statement::Require { condition, line } => {
                     // Check if require condition uses tainted data
                     let taint = self.compute_expression_taint(condition, taint_map);
                     if taint.is_tainted {
@@ -303,7 +280,6 @@ impl DataFlowAnalyzer {
                                 source: source.clone(),
                                 sink: TaintSink::RequireCondition,
                                 path: taint.propagation_path.clone(),
-                                source_line: base_line,
                                 sink_line: *line,
                                 description: format!(
                                     "Tainted data from {:?} validated in require (good pattern)",
@@ -314,30 +290,6 @@ impl DataFlowAnalyzer {
                     }
                 }
 
-                Statement::If {
-                    condition,
-                    then_block,
-                    else_block,
-                    line,
-                } => {
-                    // Analyze condition
-                    let _cond_taint = self.compute_expression_taint(condition, taint_map);
-
-                    // Analyze branches
-                    self.analyze_statements(then_block, taint_map, *line);
-                    if let Some(else_stmts) = else_block {
-                        self.analyze_statements(else_stmts, taint_map, *line);
-                    }
-                }
-
-                Statement::For { body, line, .. } => {
-                    self.analyze_statements(body, taint_map, *line);
-                }
-
-                Statement::While { body, line, .. } => {
-                    self.analyze_statements(body, taint_map, *line);
-                }
-
                 Statement::Assembly { content, line } => {
                     // Assembly can access tainted storage directly - flag as dangerous
                     if content.contains("sload") || content.contains("sstore") {
@@ -345,7 +297,6 @@ impl DataFlowAnalyzer {
                             source: TaintSource::StorageRead,
                             sink: TaintSink::Assembly,
                             path: vec!["assembly".to_string()],
-                            source_line: *line,
                             sink_line: *line,
                             description:
                                 "Assembly block with storage access - manual review required"
@@ -359,7 +310,6 @@ impl DataFlowAnalyzer {
                             source: TaintSource::MsgSender,
                             sink: TaintSink::Selfdestruct,
                             path: vec!["assembly".to_string()],
-                            source_line: *line,
                             sink_line: *line,
                             description: "CRITICAL: Assembly contains selfdestruct".to_string(),
                         });
@@ -376,7 +326,6 @@ impl DataFlowAnalyzer {
                             source: TaintSource::Calldata,
                             sink,
                             path: vec!["assembly".to_string()],
-                            source_line: *line,
                             sink_line: *line,
                             description:
                                 "Assembly contains contract creation - verify initialization"
@@ -385,9 +334,9 @@ impl DataFlowAnalyzer {
                     }
                 }
 
-                Statement::UncheckedBlock { statements, line } => {
+                Statement::UncheckedBlock { statements, .. } => {
                     // Analyze unchecked block - arithmetic here doesn't overflow check
-                    self.analyze_statements(statements, taint_map, *line);
+                    self.analyze_statements(statements, taint_map);
                 }
 
                 _ => {}

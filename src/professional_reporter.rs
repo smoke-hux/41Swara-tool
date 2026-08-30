@@ -33,7 +33,6 @@ pub struct DetailedFinding {
     pub id: String,
     pub severity: VulnerabilitySeverity,
     pub title: String,
-    #[allow(dead_code)]
     pub contract_function: String,
     pub github_links: Vec<String>,
     pub summary: String,
@@ -42,11 +41,8 @@ pub struct DetailedFinding {
     pub proof_of_concept: Option<String>,
     pub recommended_mitigation: String,
     pub tools_used: String,
-    #[allow(dead_code)]
     pub line_number: usize,
-    #[allow(dead_code)]
     pub code_snippet: String,
-    #[allow(dead_code)]
     pub category: VulnerabilityCategory,
     /// CVSS 3.1 base score (0.0 - 10.0).
     pub cvss_score: Option<f64>,
@@ -676,7 +672,7 @@ This report contains the findings from a comprehensive security analysis of the 
             self.audit_info.auditor,
             self.audit_info.start_date,
             self.audit_info.end_date,
-            Utc::now().format("%B %d, %Y").to_string()
+            Utc::now().format("%B %d, %Y")
         )
     }
 
@@ -904,7 +900,7 @@ The audit covered the complete smart contract codebase, including:
             for exploit_ref in &finding.exploit_references {
                 content.push_str(&format!("> - {exploit_ref}\n"));
             }
-            content.push_str("\n");
+            content.push('\n');
         }
 
         // GitHub links

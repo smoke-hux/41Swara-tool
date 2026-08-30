@@ -3,10 +3,8 @@
 //! Analyzes imported contracts and dependencies for known vulnerabilities,
 //! version mismatches, and supply chain security issues.
 
-#![allow(dead_code)]
-
-use once_cell::sync::Lazy;
 use crate::vulnerabilities::{Vulnerability, VulnerabilityCategory, VulnerabilitySeverity};
+use once_cell::sync::Lazy;
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
 
@@ -22,7 +20,6 @@ macro_rules! re {
         &*RE
     }};
 }
-
 
 /// Represents an imported dependency
 #[derive(Debug, Clone)]
@@ -48,14 +45,12 @@ pub struct KnownVulnerability {
 }
 
 pub struct DependencyAnalyzer {
-    verbose: bool,
     known_vulnerabilities: Vec<KnownVulnerability>,
 }
 
 impl DependencyAnalyzer {
-    pub fn new(verbose: bool) -> Self {
+    pub fn new() -> Self {
         Self {
-            verbose,
             known_vulnerabilities: Self::load_known_vulnerabilities(),
         }
     }
@@ -317,7 +312,7 @@ impl DependencyAnalyzer {
             if let Some(ref version) = import.version {
                 package_versions
                     .entry(package)
-                    .or_insert_with(Vec::new)
+                    .or_default()
                     .push((import, version.clone()));
             }
         }
@@ -383,10 +378,13 @@ impl DependencyAnalyzer {
 
         for import in imports {
             // Check for wildcard imports (all symbols)
-            if import.symbols.is_empty() && import.alias.is_none() && !import.path.ends_with(".sol")
+            if import.symbols.is_empty()
+                && import.alias.is_none()
+                && !import.path.ends_with(".sol")
+                && !import.path.contains("interface")
+                && !import.path.contains("Interface")
             {
-                if !import.path.contains("interface") && !import.path.contains("Interface") {
-                    vulnerabilities.push(Vulnerability::new(
+                vulnerabilities.push(Vulnerability::new(
                         VulnerabilitySeverity::Low,
                         VulnerabilityCategory::CompilerBug,
                         "Wildcard Import".to_string(),
@@ -395,7 +393,6 @@ impl DependencyAnalyzer {
                         format!("import \"{}\"", import.path),
                         "Use specific imports: import {Contract} from \"path\"".to_string(),
                     ));
-                }
             }
 
             // Check for git/URL imports (supply chain risk)
@@ -625,45 +622,4 @@ impl DependencyAnalyzer {
 
         vulnerabilities
     }
-
-    /// Get a summary of all imports
-    pub fn get_import_summary(&self, content: &str) -> ImportSummary {
-        let imports = self.extract_imports(content);
-
-        let openzeppelin_count = imports.iter().filter(|i| i.is_openzeppelin).count();
-        let local_count = imports.iter().filter(|i| i.is_local).count();
-        let external_count = imports.len() - openzeppelin_count - local_count;
-
-        let packages: HashSet<_> = imports
-            .iter()
-            .map(|i| {
-                if i.path.contains('@') {
-                    i.path.split('/').take(2).collect::<Vec<_>>().join("/")
-                } else {
-                    i.path.split('/').next().unwrap_or("").to_string()
-                }
-            })
-            .filter(|p| !p.is_empty())
-            .collect();
-
-        ImportSummary {
-            total_imports: imports.len(),
-            openzeppelin_imports: openzeppelin_count,
-            local_imports: local_count,
-            external_imports: external_count,
-            unique_packages: packages.into_iter().collect(),
-            imports,
-        }
-    }
-}
-
-/// Summary of contract imports
-#[derive(Debug)]
-pub struct ImportSummary {
-    pub total_imports: usize,
-    pub openzeppelin_imports: usize,
-    pub local_imports: usize,
-    pub external_imports: usize,
-    pub unique_packages: Vec<String>,
-    pub imports: Vec<ImportedDependency>,
 }

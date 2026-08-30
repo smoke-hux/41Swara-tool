@@ -117,7 +117,7 @@ impl SarifReport {
                 let rule_id = vulnerability
                     .get_swc_id_str()
                     .map(ToOwned::to_owned)
-                    .unwrap_or_else(|| format!("41S-{}", format!("{:?}", vulnerability.category)));
+                    .unwrap_or_else(|| format!("41S-{:?}", vulnerability.category));
                 let level = severity_to_sarif_level(&vulnerability.severity);
 
                 rules
@@ -170,6 +170,18 @@ impl SarifReport {
 fn create_sarif_rule(rule_id: &str, vulnerability: &Vulnerability, level: &str) -> SarifRule {
     let category = format!("{:?}", vulnerability.category).to_lowercase();
 
+    let mut tags = vec![
+        "security".to_string(),
+        "smart-contract".to_string(),
+        category,
+    ];
+    // GitHub Code Scanning surfaces CWE from the rule's `properties.tags`, reading both
+    // the bare identifier and the `external/cwe/cwe-nnn` taxonomy form.
+    if let Some(cwe) = vulnerability.get_cwe_id() {
+        tags.push(cwe.to_string());
+        tags.push(format!("external/cwe/{}", cwe.to_lowercase()));
+    }
+
     SarifRule {
         id: rule_id.to_string(),
         name: vulnerability.title.clone(),
@@ -189,11 +201,7 @@ fn create_sarif_rule(rule_id: &str, vulnerability: &Vulnerability, level: &str) 
             ),
         },
         properties: SarifRuleProperties {
-            tags: vec![
-                "security".to_string(),
-                "smart-contract".to_string(),
-                category,
-            ],
+            tags,
             precision: confidence_to_precision(&vulnerability.confidence),
             security_severity: vulnerability
                 .cvss_score

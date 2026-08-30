@@ -18,10 +18,8 @@
 //!    which may further filter them through `false_positive_filter.rs` and
 //!    `reachability_analyzer.rs`.
 
-#![allow(dead_code)]
-
-use once_cell::sync::Lazy;
 use crate::vulnerabilities::{Vulnerability, VulnerabilityCategory, VulnerabilitySeverity};
+use once_cell::sync::Lazy;
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
 
@@ -38,35 +36,6 @@ macro_rules! re {
     }};
 }
 
-
-/// Classification of logic vulnerability types that go beyond simple pattern matching.
-///
-/// Each variant maps to a distinct class of semantic bug that requires understanding
-/// the contract's structure, not just individual lines of code.
-#[derive(Debug, Clone, PartialEq)]
-pub enum LogicVulnType {
-    /// State machine transition without validating the current state first.
-    StateTransitionViolation,
-    /// Balance/supply or other domain invariant broken across functions.
-    InvariantViolation,
-    /// Access-control or flow bypass (e.g., asymmetric modifiers on paired operations).
-    BusinessLogicBypass,
-    /// A state variable is written with validation in some functions but without in others.
-    InconsistentStateUpdate,
-    /// Division without zero-check, array access without bounds-check, etc.
-    MissingConditionCheck,
-    /// Admin function can silently break a user-facing function's assumptions.
-    ImproperAuthorizationFlow,
-    /// approve() race condition, or state reads after external calls.
-    RaceConditionWindow,
-    /// Deadline/expiry referenced without timestamp validation.
-    IncompleteValidation,
-    /// Paired operations (deposit/withdraw) have mismatched validation or events.
-    AsymmetricBehavior,
-    /// Code that can never execute (after top-level return/revert, impossible conditions).
-    UnreachableCode,
-}
-
 /// Parsed representation of a single Solidity function, used for semantic analysis.
 ///
 /// Extracted by [`LogicAnalyzer::extract_functions`] from the raw source text.
@@ -80,10 +49,6 @@ pub struct FunctionInfo {
     pub visibility: String,
     /// Custom modifiers applied to the function (excludes visibility/mutability keywords).
     pub modifiers: Vec<String>,
-    /// Parameter list as `(type, name)` pairs.
-    pub parameters: Vec<(String, String)>,
-    /// Return types declared in the `returns (...)` clause.
-    pub returns: Vec<String>,
     /// State variable names that appear to be read inside the function body.
     pub state_reads: Vec<String>,
     /// State variable names that appear to be written (assigned) inside the function body.
@@ -92,8 +57,6 @@ pub struct FunctionInfo {
     pub external_calls: Vec<String>,
     /// 1-based line number where the function signature begins.
     pub line_start: usize,
-    /// 1-based line number where the function's closing brace is.
-    pub line_end: usize,
     /// Full text of the function body (from opening `{` to closing `}`).
     pub body: String,
 }
@@ -106,16 +69,6 @@ pub struct FunctionInfo {
 pub struct StateVariable {
     /// Variable identifier.
     pub name: String,
-    /// Solidity type (e.g., `uint256`, `mapping(...)`, `address`).
-    pub var_type: String,
-    /// Visibility: `public`, `private`, or `internal` (default).
-    pub visibility: String,
-    /// Whether the variable is declared `constant`.
-    pub is_constant: bool,
-    /// Whether the variable is declared `immutable`.
-    pub is_immutable: bool,
-    /// 1-based source line where the variable is declared.
-    pub line: usize,
 }
 
 /// Inferred state machine extracted from an enum-based state pattern.
@@ -137,15 +90,12 @@ pub struct ContractStateMachine {
 ///
 /// Instantiated once per scan and invoked via [`LogicAnalyzer::analyze`].
 /// All detection logic is stateless -- no data is retained between calls.
-pub struct LogicAnalyzer {
-    /// When `true`, additional diagnostic output may be emitted (currently unused).
-    verbose: bool,
-}
+pub struct LogicAnalyzer;
 
 impl LogicAnalyzer {
-    /// Create a new analyzer. Pass `verbose: true` for extra diagnostics.
-    pub fn new(verbose: bool) -> Self {
-        Self { verbose }
+    /// Create a new analyzer.
+    pub fn new() -> Self {
+        Self
     }
 
     /// Main entry point for logic vulnerability analysis.
@@ -209,7 +159,9 @@ impl LogicAnalyzer {
         let mut functions = Vec::new();
 
         // Matches a Solidity function signature up to and including the opening brace.
-        let func_pattern = re!(r"function\s+(\w+)\s*\(([^)]*)\)\s*((?:external|public|internal|private|view|pure|payable|virtual|override|\s|,)*)\s*(?:returns\s*\(([^)]*)\))?\s*\{");
+        let func_pattern = re!(
+            r"function\s+(\w+)\s*\(([^)]*)\)\s*((?:external|public|internal|private|view|pure|payable|virtual|override|\s|,)*)\s*(?:returns\s*\(([^)]*)\))?\s*\{"
+        );
 
         // Captures individual modifier identifiers (ignoring their arguments).
         let modifier_pattern = re!(r"(\w+)(?:\([^)]*\))?");
@@ -218,18 +170,16 @@ impl LogicAnalyzer {
         // Heuristic for state writes: identifier followed by `=` but NOT `==`.
         let state_write_pattern = re!(r"\b([a-z_]\w*)\s*=[^=]");
         // Detects external call targets (address.call, .delegatecall, etc.).
-        let external_call_pattern =
-            re!(r"(\w+)\.(?:call|delegatecall|staticcall|transfer|send)\(");
+        let external_call_pattern = re!(r"(\w+)\.(?:call|delegatecall|staticcall|transfer|send)\(");
 
         let lines: Vec<&str> = content.lines().collect();
 
         for (idx, line) in lines.iter().enumerate() {
             if let Some(caps) = func_pattern.captures(line) {
-                // Capture groups: (1) name, (2) params, (3) modifiers/visibility, (4) returns
+                // Capture groups: (1) name, (2) params, (3) modifiers/visibility, (4) returns.
+                // Only the name and the modifier/visibility list are consumed.
                 let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
-                let params_str = caps.get(2).map_or("", |m| m.as_str());
                 let modifiers_str = caps.get(3).map_or("", |m| m.as_str());
-                let returns_str = caps.get(4).map_or("", |m| m.as_str());
 
                 // Determine visibility from the modifier string; defaults to `public` per Solidity spec
                 let visibility = if modifiers_str.contains("external") {
@@ -259,29 +209,8 @@ impl LogicAnalyzer {
                     })
                     .collect();
 
-                // Parse parameter list into (type, name) pairs
-                let parameters: Vec<(String, String)> = params_str
-                    .split(',')
-                    .filter(|p| !p.trim().is_empty())
-                    .filter_map(|p| {
-                        let parts: Vec<&str> = p.split_whitespace().collect();
-                        if parts.len() >= 2 {
-                            Some((parts[0].to_string(), parts.last().unwrap().to_string()))
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-
-                // Parse return type list (only the type, not the optional name)
-                let returns: Vec<String> = returns_str
-                    .split(',')
-                    .filter(|r| !r.trim().is_empty())
-                    .map(|r| r.split_whitespace().next().unwrap_or("").to_string())
-                    .collect();
-
                 // Use brace-counting to extract the full function body
-                let (body, line_end) = self.extract_function_body(&lines, idx);
+                let body = self.extract_function_body(&lines, idx);
 
                 // Approximate state reads: deduplicated lowercase identifiers in the body
                 let state_reads: Vec<String> = state_read_pattern
@@ -312,13 +241,10 @@ impl LogicAnalyzer {
                     name,
                     visibility,
                     modifiers,
-                    parameters,
-                    returns,
                     state_reads,
                     state_writes,
                     external_calls,
                     line_start: idx + 1,
-                    line_end,
                     body,
                 });
             }
@@ -329,14 +255,14 @@ impl LogicAnalyzer {
 
     /// Extract the full function body by counting braces from `start_idx`.
     ///
-    /// Returns `(body_text, end_line)` where `end_line` is 1-based. The body includes
-    /// every line from the function signature through the matching closing `}`.
-    fn extract_function_body(&self, lines: &[&str], start_idx: usize) -> (String, usize) {
+    /// Returns the body text: every line from the function signature through the
+    /// matching closing `}`.
+    fn extract_function_body(&self, lines: &[&str], start_idx: usize) -> String {
         let mut brace_count = 0;
         let mut body = String::new();
         let mut started = false;
 
-        for (i, line) in lines.iter().enumerate().skip(start_idx) {
+        for line in lines.iter().skip(start_idx) {
             // Count braces to track nesting depth
             for ch in line.chars() {
                 if ch == '{' {
@@ -352,44 +278,34 @@ impl LogicAnalyzer {
 
             // When we return to brace depth 0 after opening, the function body is complete
             if started && brace_count == 0 {
-                return (body, i + 1);
+                return body;
             }
         }
 
         // Fallback: unterminated function (EOF before closing brace)
-        (body, lines.len())
+        body
     }
 
     /// Extract contract-level state variable declarations from the source.
     ///
     /// Matches common Solidity types (`mapping`, `address`, `uint*`, `int*`, `bool`,
-    /// `bytes*`, `string`) at the start of a line. Captures visibility and
-    /// `constant`/`immutable` modifiers.
+    /// `bytes*`, `string`) at the start of a line.
     fn extract_state_variables(&self, content: &str) -> Vec<StateVariable> {
         let mut vars = Vec::new();
         // Pattern anchored to line start to avoid matching local variables inside functions.
-        let var_pattern = re!(r"^\s*(mapping\s*\([^)]+\)|address|uint\d*|int\d*|bool|bytes\d*|string|bytes)\s+(public|private|internal)?\s*(constant|immutable)?\s*(\w+)");
+        let var_pattern = re!(
+            r"^\s*(mapping\s*\([^)]+\)|address|uint\d*|int\d*|bool|bytes\d*|string|bytes)\s+(public|private|internal)?\s*(constant|immutable)?\s*(\w+)"
+        );
 
         // Track brace depth: state variables live at contract level (depth 1).
         // Anything deeper is a local declaration inside a function/block, and the
         // `^\s*` anchor alone cannot tell them apart (both are indented).
         let mut depth: i32 = 0;
-        for (idx, line) in content.lines().enumerate() {
+        for line in content.lines() {
             if depth == 1 {
                 if let Some(caps) = var_pattern.captures(line) {
-                    let var_type = caps.get(1).map_or("", |m| m.as_str()).to_string();
-                    let visibility = caps.get(2).map_or("internal", |m| m.as_str()).to_string();
-                    let modifier = caps.get(3).map_or("", |m| m.as_str());
                     let name = caps.get(4).map_or("", |m| m.as_str()).to_string();
-
-                    vars.push(StateVariable {
-                        name,
-                        var_type,
-                        visibility,
-                        is_constant: modifier == "constant",
-                        is_immutable: modifier == "immutable",
-                        line: idx + 1,
-                    });
+                    vars.push(StateVariable { name });
                 }
             }
             depth += line.matches('{').count() as i32 - line.matches('}').count() as i32;
@@ -872,8 +788,8 @@ impl LogicAnalyzer {
 
                         // Skip mappings (they don't have length and return 0 for any key)
                         // Check if the variable is declared as a mapping anywhere in the file
-                        let is_mapping = content.contains(&format!("mapping("))
-                            && (content.contains(&format!("{array_name_str}"))
+                        let is_mapping = content.contains(&"mapping(".to_string())
+                            && (content.contains(&array_name_str.to_string())
                                 || content.contains(&format!(" {array_name_str};"))
                                 || content.contains(&format!(" {array_name_str} ")));
                         // Also skip common mapping patterns: balanceOf, allowance, balances, etc.
@@ -1182,22 +1098,21 @@ impl LogicAnalyzer {
             for (pattern1, pattern2, reason) in &impossible_conditions {
                 if func.body.contains(pattern1)
                     && (pattern2.is_empty() || func.body.contains(pattern2))
+                    && pattern1.contains("uint")
+                    && func.body.contains("uint")
                 {
-                    if pattern1.contains("uint") && func.body.contains("uint") {
-                        // Check for actual < 0 comparison with uint
-                        let uint_negative_check =
-                            re!(r"uint\d*\s+\w+[^;]*<\s*0[^0-9]");
-                        if uint_negative_check.is_match(&func.body) {
-                            vulnerabilities.push(Vulnerability::new(
-                                VulnerabilitySeverity::Medium,
-                                VulnerabilityCategory::LogicError,
-                                format!("Impossible Condition in {}", func.name),
-                                format!("Condition can never be true: {}", reason),
-                                func.line_start,
-                                format!("function {}", func.name),
-                                "Remove impossible condition or fix logic".to_string(),
-                            ));
-                        }
+                    // Check for actual < 0 comparison with uint
+                    let uint_negative_check = re!(r"uint\d*\s+\w+[^;]*<\s*0[^0-9]");
+                    if uint_negative_check.is_match(&func.body) {
+                        vulnerabilities.push(Vulnerability::new(
+                            VulnerabilitySeverity::Medium,
+                            VulnerabilityCategory::LogicError,
+                            format!("Impossible Condition in {}", func.name),
+                            format!("Condition can never be true: {}", reason),
+                            func.line_start,
+                            format!("function {}", func.name),
+                            "Remove impossible condition or fix logic".to_string(),
+                        ));
                     }
                 }
             }
@@ -1219,9 +1134,20 @@ impl LogicAnalyzer {
                     }
                 }
 
-                // Only flag return/revert at the function body level (depth 1)
-                // A return inside an if/else/for block (depth >= 2) is normal control flow
+                // Only flag return/revert at the function body level (depth 1).
+                // A return inside an if/else/for block (depth >= 2) is normal control flow.
+                //
+                // The statement must also be *complete* on this line. A multi-line
+                // return expression --
+                //     return string(
+                //         abi.encodePacked(...)
+                //     );
+                // -- starts with "return " but its continuation lines are part of the
+                // same statement, not unreachable code after it.
+                let statement_complete = trimmed.ends_with(';')
+                    && trimmed.matches('(').count() == trimmed.matches(')').count();
                 if brace_depth == 1
+                    && statement_complete
                     && (trimmed.starts_with("return ")
                         || trimmed.starts_with("return;")
                         || trimmed.starts_with("revert ")
@@ -1229,8 +1155,8 @@ impl LogicAnalyzer {
                     && !trimmed.starts_with("//")
                 {
                     // Check if the very next non-empty, non-brace, non-comment line exists
-                    for j in (i + 1)..lines.len() {
-                        let next = lines[j].trim();
+                    for (j, raw_next) in lines.iter().enumerate().skip(i + 1) {
+                        let next = raw_next.trim();
                         if next.is_empty() || next.starts_with("//") || next.starts_with("*") {
                             continue;
                         }

@@ -178,6 +178,30 @@ scratch/
 # -----------------------------------------------------------------------------
 # Local-only tests and corpora (not tracked in the public repository)
 # -----------------------------------------------------------------------------
-tests/
-test_contracts/
+# NOTE: this must be `tests/*`, not `tests/`. Git will not re-include a path
+# inside a directory that is itself excluded, so an excluded `tests/` makes the
+# `!tests/corpus/` negation below a no-op and the benchmark corpus silently
+# disappears from CI checkouts.
+tests/*
+# The accuracy-regression corpus IS tracked: the benchmark harness and the
+# `benchmark` CI job cannot run without it. See docs/BENCHMARKING.md.
+!tests/corpus/
+# The integration suite and its fixtures ARE tracked -- `tests/integration_tests.rs`
+# and 14 fixtures under `tests/contracts/` were already committed, but the
+# over-broad `tests/` rule above silently dropped 32 fixtures added afterwards,
+# so `cargo test` could not pass on a fresh clone. Both are re-included here.
+!tests/integration_tests.rs
+!tests/contracts/
+# The integration suite scans fixtures in test_contracts/ by explicit path, so
+# the directory must be tracked. 11 of its 12 files were already committed; the
+# blanket rule silently dropped the 12th, and `cargo test` could not pass on a
+# fresh clone as a result. Same failure mode as the `tests/` rule above.
+!test_contracts/
 fuzz/corpus/
+
+# -----------------------------------------------------------------------------
+# Benchmark harness
+# -----------------------------------------------------------------------------
+# Pinned upstream repos cloned by `scripts/benchmark.sh --with-upstream`.
+.bench-cache/
+scripts/__pycache__/

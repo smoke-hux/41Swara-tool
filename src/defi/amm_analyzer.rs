@@ -3,8 +3,6 @@
 //! Detects vulnerabilities specific to Automated Market Makers and
 //! Decentralized Exchanges including Uniswap, Curve, and Balancer patterns.
 
-#![allow(dead_code)]
-
 use crate::vulnerabilities::{Vulnerability, VulnerabilityCategory, VulnerabilitySeverity};
 use regex::Regex;
 
@@ -16,7 +14,6 @@ pub struct AMMAnalyzer {
 
     // Uniswap V3 patterns
     uniswap_v3_callback: Regex,
-    uniswap_v3_flash: Regex,
 
     // Curve patterns
     curve_reentrancy: Regex,
@@ -37,7 +34,6 @@ impl AMMAnalyzer {
                 r"function\s+uniswapV3(Swap|Mint|Flash)Callback\s*\([^)]*\)",
             )
             .unwrap(),
-            uniswap_v3_flash: Regex::new(r"IUniswapV3Pool\([^)]*\)\.flash").unwrap(),
             curve_reentrancy: Regex::new(
                 r"ICurve\w*\([^)]*\)\.(exchange|add_liquidity|remove_liquidity)",
             )
@@ -180,18 +176,20 @@ impl AMMAnalyzer {
             }
 
             // Check for Curve exchange without reentrancy guard
-            if self.curve_reentrancy.is_match(line) {
-                if !content.contains("nonReentrant") && !content.contains("ReentrancyGuard") {
-                    vulnerabilities.push(Vulnerability::new(
-                        VulnerabilitySeverity::High,
-                        VulnerabilityCategory::Reentrancy,
-                        "Curve Interaction Without Reentrancy Guard".to_string(),
-                        "Curve pool interaction can trigger callbacks via token transfers".to_string(),
-                        idx + 1,
-                        line.to_string(),
-                        "Add ReentrancyGuard - Curve pools can call back during ETH/token transfers".to_string(),
-                    ));
-                }
+            if self.curve_reentrancy.is_match(line)
+                && !content.contains("nonReentrant")
+                && !content.contains("ReentrancyGuard")
+            {
+                vulnerabilities.push(Vulnerability::new(
+                    VulnerabilitySeverity::High,
+                    VulnerabilityCategory::Reentrancy,
+                    "Curve Interaction Without Reentrancy Guard".to_string(),
+                    "Curve pool interaction can trigger callbacks via token transfers".to_string(),
+                    idx + 1,
+                    line.to_string(),
+                    "Add ReentrancyGuard - Curve pools can call back during ETH/token transfers"
+                        .to_string(),
+                ));
             }
         }
 
@@ -313,26 +311,25 @@ impl AMMAnalyzer {
                 if line.contains("getReserves") {
                     // Check if used for pricing without TWAP
                     let func_body = self.extract_function_body(content, idx);
-                    if func_body.contains("price")
+                    if (func_body.contains("price")
                         || func_body.contains("Price")
                         || func_body.contains("amount")
-                        || func_body.contains("value")
+                        || func_body.contains("value"))
+                        && !content.contains("TWAP")
+                        && !content.contains("timeWeightedAverage")
+                        && !content.contains("Chainlink")
+                        && !content.contains("oracle")
                     {
-                        if !content.contains("TWAP")
-                            && !content.contains("timeWeightedAverage")
-                            && !content.contains("Chainlink")
-                            && !content.contains("oracle")
-                        {
-                            vulnerabilities.push(Vulnerability::high_confidence(
-                                VulnerabilitySeverity::Critical,
-                                VulnerabilityCategory::OracleManipulation,
-                                "Spot Reserve Pricing Vulnerable to Flash Loans".to_string(),
-                                "Using getReserves() for pricing without TWAP - trivially manipulable".to_string(),
-                                idx + 1,
-                                line.to_string(),
-                                "Use Uniswap V2 TWAP oracle or Chainlink price feeds".to_string(),
-                            ));
-                        }
+                        vulnerabilities.push(Vulnerability::high_confidence(
+                            VulnerabilitySeverity::Critical,
+                            VulnerabilityCategory::OracleManipulation,
+                            "Spot Reserve Pricing Vulnerable to Flash Loans".to_string(),
+                            "Using getReserves() for pricing without TWAP - trivially manipulable"
+                                .to_string(),
+                            idx + 1,
+                            line.to_string(),
+                            "Use Uniswap V2 TWAP oracle or Chainlink price feeds".to_string(),
+                        ));
                     }
                 }
             }
@@ -445,8 +442,14 @@ impl AMMAnalyzer {
 
     fn get_function_context(&self, content: &str, line_idx: usize) -> String {
         let lines: Vec<&str> = content.lines().collect();
-        let start = line_idx.saturating_sub(30);
-        lines[start..=line_idx.min(lines.len() - 1)].join("\n")
+        // `lines.len() - 1` underflows on empty input, and an out-of-range `line_idx`
+        // would invert the range and panic. Both are guarded rather than assumed.
+        if lines.is_empty() {
+            return String::new();
+        }
+        let end = line_idx.min(lines.len() - 1);
+        let start = line_idx.saturating_sub(30).min(end);
+        lines[start..=end].join("\n")
     }
 
     fn has_state_changes(&self, body: &str) -> bool {

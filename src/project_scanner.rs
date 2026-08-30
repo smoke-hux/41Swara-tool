@@ -15,15 +15,11 @@ pub struct ProjectScanner {
 
 #[derive(Debug, Clone)]
 pub struct ContractInfo {
-    #[allow(dead_code)] // Used in debug output and future analysis
     pub path: PathBuf,
     pub name: String,
     pub imports: Vec<String>,
-    #[allow(dead_code)] // Reserved for function-level cross-file analysis
     pub functions: Vec<String>,
-    #[allow(dead_code)] // Reserved for modifier propagation analysis
     pub modifiers: Vec<String>,
-    #[allow(dead_code)] // Reserved for state variable collision detection
     pub state_variables: Vec<String>,
     pub vulnerabilities: Vec<Vulnerability>,
 }
@@ -100,8 +96,24 @@ impl ProjectScanner {
 
         // Phase 1: Scan all files and extract information
         println!("\n{}", "📋 Phase 1: File Analysis".bright_cyan().bold());
+        // A file the scanner refuses (oversized, unreadable, bad encoding) must not abort the
+        // whole project. Report it and carry on, matching how the parallel directory scan in
+        // `cli.rs` treats per-file errors; otherwise one bad file hides every finding in the
+        // repository behind a non-zero exit.
+        let mut skipped = Vec::new();
         for file_path in &sol_files {
-            self.analyze_file(file_path)?;
+            if let Err(e) = self.analyze_file(file_path) {
+                eprintln!("  Error analyzing {}: {}", file_path.display(), e);
+                skipped.push(file_path.clone());
+            }
+        }
+        if !skipped.is_empty() {
+            println!(
+                "{} Skipped {} of {} files that could not be analyzed",
+                "⚠️".yellow(),
+                skipped.len(),
+                sol_files.len()
+            );
         }
 
         // Phase 2: Build dependency graph
@@ -297,13 +309,11 @@ impl ProjectScanner {
                     && !trimmed.starts_with("//")
                     && !trimmed.starts_with("function")
                     && !trimmed.starts_with("modifier")
-                {
-                    if trimmed.contains("public")
+                    && (trimmed.contains("public")
                         || trimmed.contains("private")
-                        || trimmed.contains("internal")
-                    {
-                        variables.push(trimmed.to_string());
-                    }
+                        || trimmed.contains("internal"))
+                {
+                    variables.push(trimmed.to_string());
                 }
             }
         }
@@ -314,7 +324,7 @@ impl ProjectScanner {
     fn build_dependency_graph(&mut self) {
         println!("  🔗 Building contract dependency graph...");
 
-        for (_path, info) in &self.contracts {
+        for info in self.contracts.values() {
             let mut deps = Vec::new();
 
             for import in &info.imports {
@@ -400,20 +410,19 @@ impl ProjectScanner {
             if matches!(
                 vuln.vulnerability.severity,
                 VulnerabilitySeverity::Critical | VulnerabilitySeverity::High
-            ) {
-                if !vuln.cross_file_impact.is_empty() {
-                    let mut path = vec![vuln.file_path.clone()];
-                    path.extend(vuln.cross_file_impact.clone());
+            ) && !vuln.cross_file_impact.is_empty()
+            {
+                let mut path = vec![vuln.file_path.clone()];
+                path.extend(vuln.cross_file_impact.clone());
 
-                    critical_paths.push(CriticalPath {
-                        path,
-                        severity: vuln.vulnerability.severity.clone(),
-                        description: format!(
-                            "{} - {}",
-                            vuln.vulnerability.title, vuln.vulnerability.description
-                        ),
-                    });
-                }
+                critical_paths.push(CriticalPath {
+                    path,
+                    severity: vuln.vulnerability.severity.clone(),
+                    description: format!(
+                        "{} - {}",
+                        vuln.vulnerability.title, vuln.vulnerability.description
+                    ),
+                });
             }
         }
 
@@ -478,9 +487,8 @@ impl ProjectScanner {
                 * 0.1);
 
         // Normalize to 0-100 scale
-        let risk_score = (base_score * impact_multiplier).min(100.0);
 
-        risk_score
+        (base_score * impact_multiplier).min(100.0)
     }
 
     pub fn print_analysis_report(&self, result: &ProjectAnalysisResult) {
@@ -556,5 +564,49 @@ impl ProjectScanner {
 
         println!("\n{}", "━".repeat(60).bright_blue());
         println!("{}", "✅ Analysis Complete".bright_green().bold());
+    }
+}
+
+#[cfg(test)]
+mod skip_regression_tests {
+    use super::*;
+
+    /// One file the scanner refuses must not abort analysis of the rest of the project.
+    #[test]
+    fn an_unanalyzable_file_does_not_abort_the_project_scan() {
+        let dir = std::env::temp_dir().join(format!(
+            "41swara-project-skip-{}-{:?}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("create project test directory");
+        std::fs::write(
+            dir.join("small.sol"),
+            "pragma solidity ^0.8.20;\ncontract Small { uint256 public x; }\n",
+        )
+        .expect("write small fixture");
+        // Comfortably over the 10 MB default limit so scan_file rejects it.
+        std::fs::write(
+            dir.join("oversized.sol"),
+            format!(
+                "pragma solidity ^0.8.20;\ncontract Oversized {{\n{}}}\n",
+                "    uint256 public filler;\n".repeat(520_000)
+            ),
+        )
+        .expect("write oversized fixture");
+
+        let result = ProjectScanner::new(dir.clone(), false)
+            .scan_project()
+            .expect("an oversized file must be skipped, not fatal");
+
+        assert!(
+            result.total_files >= 1,
+            "the analyzable file should still have been scanned"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

@@ -1155,13 +1155,13 @@ fn test_cvss_vector_format() {
 // =========================================================================
 
 #[test]
-fn test_json_output_version_0_10() {
+fn test_json_output_version_0_11() {
     let output = scan_file("tests/contracts/reentrancy/classic_reentrancy.sol");
     let parsed: serde_json::Value = serde_json::from_str(&output).unwrap_or_default();
     let version = parsed["version"].as_str().unwrap_or("");
     assert_eq!(
-        version, "0.10.0",
-        "Scanner version in JSON should be 0.10.0, got '{version}'"
+        version, "0.11.0",
+        "Scanner version in JSON should be 0.11.0, got '{version}'"
     );
 }
 
@@ -1192,9 +1192,9 @@ fn test_2026_midyear_exploits_detected() {
     let joined = titles.join("\n");
 
     for needle in [
-        "Transient Storage Clearing Bug", // 41S-085
-        "EIP-7702 Delegate Uses Raw Storage Slots", // 41S-086
-        "LayerZero Single Required DVN", // 41S-087
+        "Transient Storage Clearing Bug",               // 41S-085
+        "EIP-7702 Delegate Uses Raw Storage Slots",     // 41S-086
+        "LayerZero Single Required DVN",                // 41S-087
         "fill() Decodes originData Without Validation", // 41S-088
         "V4 Flash Accounting take() to Caller-Controlled Recipient", // 41S-089
     ] {
@@ -1219,5 +1219,48 @@ fn test_2026_midyear_mitigations_suppressed() {
     assert!(
         !joined.contains("fill() Decodes originData Without Validation"),
         "Validated settler should suppress 41S-088; got:\n{joined}"
+    );
+}
+
+// =========================================================================
+// v0.11.0 Late-2026 Smart-Account Execution Surface (41S-090 .. 41S-092)
+// =========================================================================
+
+#[test]
+fn test_2026_smart_account_exploits_detected() {
+    let output = scan_file("test_contracts/test_2026_smart_account.sol");
+    let joined = finding_titles(&output).join("\n");
+
+    for needle in [
+        "Module (Un)Installation Without Access Control", // 41S-090
+        "Batch execute() Without Caller Restriction",     // 41S-091
+        "executeFromExecutor() Without Installed-Module Gate", // 41S-092
+    ] {
+        assert!(
+            joined.contains(needle),
+            "Expected a late-2026 smart-account finding containing {needle:?}; got:\n{joined}"
+        );
+    }
+}
+
+#[test]
+fn test_2026_smart_account_mitigations_suppressed() {
+    let output = scan_file("tests/contracts/modern/safe_2026_mitigated.sol");
+    let joined = finding_titles(&output).join("\n");
+
+    // onlyEntryPointOrSelf on module lifecycle mitigates 41S-090.
+    assert!(
+        !joined.contains("Module (Un)Installation Without Access Control"),
+        "Gated module lifecycle should suppress 41S-090; got:\n{joined}"
+    );
+    // entryPoint/self restriction on execute() mitigates 41S-091.
+    assert!(
+        !joined.contains("Batch execute() Without Caller Restriction"),
+        "Restricted ERC-7821 execute() should suppress 41S-091; got:\n{joined}"
+    );
+    // isModuleInstalled gate mitigates 41S-092.
+    assert!(
+        !joined.contains("executeFromExecutor() Without Installed-Module Gate"),
+        "Gated executeFromExecutor() should suppress 41S-092; got:\n{joined}"
     );
 }

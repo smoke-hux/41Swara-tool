@@ -127,7 +127,7 @@ impl VulnerabilityReporter {
         }
     }
 
-    pub fn add_file_results(&mut self, file_path: &PathBuf, vulnerabilities: Vec<Vulnerability>) {
+    pub fn add_file_results(&mut self, file_path: &Path, vulnerabilities: Vec<Vulnerability>) {
         // Print results immediately for better user experience
         if !vulnerabilities.is_empty() {
             match self.format.as_str() {
@@ -142,7 +142,8 @@ impl VulnerabilityReporter {
             );
         }
 
-        self.results.insert(file_path.clone(), vulnerabilities);
+        self.results
+            .insert(file_path.to_path_buf(), vulnerabilities);
     }
 
     /// Add results without printing to stdout.

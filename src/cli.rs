@@ -12,54 +12,19 @@ use std::sync::{Arc, Mutex}; // Thread-safe shared state for parallel scanning
 use std::time::Instant; // Performance timing
 use walkdir::WalkDir; // Recursive directory traversal // Glob pattern matching for --exclude-pattern
 
-// --- Internal module declarations ---
-mod abi_scanner; // ABI JSON file vulnerability scanner
-mod advanced_analysis; // DeFi/NFT/exploit pattern analyzers
-mod parser; // Solidity source code parser (line splitting, version extraction)
-mod professional_reporter; // Professional audit-style report generation
-mod project_scanner; // Cross-file project-wide analysis
-mod reporter; // Terminal-based vulnerability report output
-mod sarif;
-mod sarif_report;
-mod scanner; // Core scanning orchestration engine
-mod vulnerabilities; // Vulnerability rules, types, and severity definitions // SARIF 2.1.0 output format (GitHub Code Scanning integration)
+// --- Internal modules ---
+// These live in the library root (`src/lib.rs`); imported here as plain names so the
+// bare `parser::`, `config::`, `integrations::` paths used throughout this file resolve.
+use crate::{cache, config, integrations, parser, vulnerabilities};
 
-// Phase 1: AST-Based Analysis Engine
-mod ast;
-
-// Phase 2: DeFi-Specific Analyzers (AMM, lending, oracle patterns)
-mod defi;
-
-// Phase 4: Performance & Caching (incremental scanning support)
-mod cache;
-
-// Phase 5: Tool Integration (Slither/Foundry correlation)
-mod integrations;
-
-// Phase 6: Advanced Analysis Engine (business logic, reachability, dependencies, threat models)
-mod dependency_analyzer;
-mod logic_analyzer;
-mod reachability_analyzer;
-mod threat_model;
-
-// Phase 7: EIP Analysis & Enhanced False Positive Filtering
-mod attack_path;
-mod cvss; // CVSS 3.1 base score calculator
-mod eip_analyzer; // ERC-20/721/777/1155/4626/2771 standard compliance checks
-mod exploit_db; // Real-world exploit reference database
-mod false_positive_filter; // Multi-pass false positive reduction (~90% FP reduction) // Attack narrative generator
-
-// Phase 8: Configuration System
-mod config; // TOML-based custom rules and scanner settings
-
-// --- Re-exports used across main ---
-use abi_scanner::ABIScanner;
-use professional_reporter::{AuditInfo, ProfessionalReporter};
-use reporter::VulnerabilityReporter;
-use sarif_report::SarifReport;
-use scanner::{ContractScanner, ScannerConfig};
-use vulnerabilities::{Vulnerability, VulnerabilitySeverity};
-
+// --- Types used across the CLI ---
+use crate::abi_scanner::ABIScanner;
+use crate::ai::{AiConfig, AiReport, AiSession, FpPolicy, ProviderKind};
+use crate::professional_reporter::{AuditInfo, ProfessionalReporter};
+use crate::reporter::VulnerabilityReporter;
+use crate::sarif_report::SarifReport;
+use crate::scanner::{ContractScanner, ScannerConfig};
+use crate::vulnerabilities::{Vulnerability, VulnerabilitySeverity};
 /// Type alias for thread-safe shared scan results (reduces type complexity warnings).
 type SharedResults<T> = Arc<Mutex<Vec<T>>>;
 
@@ -343,9 +308,68 @@ struct Args {
     /// Show diff against baseline: [NEW], [KNOWN], [RESOLVED] labels
     #[arg(long, requires = "baseline")]
     diff_output: bool,
+
+    // ========================================================================
+    // AI review layer (opt-in). No network I/O happens unless --ai is passed.
+    // ========================================================================
+    /// Enable the AI review layer: verifies findings and cuts false positives
+    #[arg(long)]
+    ai: bool,
+
+    /// AI provider: anthropic (needs ANTHROPIC_API_KEY) or ollama (local, free)
+    #[arg(long, default_value = "anthropic", value_parser = ["anthropic", "claude", "ollama", "local"])]
+    provider: String,
+
+    /// Override the AI model (defaults: claude-opus-5, or qwen2.5-coder:7b for ollama)
+    #[arg(long, value_name = "MODEL")]
+    ai_model: Option<String>,
+
+    /// Also run the AI business-logic pass (slower, costs more)
+    #[arg(long)]
+    ai_deep: bool,
+
+    /// Hard spend cap in USD for the AI layer (0 = uncapped)
+    #[arg(long, value_name = "USD", default_value = "1.0")]
+    ai_max_cost: f64,
+
+    /// What to do with findings the model calls false positives
+    #[arg(long, value_name = "POLICY", default_value = "downgrade", value_parser = ["drop", "downgrade", "annotate"])]
+    ai_fp_policy: String,
+
+    /// Concurrent AI requests
+    #[arg(long, value_name = "N", default_value = "4")]
+    ai_concurrency: usize,
+
+    /// Override the AI provider endpoint (proxy, or a remote Ollama host)
+    #[arg(long, value_name = "URL")]
+    ai_base_url: Option<String>,
+
+    /// Disable the AI verdict cache
+    #[arg(long)]
+    no_ai_cache: bool,
+
+    // ========================================================================
+    // On-chain verified-source fetch (opt-in; network only when --fetch is used)
+    // ========================================================================
+    /// Fetch verified source for a deployed contract address, then scan it
+    #[arg(long, value_name = "ADDRESS")]
+    fetch: Option<String>,
+
+    /// Chain for --fetch (id or name: ethereum/base/arbitrum/optimism/polygon)
+    #[arg(long, value_name = "CHAIN", default_value = "ethereum")]
+    chain: String,
+
+    /// Directory to write fetched sources into
+    #[arg(long, value_name = "DIR", default_value = "fetched_sources")]
+    fetch_out: PathBuf,
 }
 
-fn main() {
+/// Run the scanner CLI end to end and return the process exit code.
+///
+/// Both binaries (`41swara` and `41`) are thin wrappers around this function, so
+/// CLI behaviour has exactly one implementation. Returns rather than exits so the
+/// entry point stays testable.
+pub fn run() -> i32 {
     let args = Args::parse();
 
     // Handle --no-color flag
@@ -356,19 +380,19 @@ fn main() {
     // Handle --version-full flag
     if args.version_full {
         print_version_full();
-        return;
+        return 0;
     }
 
     // Handle --about flag
     if args.about {
         print_about();
-        return;
+        return 0;
     }
 
     // Show supported dynamic-analysis tools if requested
     if args.dynamic_list_tools {
         print_dynamic_tool_catalog(args.format == "json");
-        return;
+        return 0;
     }
 
     // Configure thread pool for parallel scanning
@@ -382,11 +406,18 @@ fn main() {
     // Show examples if requested
     if args.examples {
         show_examples();
-        return;
+        return 0;
     }
 
     // Get path (defaults to current directory ".")
-    let path = args.path.clone();
+    // `--fetch <address>` retrieves verified on-chain source first, then scans the
+    // directory it was written to. This is the only code path in the tool that performs
+    // network I/O for static analysis; without the flag nothing is contacted.
+    let path = match fetch_onchain_source(&args) {
+        Ok(dir) => dir,
+        Err(0) => args.path.clone(), // no --fetch: scan the given path
+        Err(code) => return code,
+    };
 
     // Print scanner header (unless quiet mode)
     if !args.quiet && args.format != "json" && args.format != "sarif" {
@@ -414,7 +445,7 @@ fn main() {
             "Error:".red().bold(),
             path.display()
         );
-        std::process::exit(10);
+        return 10;
     }
 
     let start_time = Instant::now();
@@ -437,7 +468,7 @@ fn main() {
         eprintln!("  Threads: {}", rayon::current_num_threads());
     }
 
-    std::process::exit(exit_code);
+    exit_code
 }
 
 /// Create a scanner with configuration based on CLI arguments
@@ -455,6 +486,7 @@ fn create_scanner(args: &Args) -> ContractScanner {
             enable_phase6_analysis: args.advanced_detectors,
             enable_eip_analysis: false,
             enable_strict_filter: false,
+            max_file_size_bytes: args.max_file_size.saturating_mul(1024 * 1024),
         }
     } else {
         ScannerConfig {
@@ -468,6 +500,7 @@ fn create_scanner(args: &Args) -> ContractScanner {
             enable_eip_analysis: !args.no_eip_analysis,
             // v0.8.0: enabled by default; --no-fp-filter disables
             enable_strict_filter: !args.no_fp_filter,
+            max_file_size_bytes: args.max_file_size.saturating_mul(1024 * 1024),
         }
     };
 
@@ -878,14 +911,26 @@ fn merge_slither_findings(
             }
             let correlated = slither.correlate(vulnerabilities);
 
-            // Boost confidence for corroborated findings
+            // Apply Slither's computed correlation. `correlate()` already derives
+            // `adjusted_confidence` and `unified_severity`; this used to throw both away
+            // and hardcode `confidence_percent + 15` with no severity unification, and it
+            // only considered exact matches. Near matches are corroboration too.
             let mut boosted = 0usize;
             for cf in &correlated {
-                if cf.correlation == CorrelationType::BothFound {
+                if cf.correlation == CorrelationType::BothFound
+                    || cf.correlation == CorrelationType::Similar
+                {
                     if let Some(ref swara_f) = cf.swara_finding {
                         for v in vulnerabilities.iter_mut() {
                             if v.line_number == swara_f.line_number && v.title == swara_f.title {
-                                v.confidence_percent = (v.confidence_percent + 15).min(100);
+                                let pct = (cf.adjusted_confidence * 100.0).round().clamp(0.0, 100.0)
+                                    as u8;
+                                v.confidence_percent = pct;
+                                v.confidence =
+                                    crate::vulnerabilities::VulnerabilityConfidence::from_percent(
+                                        pct,
+                                    );
+                                v.severity = cf.unified_severity.clone();
                                 boosted += 1;
                                 break;
                             }
@@ -1055,7 +1100,10 @@ fn print_dynamic_analysis_report(report: &integrations::dynamic::DynamicAnalysis
     println!("\n{}", "Dynamic Analysis Pipeline".bright_cyan().bold());
     println!("{} {}", "Target:".cyan(), report.target);
     if report.dry_run {
-        println!("{}", "Mode: dry-run (no external commands executed)".yellow());
+        println!(
+            "{}",
+            "Mode: dry-run (no external commands executed)".yellow()
+        );
     }
 
     for run in &report.runs {
@@ -1141,7 +1189,33 @@ fn process_file(args: &Args, path: &PathBuf) -> i32 {
                     // Apply CLI filters (confidence, SWC, baseline)
                     apply_filters(&mut vulnerabilities, args, &baseline_ids);
 
+                    // AI review (opt-in). Strictly additive: any failure leaves
+                    // `vulnerabilities` exactly as the offline scanner produced it.
+                    // Runs after the severity filters so hidden findings cost nothing,
+                    // and before reporting so downgrades reach --fail-on.
+                    if let Some(session) = build_ai_session(args) {
+                        if let Ok(source) = std::fs::read_to_string(path) {
+                            if !args.quiet {
+                                let est = session.estimate_file(path, &source, &vulnerabilities);
+                                eprintln!(
+                                    "{} ~{} request(s), estimated ${:.4}",
+                                    "AI:".cyan().bold(),
+                                    est.requests,
+                                    est.usd
+                                );
+                            }
+                            let (reviewed, ai_report) =
+                                session.review_file(path, &source, vulnerabilities);
+                            vulnerabilities = reviewed;
+                            session.finish();
+                            print_ai_report(&ai_report, args.quiet);
+                        }
+                    }
+
                     // Generate Foundry PoC tests if requested
+                    if args.foundry_correlate {
+                        correlate_foundry_tests(&vulnerabilities, path, args.quiet);
+                    }
                     if args.generate_poc {
                         generate_foundry_pocs(&vulnerabilities, path, args.quiet);
                     }
@@ -1206,7 +1280,11 @@ fn process_file(args: &Args, path: &PathBuf) -> i32 {
                         let has_failures = vulnerabilities
                             .iter()
                             .any(|v| fail_severity.matches(&v.severity));
-                        if has_failures { 1 } else { 0 }
+                        if has_failures {
+                            1
+                        } else {
+                            0
+                        }
                     } else if vulnerabilities.is_empty() {
                         0
                     } else {
@@ -1533,7 +1611,13 @@ fn process_directory(args: &Args, dir: &PathBuf) -> i32 {
     }
 
     // Compile exclude patterns once
-    let exclude_patterns = compile_exclude_patterns(&args.exclude_pattern);
+    // `--exclude-pattern` plus the `exclude` list from `.41swara.toml`, which was
+    // parsed into `ScanSettings` and then never consulted.
+    let mut exclude_globs = args.exclude_pattern.clone();
+    if let Some(cfg) = load_scan_config(args) {
+        exclude_globs.extend(cfg.settings.exclude.iter().cloned());
+    }
+    let exclude_patterns = compile_exclude_patterns(&exclude_globs);
 
     // Load baseline if provided
     let baseline_ids = args
@@ -1735,8 +1819,29 @@ fn process_directory(args: &Args, dir: &PathBuf) -> i32 {
     for (_, vulns) in &mut results {
         apply_filters(vulns, args, &baseline_ids);
     }
+    // AI review (opt-in). One session for the whole scan, so the spend cap and the
+    // verdict cache are shared across every file.
+    if let Some(session) = build_ai_session(args) {
+        let mut ai_report = AiReport::default();
+        for (path, vulns) in &mut results {
+            let Ok(source) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let (reviewed, report) = session.review_file(path, &source, std::mem::take(vulns));
+            *vulns = reviewed;
+            ai_report.merge(report);
+        }
+        session.finish();
+        print_ai_report(&ai_report, args.quiet);
+    }
+
     // Remove files that ended up with no findings after filtering
     results.retain(|(_, vulns)| !vulns.is_empty());
+
+    if args.foundry_correlate {
+        let all_vulns: Vec<Vulnerability> = results.iter().flat_map(|(_, vs)| vs.clone()).collect();
+        correlate_foundry_tests(&all_vulns, dir, args.quiet);
+    }
 
     // Generate Foundry PoC tests if requested
     if args.generate_poc {
@@ -2010,10 +2115,10 @@ fn compiler_info_to_json(compiler_info: &Option<parser::CompilerInfo>) -> serde_
 }
 
 /// Run cross-file project-wide analysis for inter-contract vulnerabilities.
-fn run_project_analysis(dir: &PathBuf, args: &Args) -> i32 {
+fn run_project_analysis(dir: &Path, args: &Args) -> i32 {
     use crate::project_scanner::ProjectScanner;
 
-    let mut project_scanner = ProjectScanner::new(dir.clone(), args.verbose);
+    let mut project_scanner = ProjectScanner::new(dir.to_path_buf(), args.verbose);
     match project_scanner.scan_project() {
         Ok(result) => {
             project_scanner.print_analysis_report(&result);
@@ -2087,7 +2192,13 @@ fn scan_directory_professional_audit(dir: &PathBuf, args: &Args) {
 
     println!("\n{} {}", "Scanning for audit:".green(), dir.display());
 
-    let exclude_patterns = compile_exclude_patterns(&args.exclude_pattern);
+    // `--exclude-pattern` plus the `exclude` list from `.41swara.toml`, which was
+    // parsed into `ScanSettings` and then never consulted.
+    let mut exclude_globs = args.exclude_pattern.clone();
+    if let Some(cfg) = load_scan_config(args) {
+        exclude_globs.extend(cfg.settings.exclude.iter().cloned());
+    }
+    let exclude_patterns = compile_exclude_patterns(&exclude_globs);
 
     let sol_files: Vec<_> = WalkDir::new(dir)
         .into_iter()
@@ -2276,7 +2387,7 @@ fn scan_abi_file(path: &PathBuf, args: &Args) {
 }
 
 /// Pretty-print ABI analysis results grouped by vulnerability category.
-fn print_abi_vulnerabilities(vulnerabilities: &[Vulnerability], path: &PathBuf) {
+fn print_abi_vulnerabilities(vulnerabilities: &[Vulnerability], path: &Path) {
     println!(
         "\n{} ABI ANALYSIS: {}",
         "Results".bright_blue().bold(),
@@ -2723,4 +2834,151 @@ fn print_version_full() {
     println!("  - SARIF 2.1.0 output for CI/CD");
     println!("  - Parallel scanning with rayon");
     println!("License:  MIT");
+}
+
+// ============================================================================
+// AI review layer (opt-in)
+// ============================================================================
+
+/// Build the AI session from CLI args.
+///
+/// Returns `None` when `--ai` was not passed, and also when the layer cannot start
+/// (missing key, bad provider name) — in that case the reason is printed and the scan
+/// continues offline. Constructing a session performs no network I/O.
+fn build_ai_session(args: &Args) -> Option<AiSession> {
+    if !args.ai {
+        return None;
+    }
+    let Some(provider) = ProviderKind::parse(&args.provider) else {
+        eprintln!(
+            "{} unknown --provider '{}'",
+            "AI review disabled:".yellow().bold(),
+            args.provider
+        );
+        return None;
+    };
+    let config = AiConfig {
+        enabled: true,
+        provider,
+        model: args.ai_model.clone(),
+        api_base: args.ai_base_url.clone(),
+        deep: args.ai_deep,
+        max_cost_usd: args.ai_max_cost.max(0.0),
+        concurrency: args.ai_concurrency.max(1),
+        cache: !args.no_ai_cache,
+        fp_policy: FpPolicy::parse(&args.ai_fp_policy).unwrap_or(FpPolicy::Downgrade),
+        ..AiConfig::default()
+    };
+    match AiSession::new(config) {
+        Ok(session) => {
+            if !args.quiet {
+                if let Some(notice) = session.disclosure() {
+                    eprintln!("{} {}", "AI:".yellow().bold(), notice);
+                }
+            }
+            Some(session)
+        }
+        Err(e) => {
+            eprintln!("{} {e}", "AI review disabled:".yellow().bold());
+            None
+        }
+    }
+}
+
+/// Print what the AI pass did, including every finding it removed.
+fn print_ai_report(report: &AiReport, quiet: bool) {
+    if quiet {
+        return;
+    }
+    eprintln!("{} {}", "AI:".cyan().bold(), report.summary_line());
+    for d in &report.dropped {
+        eprintln!(
+            "  {} {} {} (line {}) - {}",
+            "[AI-Removed]".yellow(),
+            d.severity,
+            d.title,
+            d.line,
+            d.reasoning
+        );
+    }
+    for e in &report.errors {
+        eprintln!("  {} {e}", "[AI-Warning]".yellow());
+    }
+}
+
+/// Run `forge test` in the project and correlate results with findings.
+///
+/// Implements `--foundry-correlate`, which was previously declared in `--help` and
+/// silently did nothing.
+fn correlate_foundry_tests(vulnerabilities: &[Vulnerability], base_path: &Path, quiet: bool) {
+    use integrations::foundry::FoundryIntegration;
+    let foundry = FoundryIntegration::new(&base_path.to_string_lossy());
+    match foundry.run_tests(None) {
+        Ok(results) => {
+            let correlations = foundry.correlate_findings(vulnerabilities, &results);
+            let confirmed = correlations.iter().filter(|c| c.test_passes).count();
+            if !quiet {
+                eprintln!(
+                    "{} ran {} forge tests; {} finding(s) corroborated by a passing PoC",
+                    "Foundry:".cyan(),
+                    results.len(),
+                    confirmed
+                );
+                for c in correlations.iter().filter(|c| c.test_exists) {
+                    let status = if c.test_passes {
+                        "PASS".green()
+                    } else {
+                        "fail".yellow()
+                    };
+                    eprintln!(
+                        "  {} [{}] {} -> {}",
+                        c.finding_id,
+                        status,
+                        c.finding_title,
+                        c.test_name.as_deref().unwrap_or("?")
+                    );
+                }
+            }
+        }
+        Err(e) => eprintln!("{} foundry correlation skipped: {}", "Warning:".yellow(), e),
+    }
+}
+
+/// Fetch verified on-chain source into `--fetch-out`, returning the directory to scan.
+///
+/// Network access happens only on this path, and only because the user passed `--fetch`.
+fn fetch_onchain_source(args: &Args) -> Result<PathBuf, i32> {
+    use crate::onchain::{Chain, SourceFetcher};
+    let Some(addr) = args.fetch.as_deref() else {
+        return Err(0);
+    };
+    let chain = match Chain::parse(&args.chain) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("{} {e}", "Error:".red().bold());
+            return Err(2);
+        }
+    };
+    match SourceFetcher::new().fetch_verified_source(chain, addr, &args.fetch_out) {
+        Ok(r) => {
+            if !args.quiet {
+                eprintln!(
+                    "{} {} on {:?} ({}): fetched {} file(s) ({} bytes) via {} into {}",
+                    "Fetch:".cyan().bold(),
+                    r.address,
+                    r.chain,
+                    r.chain.chain_id(),
+                    r.files_written.len(),
+                    r.total_bytes,
+                    r.provider,
+                    args.fetch_out.display()
+                );
+            }
+            Ok(args.fetch_out.clone())
+        }
+        Err(e) => {
+            eprintln!("{} fetch failed: {e}", "Error:".red().bold());
+            Err(2)
+        }
+    }
 }

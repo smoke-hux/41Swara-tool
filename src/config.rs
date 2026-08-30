@@ -6,8 +6,6 @@
 //! - Rule disabling
 //! - Scan settings (confidence threshold, exclude patterns, library trust)
 
-#![allow(dead_code)]
-
 use regex::Regex;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
@@ -54,7 +52,6 @@ pub struct SeverityOverride {
 
 /// Global scanner settings from config.
 #[derive(Debug, Clone, Deserialize, Default)]
-#[allow(dead_code)]
 pub struct ScanSettings {
     /// Minimum confidence threshold (0-100)
     pub min_confidence: Option<u8>,
@@ -71,7 +68,6 @@ pub struct ScanSettings {
 
 /// Root configuration loaded from `.41swara.toml`.
 #[derive(Debug, Deserialize, Default)]
-#[allow(dead_code)]
 pub struct ScanConfig {
     /// Custom detection rules
     #[serde(default)]

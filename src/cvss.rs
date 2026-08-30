@@ -11,7 +11,6 @@
 use crate::vulnerabilities::{Vulnerability, VulnerabilityCategory, VulnerabilitySeverity};
 
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
 pub enum AttackVector {
     Network,
     Adjacent,
@@ -145,13 +144,11 @@ impl CvssVector {
             return 0.0;
         }
 
-        let base = if scope_changed {
+        if scope_changed {
             roundup((1.08 * (impact + exploitability)).min(10.0))
         } else {
             roundup((impact + exploitability).min(10.0))
-        };
-
-        base
+        }
     }
 
     /// Generate the CVSS 3.1 vector string.
@@ -386,7 +383,12 @@ pub fn category_to_cvss(category: &VulnerabilityCategory) -> Option<CvssVector> 
         // and V4 flash-accounting drains are all network-reachable value theft.
         VulnerabilityCategory::LayerZeroSingleDVN
         | VulnerabilityCategory::ERC7683UnvalidatedFill
-        | VulnerabilityCategory::ERC6909FlashAccountingDrain => CvssVector::nlu(HI, HI),
+        | VulnerabilityCategory::ERC6909FlashAccountingDrain
+        // Late-2026 smart-account execution surface: unrestricted module install /
+        // batch execute / executor dispatch are network-reachable account takeover.
+        | VulnerabilityCategory::ERC7579UnprotectedModule
+        | VulnerabilityCategory::ERC7821UnprotectedExecute
+        | VulnerabilityCategory::ERC7579UnrestrictedExecutor => CvssVector::nlu(HI, HI),
 
         // High but conditional: the 7702 collision needs the user to re-delegate,
         // and the compiler bug needs a specific clear-ordering to trigger.
@@ -435,8 +437,8 @@ pub fn severity_to_cvss(severity: &VulnerabilitySeverity) -> CvssVector {
 /// Enrich a list of vulnerabilities with CVSS scores and vector strings.
 pub fn enrich_with_cvss(vulnerabilities: &mut [Vulnerability]) {
     for vuln in vulnerabilities.iter_mut() {
-        let vector = category_to_cvss(&vuln.category)
-            .unwrap_or_else(|| severity_to_cvss(&vuln.severity));
+        let vector =
+            category_to_cvss(&vuln.category).unwrap_or_else(|| severity_to_cvss(&vuln.severity));
         vuln.cvss_score = Some(vector.calculate_base_score());
         vuln.cvss_vector = Some(vector.to_vector_string());
     }

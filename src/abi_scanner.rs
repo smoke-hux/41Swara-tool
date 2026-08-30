@@ -444,9 +444,10 @@ impl ABIScanner {
             if critical_admin
                 .iter()
                 .any(|p| name.to_lowercase().contains(&p.to_lowercase()))
+                && func.state_mutability != "view"
+                && func.state_mutability != "pure"
             {
-                if func.state_mutability != "view" && func.state_mutability != "pure" {
-                    vulns.push(self.vuln(
+                vulns.push(self.vuln(
                         VulnerabilitySeverity::Critical,
                         VulnerabilityCategory::ABIAccessControl,
                         format!("Critical Admin Function: '{}'", name),
@@ -454,7 +455,6 @@ impl ABIScanner {
                         self.sig(func),
                         "Implement onlyOwner, onlyRole, or multi-sig protection.".into(),
                     ));
-                }
             }
 
             // Payable without clear purpose
@@ -477,21 +477,23 @@ impl ABIScanner {
             if ["execute", "call", "delegatecall", "multicall"]
                 .iter()
                 .any(|p| name.to_lowercase().contains(p))
-            {
-                if func
+                && func
                     .inputs
                     .iter()
                     .any(|p| p.param_type == "bytes" || p.param_type == "bytes[]")
-                {
-                    vulns.push(self.vuln(
+            {
+                vulns.push(
+                    self.vuln(
                         VulnerabilitySeverity::Critical,
                         VulnerabilityCategory::ABIArbitraryCall,
                         format!("Arbitrary Execution: '{}'", name),
-                        "Accepts bytes data for execution. High risk for arbitrary code execution.".into(),
+                        "Accepts bytes data for execution. High risk for arbitrary code execution."
+                            .into(),
                         self.sig(func),
-                        "Whitelist targets and function selectors. Add strict access control.".into(),
-                    ));
-                }
+                        "Whitelist targets and function selectors. Add strict access control."
+                            .into(),
+                    ),
+                );
             }
 
             // Self-destruct
@@ -645,17 +647,21 @@ impl ABIScanner {
         }
 
         // Governance flash loan risk
-        if analysis.contract_type == ContractType::Governor {
-            if names.contains("getVotes") && !names.contains("getPastVotes") {
-                vulns.push(self.vuln(
+        if analysis.contract_type == ContractType::Governor
+            && names.contains("getVotes")
+            && !names.contains("getPastVotes")
+        {
+            vulns.push(
+                self.vuln(
                     VulnerabilitySeverity::Critical,
                     VulnerabilityCategory::ABIGovernanceRisk,
                     "Flash Loan Governance Attack".into(),
-                    "Governor uses getVotes() without snapshot. Vulnerable to flash loan voting.".into(),
+                    "Governor uses getVotes() without snapshot. Vulnerable to flash loan voting."
+                        .into(),
                     "getVotes() without getPastVotes()".into(),
                     "Use getPastVotes with snapshot at proposal creation block.".into(),
-                ));
-            }
+                ),
+            );
         }
 
         // Bridge risks
