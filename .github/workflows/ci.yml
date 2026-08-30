@@ -124,7 +124,7 @@ jobs:
             esac
           done
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: binaries-linux-x86_64
           path: |
@@ -236,7 +236,7 @@ jobs:
       # in order to see WHICH category drifted.
       - name: Upload benchmark result
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: accuracy-benchmark
           path: benchmark-result.json
