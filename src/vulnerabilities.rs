@@ -671,6 +671,17 @@ pub enum VulnerabilityCategory {
     /// 41S-092: ERC-7579 executeFromExecutor() reachable without an installed-executor
     /// gate - any caller dispatches arbitrary calls as the account.
     ERC7579UnrestrictedExecutor,
+
+    // --- Declared-But-Never-Enforced Analysis ---
+    /// 41S-093: a function takes a deadline/expiry parameter but never reads it -
+    /// no modifier consumes it and the body never references it. The transaction
+    /// stays valid forever, so it can be held and executed at an attacker-chosen
+    /// time (classic AMM/DEX MEV exposure).
+    UnenforcedDeadlineParameter,
+    /// 41S-094: a function declares a named return value that is never assigned and
+    /// the body has no explicit `return`, so the function silently returns the zero
+    /// value regardless of what it computed.
+    UnassignedNamedReturn,
 }
 
 impl VulnerabilityCategory {
@@ -1219,6 +1230,16 @@ impl VulnerabilityCategory {
                 "41S-092",
                 "ERC-7579 Unrestricted Executor Dispatch",
                 Some("CWE-284"),
+            )),
+            VulnerabilityCategory::UnenforcedDeadlineParameter => Some(SwcId::new(
+                "41S-093",
+                "Unenforced Deadline Parameter",
+                Some("CWE-829"),
+            )),
+            VulnerabilityCategory::UnassignedNamedReturn => Some(SwcId::new(
+                "41S-094",
+                "Unassigned Named Return Value",
+                Some("CWE-457"),
             )),
 
             // Info/Quality categories (no standard SWC)
@@ -3576,6 +3597,8 @@ impl VulnerabilityCategory {
             VulnerabilityCategory::ERC7579UnrestrictedExecutor => {
                 "ERC-7579 Unrestricted Executor Dispatch"
             }
+            VulnerabilityCategory::UnenforcedDeadlineParameter => "Unenforced Deadline Parameter",
+            VulnerabilityCategory::UnassignedNamedReturn => "Unassigned Named Return Value",
         }
     }
 }

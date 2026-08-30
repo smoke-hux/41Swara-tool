@@ -23,6 +23,7 @@ use crate::parser::CompilerVersion;
 use crate::parser::{CompilerInfo, SolidityParser};
 use crate::reachability_analyzer::ReachabilityAnalyzer;
 use crate::threat_model::ThreatModelGenerator;
+use crate::unused_declarations::UnusedDeclarationAnalyzer;
 use crate::vulnerabilities::{
     create_version_specific_rules, create_vulnerability_rules, Vulnerability, VulnerabilityRule,
 };
@@ -351,6 +352,7 @@ pub struct ContractScanner {
     verbose: bool,                                     // Enable detailed progress output
     advanced_analyzer: AdvancedAnalyzer, // DeFi/NFT/exploit/OWASP/L2 pattern detection
     logic_analyzer: LogicAnalyzer,       // Business logic vulnerability detection
+    unused_declarations: UnusedDeclarationAnalyzer, // Declared-but-never-enforced analysis
     reachability_analyzer: ReachabilityAnalyzer, // Dead code / unreachable path filtering
     dependency_analyzer: DependencyAnalyzer, // Import/dependency CVE detection
     threat_model_generator: ThreatModelGenerator, // Automatic threat model generation
@@ -773,6 +775,7 @@ impl ContractScanner {
             verbose,
             advanced_analyzer: AdvancedAnalyzer::new(),
             logic_analyzer: LogicAnalyzer::new(),
+            unused_declarations: UnusedDeclarationAnalyzer::new(),
             reachability_analyzer: ReachabilityAnalyzer::new(verbose),
             dependency_analyzer: DependencyAnalyzer::new(),
             threat_model_generator: ThreatModelGenerator::new(),
@@ -802,6 +805,7 @@ impl ContractScanner {
             verbose,
             advanced_analyzer: AdvancedAnalyzer::new(),
             logic_analyzer: LogicAnalyzer::new(),
+            unused_declarations: UnusedDeclarationAnalyzer::new(),
             reachability_analyzer: ReachabilityAnalyzer::new(verbose),
             dependency_analyzer: DependencyAnalyzer::new(),
             threat_model_generator: ThreatModelGenerator::new(),
@@ -1468,6 +1472,14 @@ impl ContractScanner {
             timed!(
                 "logic_analyzer",
                 vulnerabilities.extend(self.logic_analyzer.analyze(stripped))
+            );
+            // 41S-093 / 41S-094. Kept separate from LogicAnalyzer on purpose: its
+            // extract_functions matches a signature and its opening brace on one
+            // line, so it never sees the multi-line signatures both of these
+            // findings live in.
+            timed!(
+                "unused_declarations",
+                vulnerabilities.extend(self.unused_declarations.analyze(stripped))
             );
         }
 
