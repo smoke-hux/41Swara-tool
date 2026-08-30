@@ -3,7 +3,6 @@
 //! Specialized analyzers for DeFi protocols including AMM/DEX, lending,
 //! oracles, and MEV vulnerabilities.
 
-#![allow(dead_code)]
 
 pub mod amm_analyzer;
 pub mod lending_analyzer;
@@ -44,7 +43,7 @@ impl DeFiAnalyzer {
 
         // Run appropriate analyzers based on protocol type
         match protocol_type {
-            ProtocolType::AMM | ProtocolType::DEX => {
+            ProtocolType::Amm | ProtocolType::Dex => {
                 vulnerabilities.extend(self.amm_analyzer.analyze(content));
             }
             ProtocolType::Lending => {
@@ -76,7 +75,7 @@ impl DeFiAnalyzer {
             || content.contains("Curve")
             || content.contains("Balancer")
         {
-            return ProtocolType::AMM;
+            return ProtocolType::Amm;
         }
 
         // Lending patterns
@@ -93,7 +92,7 @@ impl DeFiAnalyzer {
 
         // DEX aggregator patterns
         if content.contains("swap") && content.contains("aggregat") {
-            return ProtocolType::DEX;
+            return ProtocolType::Dex;
         }
 
         ProtocolType::Unknown
@@ -108,8 +107,8 @@ impl Default for DeFiAnalyzer {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ProtocolType {
-    AMM,
-    DEX,
+    Amm,
+    Dex,
     Lending,
     Unknown,
 }

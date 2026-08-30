@@ -1,0 +1,2 @@
+# comment line, ignored
+@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/

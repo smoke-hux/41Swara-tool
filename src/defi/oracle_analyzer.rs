@@ -3,7 +3,6 @@
 //! Detects oracle-related vulnerabilities including Chainlink staleness,
 //! L2 sequencer checks, TWAP validation, and multi-oracle fallbacks.
 
-#![allow(dead_code)]
 
 use once_cell::sync::Lazy;
 use crate::vulnerabilities::{Vulnerability, VulnerabilityCategory, VulnerabilitySeverity};
@@ -353,12 +352,11 @@ impl OracleAnalyzer {
                 let func_context = self.get_function_context(content, idx);
 
                 // Look for division by price without zero check
-                if func_context.contains("/ price")
+                if (func_context.contains("/ price")
                     || func_context.contains("/price")
                     || func_context.contains("/ rate")
-                    || func_context.contains("/rate")
-                {
-                    if !func_context.contains("> 0")
+                    || func_context.contains("/rate"))
+                    && !func_context.contains("> 0")
                         && !func_context.contains("!= 0")
                         && !func_context.contains(">0")
                         && !func_context.contains("!=0")
@@ -373,7 +371,6 @@ impl OracleAnalyzer {
                             "Add: require(price > 0, 'Invalid price') before division".to_string(),
                         ));
                     }
-                }
             }
         }
 
@@ -413,8 +410,8 @@ impl OracleAnalyzer {
         }
 
         // Check for Chainlink decimal handling
-        if self.chainlink_pattern.is_match(content) {
-            if !content.contains("decimals()") && !content.contains("PRICE_DECIMALS") {
+        if self.chainlink_pattern.is_match(content)
+            && !content.contains("decimals()") && !content.contains("PRICE_DECIMALS") {
                 for (idx, line) in content.lines().enumerate() {
                     if self.latest_round_pattern.is_match(line) {
                         vulnerabilities.push(Vulnerability::new(
@@ -430,7 +427,6 @@ impl OracleAnalyzer {
                     }
                 }
             }
-        }
 
         vulnerabilities
     }

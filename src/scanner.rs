@@ -17,6 +17,7 @@ use crate::advanced_analysis::AdvancedAnalyzer;
 use crate::dependency_analyzer::DependencyAnalyzer;
 use crate::eip_analyzer::EIPAnalyzer;
 use crate::false_positive_filter::{FalsePositiveFilter, FilterConfig};
+use crate::inheritance::{ProjectIndex, ResolvedFile};
 use crate::logic_analyzer::LogicAnalyzer;
 use crate::parser::{CompilerInfo, SolidityParser};
 use crate::reachability_analyzer::ReachabilityAnalyzer;
@@ -33,6 +34,22 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 type ParsedLine<'a> = (usize, &'a str);
+
+/// Where in the source a rule matched, bundled so the context-aware filter takes one
+/// positional argument instead of five. All fields are borrowed, so this is `Copy`.
+#[derive(Clone, Copy)]
+struct MatchSite<'a, 'src> {
+    /// The text the rule actually matched against (comment-stripped for single-line rules).
+    line: &'a str,
+    /// The whole file, unmodified.
+    full_content: &'a str,
+    /// Every parsed line of the file, as `(line_number, text)`.
+    lines: &'a [ParsedLine<'src>],
+    /// Zero-based index of `line` within `lines`.
+    line_idx: usize,
+    /// Per-file facts (SafeMath, guards, compiler version, ...) computed once.
+    scan_context: &'a ScanContext,
+}
 
 /// The result of scanning a single Solidity file.
 /// Bundles detected vulnerabilities together with compiler version information
@@ -61,6 +78,10 @@ struct ScanContext {
     uses_solidity_0_8_plus: bool,
     uses_safe_signature_library: bool,
     known_modifiers: Vec<String>,
+    /// Cross-file inheritance facts for this file. `None` when the scan came from
+    /// `scan_content` (no path to resolve against), in which case the single-file
+    /// heuristics apply unchanged.
+    inherited: Option<std::sync::Arc<ResolvedFile>>,
     line_states: Vec<LineState>,
 }
 
@@ -74,6 +95,13 @@ struct ScanContext {
 /// a cheap clone (`regex::Regex` is internally reference-counted). This matters
 /// most for the test suite, which constructs dozens of scanners in one process.
 static MASTER_RULES: Lazy<Vec<VulnerabilityRule>> = Lazy::new(create_vulnerability_rules);
+
+/// Matches a contract that inherits a recognised test base contract. Word-boundaried
+/// so `is Testable` / `is TestHelper` do not count as a test harness.
+static TEST_BASE_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"\bcontract\s+\w+\s+is\s+[^{;]*\b(?:Test|DSTest|StdCheats|StdAssertions|Script)\b")
+        .unwrap()
+});
 
 static RE_INTERFACE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"^\s*interface\s+\w+").expect("invalid interface regex"));
@@ -128,6 +156,9 @@ pub struct ScannerConfig {
     pub enable_eip_analysis: bool,
     /// Enable enhanced false positive filtering
     pub enable_strict_filter: bool,
+    /// Maximum file size to scan, in bytes. Files above this are skipped (DoS guard).
+    /// Populated from `--max-file-size`; defaults to [`MAX_FILE_SIZE_BYTES`].
+    pub max_file_size_bytes: u64,
 }
 
 impl Default for ScannerConfig {
@@ -142,6 +173,7 @@ impl Default for ScannerConfig {
             enable_phase6_analysis: true,
             enable_eip_analysis: true,  // EIP analysis enabled by default
             enable_strict_filter: true, // Strict filtering enabled by default
+            max_file_size_bytes: MAX_FILE_SIZE_BYTES,
         }
     }
 }
@@ -168,6 +200,9 @@ pub struct ContractScanner {
     /// across rayon worker threads via `Mutex` (contention is negligible: a cache miss
     /// only occurs the first time each version is seen).
     version_rules_cache: Mutex<HashMap<CompilerVersion, Arc<Vec<VulnerabilityRule>>>>,
+    /// One `ProjectIndex` per scan root, shared across files and rayon workers.
+    /// `DashMap` because `scan_file` is called concurrently by the parallel walker.
+    inheritance_indexes: dashmap::DashMap<std::path::PathBuf, Arc<ProjectIndex>>,
 }
 
 // =============================================================================
@@ -194,74 +229,7 @@ impl ContractScanner {
     /// so regex matches on the result map to the same line numbers as the original.
     /// String literals are left intact (a `//` inside a string, e.g. a URL, is not a comment).
     fn strip_comments(content: &str) -> String {
-        #[derive(PartialEq)]
-        enum State {
-            Code,
-            LineComment,
-            BlockComment,
-            DoubleQuote,
-            SingleQuote,
-        }
-        let mut out = String::with_capacity(content.len());
-        let mut state = State::Code;
-        let mut chars = content.chars().peekable();
-        while let Some(c) = chars.next() {
-            match state {
-                State::Code => match c {
-                    '/' if chars.peek() == Some(&'/') => {
-                        state = State::LineComment;
-                        out.push(' ');
-                    }
-                    '/' if chars.peek() == Some(&'*') => {
-                        state = State::BlockComment;
-                        out.push(' ');
-                    }
-                    '"' => {
-                        state = State::DoubleQuote;
-                        out.push(c);
-                    }
-                    '\'' => {
-                        state = State::SingleQuote;
-                        out.push(c);
-                    }
-                    _ => out.push(c),
-                },
-                State::LineComment => {
-                    if c == '\n' {
-                        state = State::Code;
-                        out.push('\n');
-                    } else {
-                        out.push(' ');
-                    }
-                }
-                State::BlockComment => {
-                    if c == '*' && chars.peek() == Some(&'/') {
-                        chars.next();
-                        out.push_str("  ");
-                        state = State::Code;
-                    } else if c == '\n' {
-                        out.push('\n');
-                    } else {
-                        out.push(' ');
-                    }
-                }
-                State::DoubleQuote | State::SingleQuote => {
-                    let quote = if state == State::DoubleQuote { '"' } else { '\'' };
-                    if c == '\\' {
-                        out.push(c);
-                        if let Some(next) = chars.next() {
-                            out.push(next);
-                        }
-                    } else {
-                        if c == quote || c == '\n' {
-                            state = State::Code;
-                        }
-                        out.push(c);
-                    }
-                }
-            }
-        }
-        out
+        crate::parser::strip_comments(content)
     }
 
     /// Check if the given line index is a single-line comment (// or * or /*).
@@ -273,30 +241,6 @@ impl ContractScanner {
         line.trim().starts_with("//")
             || line.trim().starts_with("*")
             || line.trim().starts_with("/*")
-    }
-
-    /// Check if a line falls inside a multi-line /* ... */ comment block.
-    /// Tracks block comment state by scanning from the start of the file.
-    #[allow(dead_code)]
-    fn is_in_multiline_comment(&self, content: &str, line_idx: usize) -> bool {
-        let lines: Vec<&str> = content.lines().collect();
-        if line_idx >= lines.len() {
-            return false;
-        }
-
-        let mut in_block = false;
-        for (idx, line) in lines.iter().enumerate() {
-            if line.contains("/*") && !line.contains("*/") {
-                in_block = true;
-            }
-            if line.contains("*/") {
-                in_block = false;
-            }
-            if idx == line_idx {
-                return in_block || line.trim().starts_with("//") || line.trim().starts_with("*");
-            }
-        }
-        false
     }
 
     /// Check if the contract uses a reentrancy guard (OZ ReentrancyGuard or custom lock).
@@ -330,13 +274,33 @@ impl ContractScanner {
 
     /// Check if this is a test or mock contract (Foundry/Hardhat test patterns).
     /// Test contracts get relaxed checks for some vulnerability categories.
+    /// Decide whether this *file* is a test harness, which relaxes ~18 analysis passes.
+    ///
+    /// This must stay narrow. The previous implementation matched the bare substrings
+    /// `"contract Mock"` and `"is Test"` anywhere in the file, which made it trivially
+    /// exploitable: appending `contract MockToken {}` to a vulnerable production file
+    /// disabled the entire pipeline and took the finding count to zero. It also matched
+    /// `is Testable` / `is TestHelper` by accident.
+    ///
+    /// Evidence now required is specific to a real test harness: an import that only
+    /// appears in tests, or a contract that actually inherits a test base contract. A
+    /// mock or helper *declared alongside* production code no longer disables scanning —
+    /// findings inside such a contract are suppressed per-contract by the false-positive
+    /// filter instead, which is where that decision belongs.
     fn is_test_contract(&self, content: &str) -> bool {
-        content.contains("contract Mock")
-            || content.contains("contract Test")
-            || content.contains("import \"forge-std")
-            || content.contains("import \"hardhat/console")
-            || content.contains("is Test")
-            || content.contains("is DSTest")
+        // Imports that exist only in test/script harnesses.
+        if content.contains("forge-std/Test.sol")
+            || content.contains("forge-std/Script.sol")
+            || content.contains("hardhat/console.sol")
+            || content.contains("ds-test/test.sol")
+            || content.contains("truffle/Assert.sol")
+        {
+            return true;
+        }
+
+        // A contract inheriting a recognised test base. Word-boundaried so that
+        // `is Testable` and `is TestHelper` do not match.
+        TEST_BASE_RE.is_match(content)
     }
 
     /// Check if OpenZeppelin libraries are imported (well-audited, trusted patterns).
@@ -369,11 +333,10 @@ impl ContractScanner {
         func_line_idx: usize,
     ) -> String {
         let mut sig = String::new();
-        let max_lines = (func_line_idx + 15).min(lines.len());
-        for i in func_line_idx..max_lines {
-            sig.push_str(lines[i].1);
+        for parsed in lines.iter().skip(func_line_idx).take(15) {
+            sig.push_str(parsed.1);
             sig.push(' ');
-            if lines[i].1.contains('{') {
+            if parsed.1.contains('{') {
                 break;
             }
         }
@@ -382,8 +345,18 @@ impl ContractScanner {
 
     /// Resolve well-known modifiers from inherited contracts.
     /// Maps common base contracts to the modifiers they provide.
-    fn resolve_known_modifiers(&self, content: &str) -> Vec<String> {
+    fn resolve_known_modifiers(
+        &self,
+        content: &str,
+        inherited: Option<&ResolvedFile>,
+    ) -> Vec<String> {
         let mut modifiers = Vec::new();
+        // Cross-file truth first: every modifier the resolved inheritance chain provides.
+        // The string heuristics below remain as the fallback for files whose bases could
+        // not be resolved (dependency not vendored, no project root, etc.).
+        if let Some(r) = inherited {
+            modifiers.extend_from_slice(r.modifier_names());
+        }
         // OpenZeppelin Ownable → onlyOwner
         if content.contains("Ownable") || content.contains("is Ownable") {
             modifiers.push("onlyOwner".to_string());
@@ -417,7 +390,23 @@ impl ContractScanner {
 
     /// Check if a function declaration line contains access control modifiers
     /// (standard keywords like onlyOwner, or custom modifiers from the contract).
-    fn has_access_control_modifier(&self, function_line: &str, modifiers: &[String]) -> bool {
+    fn has_access_control_modifier(
+        &self,
+        function_line: &str,
+        modifiers: &[String],
+        inherited: Option<&ResolvedFile>,
+    ) -> bool {
+        // Authoritative: a modifier on this signature that the resolved inheritance chain
+        // classifies as caller-restricting. This is what makes `contract Vault is Ownable`
+        // with `onlyOwner` stop being reported as missing access control when `Ownable`
+        // lives in another file. Binary search over a sorted slice; no allocation.
+        if let Some(r) = inherited {
+            for token in function_line.split(|c: char| !(c.is_alphanumeric() || c == '_')) {
+                if !token.is_empty() && r.has_access_control_modifier(token) {
+                    return true;
+                }
+            }
+        }
         // Check for common access control and protection modifiers
         let access_control_keywords = vec![
             "onlyOwner",
@@ -548,41 +537,59 @@ impl ContractScanner {
             && !trimmed.contains("= ")
     }
 
-    fn build_scan_context(&self, content: &str, lines: &[ParsedLine<'_>]) -> ScanContext {
+    /// Build the per-line state used by the single-line rule pass.
+    ///
+    /// `stripped_lines` must be the line-for-line comment-stripped view of `lines`
+    /// produced by [`Self::strip_comments`], which is a proper state machine that
+    /// understands string literals.
+    ///
+    /// The previous implementation derived comment state from `line.contains("/*")`,
+    /// which was wrong in two directions and silently disabled detection for the rest
+    /// of the file:
+    ///   - `// see the block below /*` set `in_block_comment` forever, because the `/*`
+    ///     inside a line comment was taken literally;
+    ///   - `string constant U = "https://x/*";` did the same from inside a string.
+    ///
+    /// Both made every subsequent single-line rule skip. Deriving the state from the
+    /// stripped view instead makes it string- and comment-aware by construction, and
+    /// also stops treating a continuation line that begins with `*` (a multiplication
+    /// split across lines) as a comment.
+    fn build_scan_context(
+        &self,
+        content: &str,
+        lines: &[ParsedLine<'_>],
+        stripped_lines: &[&str],
+        inherited: Option<std::sync::Arc<ResolvedFile>>,
+    ) -> ScanContext {
         let mut line_states = Vec::with_capacity(lines.len());
-        let mut in_block_comment = false;
 
-        for (_, line) in lines {
-            let trimmed = line.trim();
-            let starts_block_comment = line.contains("/*");
-            let ends_block_comment = line.contains("*/");
+        for (idx, (_, line)) in lines.iter().enumerate() {
+            // A line is comment-only when it has content but nothing survives stripping.
+            let stripped = stripped_lines.get(idx).copied().unwrap_or("");
+            let raw_blank = line.trim().is_empty();
+            let stripped_blank = stripped.trim().is_empty();
+            let is_comment_only = !raw_blank && stripped_blank;
 
             let state = LineState {
-                is_comment: trimmed.starts_with("//")
-                    || trimmed.starts_with('*')
-                    || trimmed.starts_with("/*"),
-                is_in_block_comment: in_block_comment || trimmed.starts_with("/*"),
-                is_signature_only: self.is_signature_only_declaration(line),
+                is_comment: is_comment_only,
+                is_in_block_comment: is_comment_only,
+                is_signature_only: self.is_signature_only_declaration(stripped),
             };
             line_states.push(state);
-
-            if starts_block_comment && !ends_block_comment {
-                in_block_comment = true;
-            }
-            if ends_block_comment {
-                in_block_comment = false;
-            }
         }
 
         ScanContext {
             has_safemath: self.has_safemath(content),
             has_safe_erc20: self.has_safe_erc20(content),
-            has_reentrancy_guard: self.has_reentrancy_guard(content),
+            // A guard reachable only through an imported base contract counts.
+            has_reentrancy_guard: self.has_reentrancy_guard(content)
+                || inherited.as_ref().is_some_and(|r| r.has_reentrancy_guard()),
             uses_openzeppelin: self.uses_openzeppelin(content),
             uses_solidity_0_8_plus: self.uses_solidity_0_8_plus(content),
             uses_safe_signature_library: content.contains("ECDSA.recover")
                 || content.contains("SignatureChecker"),
-            known_modifiers: self.resolve_known_modifiers(content),
+            known_modifiers: self.resolve_known_modifiers(content, inherited.as_deref()),
+            inherited,
             line_states,
         }
     }
@@ -601,17 +608,18 @@ impl ContractScanner {
             parser: SolidityParser::new(),
             rules,
             verbose,
-            advanced_analyzer: AdvancedAnalyzer::new(verbose),
-            logic_analyzer: LogicAnalyzer::new(verbose),
+            advanced_analyzer: AdvancedAnalyzer::new(),
+            logic_analyzer: LogicAnalyzer::new(),
             reachability_analyzer: ReachabilityAnalyzer::new(verbose),
-            dependency_analyzer: DependencyAnalyzer::new(verbose),
-            threat_model_generator: ThreatModelGenerator::new(verbose),
+            dependency_analyzer: DependencyAnalyzer::new(),
+            threat_model_generator: ThreatModelGenerator::new(),
             eip_analyzer,
             false_positive_filter: FalsePositiveFilter::new(FilterConfig::default()),
             ast_bridge: crate::ast::bridge::ASTAnalysisBridge::new(),
             defi_analyzer,
             config: ScannerConfig::default(),
             version_rules_cache: Mutex::new(HashMap::new()),
+            inheritance_indexes: dashmap::DashMap::new(),
         }
     }
 
@@ -629,17 +637,18 @@ impl ContractScanner {
             parser: SolidityParser::new(),
             rules,
             verbose,
-            advanced_analyzer: AdvancedAnalyzer::new(verbose),
-            logic_analyzer: LogicAnalyzer::new(verbose),
+            advanced_analyzer: AdvancedAnalyzer::new(),
+            logic_analyzer: LogicAnalyzer::new(),
             reachability_analyzer: ReachabilityAnalyzer::new(verbose),
-            dependency_analyzer: DependencyAnalyzer::new(verbose),
-            threat_model_generator: ThreatModelGenerator::new(verbose),
+            dependency_analyzer: DependencyAnalyzer::new(),
+            threat_model_generator: ThreatModelGenerator::new(),
             eip_analyzer,
             false_positive_filter: FalsePositiveFilter::new(filter_config),
             ast_bridge: crate::ast::bridge::ASTAnalysisBridge::new(),
             defi_analyzer,
             config,
             version_rules_cache: Mutex::new(HashMap::new()),
+            inheritance_indexes: dashmap::DashMap::new(),
         }
     }
 
@@ -665,6 +674,32 @@ impl ContractScanner {
 
     /// Apply rule overrides from TOML config (disable rules, change severity).
     pub fn apply_rule_overrides(&mut self, config: &crate::config::ScanConfig) {
+        // Apply the `[settings]` block. Every one of these keys is documented in the
+        // config schema but none of them reached the filter before: a user could set
+        // `trust_openzeppelin = false` or `min_confidence = 80` in `.41swara.toml` and
+        // the scanner would silently ignore it.
+        let s = &config.settings;
+        if s.min_confidence.is_some()
+            || s.trust_openzeppelin.is_some()
+            || s.trust_solmate.is_some()
+            || s.trust_solady.is_some()
+        {
+            let mut filter_config = FilterConfig::default();
+            if let Some(v) = s.min_confidence {
+                filter_config.min_confidence = v;
+            }
+            if let Some(v) = s.trust_openzeppelin {
+                filter_config.trust_openzeppelin = v;
+            }
+            if let Some(v) = s.trust_solmate {
+                filter_config.trust_solmate = v;
+            }
+            if let Some(v) = s.trust_solady {
+                filter_config.trust_solady = v;
+            }
+            self.false_positive_filter = FalsePositiveFilter::new(filter_config);
+        }
+
         let disabled = config.disabled_rule_ids();
 
         // Remove disabled rules
@@ -695,7 +730,6 @@ impl ContractScanner {
     }
 
     /// Enable all advanced analysis features
-    #[allow(dead_code)]
     pub fn with_advanced_mode(mut self) -> Self {
         self.config.enable_logic_analysis = true;
         self.config.enable_reachability_analysis = true;
@@ -710,17 +744,20 @@ impl ContractScanner {
     /// Reads the file, runs the full analysis pipeline, and returns sorted results.
     /// Files exceeding MAX_FILE_SIZE_BYTES are skipped to prevent DoS.
     pub fn scan_file<P: AsRef<Path>>(&self, file_path: P) -> io::Result<ScanResult> {
-        // Security: enforce file size limit to prevent DoS from excessively large inputs
+        // Security: enforce file size limit to prevent DoS from excessively large inputs.
+        // The limit comes from `--max-file-size`; previously the flag was parsed and then
+        // ignored in favour of the hard-coded constant.
         let metadata = std::fs::metadata(file_path.as_ref())?;
-        if metadata.len() > MAX_FILE_SIZE_BYTES {
-            if self.verbose {
-                eprintln!(
-                    "  ⚠️  Skipping {} ({}MB exceeds {}MB limit)",
-                    file_path.as_ref().display(),
-                    metadata.len() / (1024 * 1024),
-                    MAX_FILE_SIZE_BYTES / (1024 * 1024)
-                );
-            }
+        if metadata.len() > self.config.max_file_size_bytes {
+            // Always announce the skip. Staying silent unless --verbose meant an oversized
+            // file was indistinguishable from a clean one in the report, which is exactly
+            // the case where a missed finding matters most.
+            eprintln!(
+                "  ⚠️  Skipping {} ({}MB exceeds {}MB limit; raise with --max-file-size)",
+                file_path.as_ref().display(),
+                metadata.len() / (1024 * 1024),
+                self.config.max_file_size_bytes / (1024 * 1024)
+            );
             return Ok(ScanResult {
                 vulnerabilities: Vec::new(),
                 compiler_info: None,
@@ -742,7 +779,8 @@ impl ContractScanner {
             );
         }
 
-        let result = self.scan_content(&content);
+        let inherited = self.resolve_inheritance(file_path.as_ref());
+        let result = self.scan_content_with(&content, inherited);
 
         if self.verbose {
             if let Some(ref info) = result.compiler_info {
@@ -765,7 +803,94 @@ impl ContractScanner {
     /// This is the core method that coordinates all analysis phases:
     /// regex rules, advanced analyzers, logic/reachability/dependency analysis,
     /// threat modeling, EIP checks, and false positive filtering.
+    /// Resolve a file's inheritance closure, reusing one `ProjectIndex` per scan root.
+    ///
+    /// Never fails: an unresolvable project degrades to `None` and the single-file
+    /// heuristics stay in charge, so a missing `lib/` checkout can only cost precision,
+    /// never a crash or a skipped scan.
+    fn resolve_inheritance(&self, path: &Path) -> Option<Arc<ResolvedFile>> {
+        let root = crate::inheritance::root_for(path);
+        let index = self
+            .inheritance_indexes
+            .entry(root.clone())
+            .or_insert_with(|| Arc::new(ProjectIndex::for_root(&root)))
+            .clone();
+        let resolved = index.resolve(path);
+        (!resolved.is_empty()).then_some(resolved)
+    }
+
+    /// Detect proxy/implementation storage-slot collisions across the inheritance chain.
+    ///
+    /// This needs cross-file resolution to work at all: the proxy and the implementation
+    /// almost always inherit their storage from bases in other files, so a single-file
+    /// scanner cannot compute either layout and the whole bug class was invisible. Writing
+    /// through one layout and reading through the other reinterprets the same bytes as a
+    /// different type — the classic upgradeable-proxy footgun.
+    ///
+    /// Returns nothing when inheritance could not be resolved, when the file declares
+    /// fewer than two storage-bearing contracts, or when the layouts agree.
+    fn detect_proxy_storage_collisions(&self, scan_context: &ScanContext) -> Vec<Vulnerability> {
+        use crate::vulnerabilities::{VulnerabilityCategory, VulnerabilitySeverity};
+
+        let mut findings = Vec::new();
+        let Some(resolved) = scan_context.inherited.as_deref() else {
+            return findings;
+        };
+
+        // Only contracts that actually occupy storage can collide.
+        let storage_bearing: Vec<_> = resolved
+            .contracts
+            .iter()
+            .filter(|c| c.kind.contributes_storage() && !c.storage.slots.is_empty())
+            .collect();
+
+        for (i, left) in storage_bearing.iter().enumerate() {
+            for right in storage_bearing.iter().skip(i + 1) {
+                for collision in left.storage.collisions_with(&right.storage) {
+                    findings.push(
+                        Vulnerability::new(
+                            VulnerabilitySeverity::High,
+                            VulnerabilityCategory::ProxyAdminVulnerability,
+                            format!(
+                                "Storage Slot Collision: {} vs {}",
+                                left.name, right.name
+                            ),
+                            format!(
+                                "Slot {} (offset {}) holds `{}` in {} but `{}` in {}. {} \
+                                 If one contract delegatecalls into the other, a write through \
+                                 one layout is read back as a different type through the other, \
+                                 silently corrupting state.",
+                                collision.slot,
+                                collision.offset,
+                                collision.left,
+                                left.name,
+                                collision.right,
+                                right.name,
+                                collision.reason,
+                            ),
+                            1,
+                            format!("slot {}", collision.slot),
+                            "Align the storage layouts, or move to ERC-7201 namespaced \
+                             storage so the two contracts cannot share slots."
+                                .to_string(),
+                        )
+                    );
+                }
+            }
+        }
+        findings
+    }
+
+    /// Scan source text with no file path, so no cross-file inheritance is available.
     pub fn scan_content(&self, content: &str) -> ScanResult {
+        self.scan_content_with(content, None)
+    }
+
+    fn scan_content_with(
+        &self,
+        content: &str,
+        inherited: Option<Arc<ResolvedFile>>,
+    ) -> ScanResult {
         // Set SCAN_PROFILE=1 to print per-phase timings to stderr (perf diagnostics).
         let profile = std::env::var_os("SCAN_PROFILE").is_some();
         let mut phase_times: Vec<(&str, std::time::Duration)> = Vec::new();
@@ -785,7 +910,23 @@ impl ContractScanner {
             .enumerate()
             .map(|(idx, line)| (idx + 1, line))
             .collect();
-        let scan_context = timed!("build_scan_context", self.build_scan_context(content, &lines));
+
+        // Comment-stripped view of the source (line count and line numbers preserved).
+        // Computed before the scan context because the context's per-line comment state
+        // is derived from it — see `build_scan_context`.
+        let stripped_content = timed!("strip_comments", Self::strip_comments(content));
+        let stripped: &str = &stripped_content;
+        let stripped_lines: Vec<&str> = stripped.lines().collect();
+        debug_assert_eq!(
+            lines.len(),
+            stripped_lines.len(),
+            "strip_comments must preserve line count"
+        );
+
+        let scan_context = timed!(
+            "build_scan_context",
+            self.build_scan_context(content, &lines, &stripped_lines, inherited)
+        );
 
         // Extract compiler info early — used for version-aware analysis and returned in ScanResult
         let compiler_info = self.parser.extract_compiler_info(content);
@@ -801,13 +942,6 @@ impl ContractScanner {
             };
         }
 
-        // Comment-stripped view of the source (offsets/line numbers preserved). Most
-        // analyzers match against this so prose in doc comments (e.g. "/// @dev executes
-        // a `delegatecall`") cannot trigger findings. Analyzers that intentionally read
-        // annotations (@custom:storage-location, evm-version notes) receive the original.
-        let stripped_content = timed!("strip_comments", Self::strip_comments(content));
-        let stripped: &str = &stripped_content;
-
         // Skip pure library contracts for many vulnerability types
         let is_library = self.is_library(content);
 
@@ -820,6 +954,15 @@ impl ContractScanner {
         // Run advanced analysis (skip some for libraries/tests)
         if !is_library {
             timed!("analyze_control_flow", vulnerabilities.extend(self.advanced_analyzer.analyze_control_flow(stripped)));
+        }
+
+        // Availability and input-validation patterns. All three reason about a
+        // contract's own state, so they are skipped for libraries (stateless) and
+        // test contracts (deliberately unsafe by construction).
+        if !is_test && !is_library {
+            timed!("push_payment_dos", vulnerabilities.extend(self.advanced_analyzer.detect_push_payment_dos(stripped)));
+            timed!("zero_address_check", vulnerabilities.extend(self.advanced_analyzer.detect_missing_zero_address_check(stripped)));
+            timed!("sentinel_index", vulnerabilities.extend(self.advanced_analyzer.detect_ambiguous_sentinel_index(stripped)));
         }
         timed!("analyze_complexity", vulnerabilities.extend(self.advanced_analyzer.analyze_complexity(stripped)));
 
@@ -995,11 +1138,12 @@ impl ContractScanner {
         let t_rules = std::time::Instant::now();
         for rule in &self.rules {
             if rule.multiline {
-                vulnerabilities.extend(self.scan_multiline_pattern(&stripped_content, content, rule));
+                vulnerabilities.extend(self.scan_multiline_pattern(&stripped_content, content, &lines, &scan_context, rule));
             } else {
                 vulnerabilities.extend(self.scan_line_patterns(
                     content,
                     &lines,
+                    &stripped_lines,
                     &scan_context,
                     rule,
                 ));
@@ -1017,18 +1161,30 @@ impl ContractScanner {
         let open_ended_pragma = pragma_text.contains(">=") && !pragma_text.contains('<');
         let t_vrules = std::time::Instant::now();
         if let Some(version) = compiler_version.filter(|_| !open_ended_pragma) {
+            // Pre-0.8 compilers wrap on overflow. The regex rules below only catch
+            // local declarations; storage accumulators need statement-level analysis.
+            if matches!(
+                version,
+                CompilerVersion::V04 | CompilerVersion::V05 | CompilerVersion::V06 | CompilerVersion::V07
+            ) {
+                vulnerabilities
+                    .extend(self.advanced_analyzer.detect_legacy_unchecked_arithmetic(stripped));
+            }
             let version_rules = self.version_rules(&version);
             for rule in version_rules.iter() {
                 if rule.multiline {
                     vulnerabilities.extend(self.scan_multiline_pattern(
                         &stripped_content,
                         content,
+                        &lines,
+                        &scan_context,
                         rule,
                     ));
                 } else {
                     vulnerabilities.extend(self.scan_line_patterns(
                         content,
                         &lines,
+                        &stripped_lines,
                         &scan_context,
                         rule,
                     ));
@@ -1127,6 +1283,8 @@ impl ContractScanner {
 
         // Enrich all findings with CVSS scores, exploit references, and attack paths
         timed!("enrichment", {
+            vulnerabilities.extend(self.detect_proxy_storage_collisions(&scan_context));
+
             crate::cvss::enrich_with_cvss(&mut vulnerabilities);
             crate::exploit_db::enrich_with_exploits(&mut vulnerabilities);
             crate::attack_path::enrich_with_attack_paths(&mut vulnerabilities, content);
@@ -1159,10 +1317,18 @@ impl ContractScanner {
 
     /// Apply a single-line regex rule against all lines in the file.
     /// Skips commented lines and applies context-aware filtering to reduce false positives.
+    /// Apply a single-line rule to every line of the file.
+    ///
+    /// Rules are matched against `stripped_lines` — the comment-stripped, string-aware
+    /// view — while the finding still reports the raw line as its snippet. Previously
+    /// the match ran on the raw line, so `uint256 x = 1; // never use tx.origin here`
+    /// tripped the tx.origin rules from inside a trailing comment. Multiline rules
+    /// already ran on the stripped view; this makes the two paths symmetric.
     fn scan_line_patterns(
         &self,
         content: &str,
         lines: &[ParsedLine<'_>],
+        stripped_lines: &[&str],
         scan_context: &ScanContext,
         rule: &VulnerabilityRule,
     ) -> Vec<Vulnerability> {
@@ -1179,16 +1345,21 @@ impl ContractScanner {
                 continue;
             }
 
-            if rule.pattern.is_match(line_content) {
+            // Match on code only; report the raw line.
+            let match_target = stripped_lines.get(idx).copied().unwrap_or(*line_content);
+
+            if rule.pattern.is_match(match_target) {
                 // Context-aware filtering to reduce false positives
                 let should_report = self.should_report_vulnerability_with_title(
                     &rule.category,
                     Some(&rule.title),
-                    line_content,
-                    content,
-                    lines,
-                    idx,
-                    scan_context,
+                    MatchSite {
+                        line: match_target,
+                        full_content: content,
+                        lines,
+                        line_idx: idx,
+                        scan_context,
+                    },
                 );
 
                 if should_report {
@@ -1222,14 +1393,18 @@ impl ContractScanner {
     fn should_report_vulnerability_with_title(
         &self,
         category: &crate::vulnerabilities::VulnerabilityCategory,
-        _title: Option<&str>,
-        line: &str,
-        full_content: &str,
-        lines: &[ParsedLine<'_>],
-        line_idx: usize,
-        scan_context: &ScanContext,
+        rule_title: Option<&str>,
+        site: MatchSite<'_, '_>,
     ) -> bool {
         use crate::vulnerabilities::VulnerabilityCategory;
+
+        let MatchSite {
+            line,
+            full_content,
+            lines,
+            line_idx,
+            scan_context,
+        } = site;
 
         // Global filter: Skip commented lines
         if scan_context
@@ -1243,7 +1418,7 @@ impl ContractScanner {
         match category {
             VulnerabilityCategory::ArithmeticIssues => {
                 // FP-5: Suppress "Division by Zero" in Solidity 0.8+ (auto-reverts)
-                if let Some(title) = _title {
+                if let Some(title) = rule_title {
                     if title.contains("Division by Zero") && scan_context.uses_solidity_0_8_plus {
                         return false;
                     }
@@ -1300,7 +1475,7 @@ impl ContractScanner {
             VulnerabilityCategory::AccessControl
             | VulnerabilityCategory::RoleBasedAccessControl => {
                 // FP-3: Suppress "Missing Zero Address Validation" if validation exists nearby
-                if let Some(title) = _title {
+                if let Some(title) = rule_title {
                     if title.contains("Zero Address") {
                         let end = (line_idx + 16).min(lines.len());
                         let has_zero_check = lines[line_idx..end].iter().any(|(_, l)| {
@@ -1321,7 +1496,7 @@ impl ContractScanner {
                 if line.contains("function") {
                     // Use multi-line signature to catch modifiers on continuation lines
                     let full_sig = self.get_full_function_signature(lines, line_idx);
-                    if self.has_access_control_modifier(&full_sig, &scan_context.known_modifiers) {
+                    if self.has_access_control_modifier(&full_sig, &scan_context.known_modifiers, scan_context.inherited.as_deref()) {
                         return false;
                     }
                     // Check if there's an inline access control check within the function
@@ -1390,7 +1565,7 @@ impl ContractScanner {
                     return false;
                 }
                 // Don't report reentrancy inside onlyOwner functions (only owner can trigger)
-                if self.has_access_control_modifier(&full_sig, &scan_context.known_modifiers) {
+                if self.has_access_control_modifier(&full_sig, &scan_context.known_modifiers, scan_context.inherited.as_deref()) {
                     return false;
                 }
                 // Don't report for view/pure functions
@@ -1636,7 +1811,7 @@ impl ContractScanner {
                 // Don't report if function has access control
                 if line.contains("function") {
                     let modifiers = self.extract_modifiers(full_content);
-                    if self.has_access_control_modifier(line, &modifiers) {
+                    if self.has_access_control_modifier(line, &modifiers, scan_context.inherited.as_deref()) {
                         return false;
                     }
                 }
@@ -1666,7 +1841,7 @@ impl ContractScanner {
 
             VulnerabilityCategory::LowLevelCalls => {
                 // Don't suppress return bomb findings (they specifically flag captured data)
-                if let Some(title) = _title {
+                if let Some(title) = rule_title {
                     if title.contains("Return Bomb") {
                         return true;
                     }
@@ -1682,7 +1857,7 @@ impl ContractScanner {
                 // `address(this).code.length == 0` inspects the contract's OWN code to
                 // detect constructor-time execution (OZ Initializable) — an attacker
                 // cannot bypass a self-check, so the construction-bypass rule is moot.
-                if let Some(title) = _title {
+                if let Some(title) = rule_title {
                     if title.contains("Contract Check Bypassable") && line.contains("address(this)")
                     {
                         return false;
@@ -1697,7 +1872,7 @@ impl ContractScanner {
                     return false;
                 }
                 // FP-4: Suppress "Array Parameter" if length validation exists nearby
-                if let Some(title) = _title {
+                if let Some(title) = rule_title {
                     if title.contains("Array Parameter") {
                         let end = (line_idx + 16).min(lines.len());
                         let has_length_check = lines[line_idx..end].iter().any(|(_, l)| {
@@ -1877,7 +2052,7 @@ impl ContractScanner {
                 // Check if the returns clause has named parameters (type + name, not just type).
                 if RE_NAMED_RETURN.is_match(line) || RE_NAMED_RETURN.is_match(full_content) {
                     // Check within 5 lines of match start for named returns
-                    let start = if line_idx >= 5 { line_idx - 5 } else { 0 };
+                    let start = line_idx.saturating_sub(5);
                     let end = (line_idx + 5).min(lines.len());
                     let context: String = lines[start..end]
                         .iter()
@@ -1887,6 +2062,53 @@ impl ContractScanner {
                     if RE_NAMED_RETURN.is_match(&context) {
                         return false;
                     }
+                }
+                true
+            }
+
+            // 41S-090 / 41S-091 / 41S-092: smart-account execution surface. These fire
+            // on a function signature (installModule/execute/executeFromExecutor); the
+            // vulnerability is the ABSENCE of a caller restriction. Suppress when the
+            // signature line or the opening lines of the body carry an access-control
+            // signal (modifier, self check, or an installed-module gate).
+            VulnerabilityCategory::ERC7579UnprotectedModule
+            | VulnerabilityCategory::ERC7821UnprotectedExecute
+            | VulnerabilityCategory::ERC7579UnrestrictedExecutor => {
+                // Signature + up to 8 following lines (modifiers may wrap; guards are
+                // usually the first statements of the body). Skip comment lines so an
+                // explanatory comment (e.g. "// only callable by entryPoint") cannot
+                // masquerade as a real access-control guard.
+                let end = (line_idx + 8).min(lines.len());
+                let window: String = (line_idx..end)
+                    .filter(|&i| {
+                        !scan_context
+                            .line_states
+                            .get(i)
+                            .is_some_and(|s| s.is_comment || s.is_in_block_comment)
+                    })
+                    .map(|i| lines[i].1)
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let auth_signals = [
+                    "onlyEntryPointOrSelf",
+                    "onlyEntryPoint",
+                    "_onlyEntryPointOrSelf",
+                    "requireFromEntryPoint",
+                    "onlyExecutorModule",
+                    "onlyInstalledModule",
+                    "onlyModule",
+                    "isModuleInstalled",
+                    "onlyOwner",
+                    "onlyAuthorized",
+                    "onlySelf",
+                    "_checkAccess",
+                    "_authorizeExecute",
+                    "address(this)", // require(msg.sender == address(this)) / entryPoint idiom
+                    "entryPoint()",
+                    "_entryPoint",
+                ];
+                if auth_signals.iter().any(|sig| window.contains(sig)) {
+                    return false;
                 }
                 true
             }
@@ -1927,10 +2149,21 @@ impl ContractScanner {
         }
     }
 
+    /// Apply a multiline rule to the comment-stripped source.
+    ///
+    /// Multiline findings now go through the same context-aware layer-1 filter as
+    /// single-line ones. Previously they bypassed it entirely and relied only on
+    /// `multiline_category_suppressed`, which covers just two categories — so 30-odd
+    /// multiline rules in categories the filter *does* suppress (ArithmeticIssues,
+    /// AccessControl, DelegateCalls, RoleBasedAccessControl, UnsafeExternalCalls, …)
+    /// never saw the SafeMath / Solidity-0.8 / `nonReentrant` / access-modifier
+    /// suppressions that their single-line counterparts did.
     fn scan_multiline_pattern(
         &self,
         content: &str,
         raw_content: &str,
+        lines: &[ParsedLine<'_>],
+        scan_context: &ScanContext,
         rule: &VulnerabilityRule,
     ) -> Vec<Vulnerability> {
         let mut vulnerabilities = Vec::new();
@@ -1960,6 +2193,25 @@ impl ContractScanner {
                 .unwrap_or(matched_text)
                 .trim()
                 .to_string();
+
+            // Same context-aware filtering the single-line path applies, anchored at
+            // the line where the match begins.
+            let idx = line_number.saturating_sub(1);
+            if idx < lines.len()
+                && !self.should_report_vulnerability_with_title(
+                    &rule.category,
+                    Some(&rule.title),
+                    MatchSite {
+                        line: &code_snippet,
+                        full_content: content,
+                        lines,
+                        line_idx: idx,
+                        scan_context,
+                    },
+                )
+            {
+                continue;
+            }
 
             // Extract context
             let (context_before, context_after) =

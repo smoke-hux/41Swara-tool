@@ -6,7 +6,7 @@
 <p align="center">
   <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
   <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/rust-1.70%2B-orange.svg" alt="Rust"></a>
-  <img src="https://img.shields.io/badge/version-0.8.1-blue.svg" alt="Version">
+  <img src="https://img.shields.io/badge/version-0.11.0-blue.svg" alt="Version">
   <img src="https://img.shields.io/badge/offline-100%25-green.svg" alt="Offline">
   <img src="https://img.shields.io/badge/CVSS_3.1-scoring-blueviolet.svg" alt="CVSS 3.1">
 </p>
@@ -79,26 +79,71 @@ git pull origin main && cargo install --path . --force
 
 ---
 
-## Web Workbench
+## Use as a library
 
-The repository includes a Vite/React frontend in `web/` for configuring scans, selecting dynamic-analysis tools, generating CLI commands, and reviewing JSON output.
+The crate is a library as well as a pair of binaries, so a scan can be embedded directly:
 
-```bash
-cd web
-npm install
-npm run dev
+```rust
+use solidity_scanner::scanner::{ContractScanner, ScannerConfig};
+
+let scanner = ContractScanner::with_config(false, ScannerConfig::default());
+let result = scanner.scan_file(std::path::Path::new("MyContract.sol"))?;
+for v in &result.vulnerabilities {
+    println!("{:?} {} at line {}", v.severity, v.title, v.line_number);
+}
 ```
 
-The browser app can:
+`41swara` and `41` are thin wrappers around `solidity_scanner::cli::run()`, so the CLI has
+exactly one implementation.
 
-- Build scanner commands for static scans, audit reports, baselines, Slither correlation, Foundry PoC generation, and dynamic-analysis runs
-- Select fuzzing, symbolic, formal, monitoring, differential, and fork-simulation tools
-- Preview/copy exact `41` commands before execution
-- Upload or paste `41 --format json` output and inspect findings in tables
-- Display dynamic-analysis run metadata from the scanner JSON output
-- Attempt `POST http://127.0.0.1:4141/api/scan` for a future local API bridge, while falling back to the generated terminal command
+---
 
-Static CLI analysis remains offline. Browser-based execution needs a local API bridge because browsers cannot directly spawn the Rust binary.
+## Cross-file analysis
+
+Imports and inheritance are resolved across files, honouring Foundry/Hardhat remappings
+(`remappings.txt`, `foundry.toml`, `lib/`, `node_modules/`). This is what lets the scanner
+see that `contract Vault is Ownable` really does have `onlyOwner` when `Ownable` lives in
+another file, instead of reporting missing access control. It also computes storage layout
+across the inheritance chain, which is how proxy/implementation slot collisions are found.
+
+An unresolved dependency is never fatal: resolution degrades to the previous single-file
+heuristics.
+
+---
+
+## Optional network features
+
+Both are strictly opt-in. Nothing is contacted unless you pass the flag.
+
+```bash
+# Fetch verified source for a deployed contract, then scan it
+41 --fetch 0xABC... --chain base
+
+# AI review pass: verifies findings and cuts false positives
+41 contracts/ --ai                      # Claude (needs ANTHROPIC_API_KEY)
+41 contracts/ --ai --provider ollama    # local, fully offline
+41 contracts/ --ai --ai-deep            # also hunt business-logic bugs
+```
+
+The AI layer is additive: if it fails for any reason, the offline findings are returned
+unchanged. It has a hard spend cap (`--ai-max-cost`, default $1.00), caches verdicts, and
+records every finding it removed. See `docs/AI_REVIEW.md`.
+
+---
+
+## Accuracy benchmarking
+
+Rule changes are guarded by an accuracy-regression harness, since the dominant failure mode
+for a scanner is false-positive drift:
+
+```bash
+scripts/benchmark.sh                    # compare against tests/corpus/baseline.json
+scripts/benchmark.sh --update-baseline  # deliberate, reviewed baseline change
+```
+
+It scans a clean corpus (every finding is a suspected false positive) and a vulnerable
+corpus (a missing finding is a false negative), and fails on regression. See
+`docs/BENCHMARKING.md`.
 
 ---
 

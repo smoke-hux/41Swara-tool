@@ -110,7 +110,6 @@ pub enum VulnerabilityConfidence {
 impl VulnerabilityConfidence {
     /// Convert a percentage (0-100) to a confidence level
     /// Used by external tools and the with_confidence_percent builder
-    #[allow(dead_code)]
     pub fn from_percent(percent: u8) -> Self {
         if percent >= 80 {
             VulnerabilityConfidence::High
@@ -191,7 +190,6 @@ impl Vulnerability {
 
     /// Create a vulnerability with a specific confidence percentage
     /// Public API for external tools building custom vulnerabilities
-    #[allow(dead_code)]
     pub fn with_confidence_percent(mut self, percent: u8) -> Self {
         self.confidence_percent = percent.min(100);
         self.confidence = VulnerabilityConfidence::from_percent(self.confidence_percent);
@@ -200,7 +198,6 @@ impl Vulnerability {
 
     /// Add a fix suggestion to the vulnerability
     /// Public API for external tools adding remediation suggestions
-    #[allow(dead_code)]
     pub fn with_fix(mut self, fix: String) -> Self {
         self.fix_suggestion = Some(fix);
         self
@@ -208,14 +205,12 @@ impl Vulnerability {
 
     /// Get the SWC ID string if available
     /// Public API for reporters and formatters
-    #[allow(dead_code)]
     pub fn get_swc_id_str(&self) -> Option<&str> {
         self.swc_id.as_ref().map(|s| s.id.as_str())
     }
 
     /// Get the CWE ID string if available
     /// Public API for compliance tooling
-    #[allow(dead_code)]
     pub fn get_cwe_id(&self) -> Option<&str> {
         self.swc_id.as_ref().and_then(|s| s.cwe_id.as_deref())
     }
@@ -663,6 +658,19 @@ pub enum VulnerabilityCategory {
     /// 41S-089: Uniswap V4 flash-accounting hook takes funds to a caller-controlled
     /// recipient (ERC-6909 claim/raw-token accounting mismatch drain).
     ERC6909FlashAccountingDrain,
+
+    // --- Late-2026 Smart-Account Execution Surface (v0.11.0) ---
+    /// 41S-090: ERC-7579 modular smart account exposes installModule/uninstallModule
+    /// without access control - an attacker installs a malicious validator/executor
+    /// module and takes over the account.
+    ERC7579UnprotectedModule,
+    /// 41S-091: ERC-7821 batch executor execute(bytes32 mode, bytes executionData)
+    /// callable by anyone (not restricted to the EntryPoint or the account itself) -
+    /// arbitrary batched calls from the account's context.
+    ERC7821UnprotectedExecute,
+    /// 41S-092: ERC-7579 executeFromExecutor() reachable without an installed-executor
+    /// gate - any caller dispatches arbitrary calls as the account.
+    ERC7579UnrestrictedExecutor,
 }
 
 impl VulnerabilityCategory {
@@ -1197,6 +1205,21 @@ impl VulnerabilityCategory {
                 "ERC-6909 Flash Accounting Drain",
                 Some("CWE-682"),
             )),
+            VulnerabilityCategory::ERC7579UnprotectedModule => Some(SwcId::new(
+                "41S-090",
+                "ERC-7579 Unprotected Module Installation",
+                Some("CWE-284"),
+            )),
+            VulnerabilityCategory::ERC7821UnprotectedExecute => Some(SwcId::new(
+                "41S-091",
+                "ERC-7821 Unprotected Batch Execute",
+                Some("CWE-284"),
+            )),
+            VulnerabilityCategory::ERC7579UnrestrictedExecutor => Some(SwcId::new(
+                "41S-092",
+                "ERC-7579 Unrestricted Executor Dispatch",
+                Some("CWE-284"),
+            )),
 
             // Info/Quality categories (no standard SWC)
             VulnerabilityCategory::GasOptimization
@@ -1303,10 +1326,8 @@ impl VulnerabilityRule {
 /// Rules intentionally removed due to false-positive history are documented inline with
 /// `// REMOVED:` comments explaining why.
 pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
-    let mut rules = Vec::new();
-
-    // --- Reentrancy Rules ---
-    rules.push(
+    vec![
+        // --- Reentrancy Rules ---
         VulnerabilityRule::new(
             VulnerabilityCategory::Reentrancy,
             VulnerabilitySeverity::Critical,
@@ -1317,13 +1338,11 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             false,
         )
         .unwrap(),
-    );
 
-    // REMOVED: Too broad - .transfer() and .send() have 2300 gas limit (safe from reentrancy)
-    // .call.value() is legacy syntax covered by the .call{value:} pattern above
+        // REMOVED: Too broad - .transfer() and .send() have 2300 gas limit (safe from reentrancy)
+        // .call.value() is legacy syntax covered by the .call{value:} pattern above
 
-    // Unchecked external calls - only match when return value is not captured
-    rules.push(
+        // Unchecked external calls - only match when return value is not captured
         VulnerabilityRule::new(
             VulnerabilityCategory::UnsafeExternalCalls,
             VulnerabilitySeverity::Medium,
@@ -1334,24 +1353,22 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             false,
         )
         .unwrap(),
-    );
 
-    // Access control issues - Missing modifier on state-changing functions
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::AccessControl,
-        VulnerabilitySeverity::Critical,
-        r"function\s+(set|update|change|modify|withdraw|transfer|mint|burn|pause|unpause|destroy|kill|upgrade|initialize)\w*\([^)]*\)\s+(external|public)",
-        "Missing Access Control on State-Changing Function".to_string(),
-        "Critical state-changing function without access control modifier".to_string(),
-        "Add access control modifiers (onlyOwner, onlyRole, etc.) to protect critical functions".to_string(),
-        false,
-    ).unwrap());
+        // Access control issues - Missing modifier on state-changing functions
+        VulnerabilityRule::new(
+            VulnerabilityCategory::AccessControl,
+            VulnerabilitySeverity::Critical,
+            r"function\s+(set|update|change|modify|withdraw|transfer|mint|burn|pause|unpause|destroy|kill|upgrade|initialize)\w*\([^)]*\)\s+(external|public)",
+            "Missing Access Control on State-Changing Function".to_string(),
+            "Critical state-changing function without access control modifier".to_string(),
+            "Add access control modifiers (onlyOwner, onlyRole, etc.) to protect critical functions".to_string(),
+            false,
+        ).unwrap(),
 
-    // REMOVED: Too broad - was causing false positives on every public function
-    // Access control is now better handled by specific critical function checks
+        // REMOVED: Too broad - was causing false positives on every public function
+        // Access control is now better handled by specific critical function checks
 
-    // Pragma issues
-    rules.push(
+        // Pragma issues
         VulnerabilityRule::new(
             VulnerabilityCategory::PragmaIssues,
             // Low, not Medium: floating pragma is an informational finding in every
@@ -1365,43 +1382,47 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             false,
         )
         .unwrap(),
-    );
 
-    // Weak randomness - only flag when block properties are used for randomness (modulo, hashing)
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::RandomnessVulnerabilities,
-        VulnerabilitySeverity::High,
-        r"(block\.(timestamp|difficulty|number|prevrandao|blockhash))\s*%|keccak256\(.*block\.(timestamp|difficulty|number|prevrandao)",
-        "Weak Randomness Source".to_string(),
-        "Using predictable block properties for randomness generation".to_string(),
-        "Use a secure randomness source like Chainlink VRF or commit-reveal schemes".to_string(),
-        false,
-    ).unwrap());
+        // Weak randomness - only flag when block properties are used for randomness (modulo, hashing)
+        VulnerabilityRule::new(
+            VulnerabilityCategory::RandomnessVulnerabilities,
+            VulnerabilitySeverity::High,
+            r"(block\.(timestamp|difficulty|number|prevrandao|blockhash))\s*%|keccak256\(.*block\.(timestamp|difficulty|number|prevrandao)",
+            "Weak Randomness Source".to_string(),
+            "Using predictable block properties for randomness generation".to_string(),
+            "Use a secure randomness source like Chainlink VRF or commit-reveal schemes".to_string(),
+            false,
+        ).unwrap(),
 
-    // DoS through gas limit
-    rules.push(
+        // DoS through gas limit
         VulnerabilityRule::new(
             VulnerabilityCategory::DoSAttacks,
             VulnerabilitySeverity::High,
-            r"for\s*\([^)]*players\.length[^)]*\)\s*\{[^}]*for\s*\([^)]*players\.length",
-            "Potential DoS via Gas Limit".to_string(),
-            "Nested loops over dynamic arrays can cause denial of service".to_string(),
-            "Limit array sizes or use different data structures to avoid gas limit issues"
+            // Generalised from a hardcoded `players.length`, which only ever matched
+            // one contract's variable name. Any nested iteration over dynamic arrays is
+            // O(n^2): the duplicate-check loop in Puppy Raffle's `enterRaffle` is the
+            // canonical case, where each new entrant raises the gas cost for the next.
+            r"for\s*\([^)]*\w+\.length[^)]*\)\s*\{[^}]*for\s*\([^)]*\w+\.length",
+            "Quadratic Loop Over Dynamic Array (DoS)".to_string(),
+            "Nested loops over a dynamic array cost O(n^2) gas. As the array grows, the \
+             function eventually exceeds the block gas limit and becomes uncallable, and \
+             early entrants pay far less gas than later ones."
+                .to_string(),
+            "Replace the nested scan with an O(1) lookup (e.g. a mapping of seen \
+             addresses), or bound the array length."
                 .to_string(),
             true,
         )
         .unwrap(),
-    );
 
-    // REMOVED: Too broad - now handled by version-specific rules with proper context
-    // This was flagging every arithmetic operation including safe ones
+        // REMOVED: Too broad - now handled by version-specific rules with proper context
+        // This was flagging every arithmetic operation including safe ones
 
-    // REMOVED: Magic numbers pattern was too broad - flagged every multiplication/division
-    // by 2+ digit numbers including common patterns like * 100, / 1000, * 60, etc.
-    // Magic number detection is better handled at the audit level, not automated scanning.
+        // REMOVED: Magic numbers pattern was too broad - flagged every multiplication/division
+        // by 2+ digit numbers including common patterns like * 100, / 1000, * 60, etc.
+        // Magic number detection is better handled at the audit level, not automated scanning.
 
-    // Unused functions
-    rules.push(
+        // Unused functions
         VulnerabilityRule::new(
             VulnerabilityCategory::UnusedCode,
             VulnerabilitySeverity::Info,
@@ -1412,13 +1433,11 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             true,
         )
         .unwrap(),
-    );
 
-    // REMOVED: Too broad - public state variables are common and usually intentional
-    // Having public visibility is not itself a vulnerability
+        // REMOVED: Too broad - public state variables are common and usually intentional
+        // Having public visibility is not itself a vulnerability
 
-    // Time manipulation
-    rules.push(
+        // Time manipulation
         VulnerabilityRule::new(
             VulnerabilityCategory::TimeManipulation,
             VulnerabilitySeverity::Medium,
@@ -1430,68 +1449,69 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             false,
         )
         .unwrap(),
-    );
 
-    // REMOVED: Too broad and noisy - now handled by context-aware ImmutabilityIssues check
-    // This was flagging every public uint256 regardless of whether it could be immutable
+        // REMOVED: Too broad and noisy - now handled by context-aware ImmutabilityIssues check
+        // This was flagging every public uint256 regardless of whether it could be immutable
 
-    // Typos in function/event names (common ones)
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::NamingConventions,
-        VulnerabilitySeverity::Medium,
-        r"raffleStarttime|kaccak256|prizeZPool|totalFEees|tokenIdRarity|SetNet|recieve|occured|transfered|Withdrawl|Deposite",
-        "Potential Typo in Code".to_string(),
-        "Suspected typo in variable, event, or function name that could indicate a bug".to_string(),
-        "Review for typos and correct any spelling mistakes that could cause bugs".to_string(),
-        false,
-    ).unwrap());
+        // Typos in function/event names (common ones)
+        VulnerabilityRule::new(
+            VulnerabilityCategory::NamingConventions,
+            VulnerabilitySeverity::Medium,
+            r"raffleStarttime|kaccak256|prizeZPool|totalFEees|tokenIdRarity|SetNet|recieve|occured|transfered|Withdrawl|Deposite",
+            "Potential Typo in Code".to_string(),
+            "Suspected typo in variable, event, or function name that could indicate a bug".to_string(),
+            "Review for typos and correct any spelling mistakes that could cause bugs".to_string(),
+            false,
+        ).unwrap(),
 
-    // Sensitive data storage on-chain - more specific pattern
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::AccessControl,
-        VulnerabilitySeverity::Critical,
-        r"(string|bytes|bytes32)\s+(private|public|internal)?\s*s_(password|secret|privateKey|secretKey|seed|mnemonic)",
-        "Sensitive Data Storage On-Chain".to_string(),
-        "Storing sensitive data like passwords on blockchain - ALL data is publicly readable".to_string(),
-        "NEVER store passwords, secrets, or private keys on-chain. Use off-chain storage or encryption".to_string(),
-        false,
-    ).unwrap());
+        // Sensitive data storage on-chain - more specific pattern
+        VulnerabilityRule::new(
+            VulnerabilityCategory::AccessControl,
+            VulnerabilitySeverity::Critical,
+            r"(string|bytes|bytes32)\s+(private|public|internal)?\s*s_(password|secret|privateKey|secretKey|seed|mnemonic)",
+            "Sensitive Data Storage On-Chain".to_string(),
+            "Storing sensitive data like passwords on blockchain - ALL data is publicly readable".to_string(),
+            "NEVER store passwords, secrets, or private keys on-chain. Use off-chain storage or encryption".to_string(),
+            false,
+        ).unwrap(),
 
-    // Documentation mismatch
-    rules.push(
+        // Documentation mismatch
         VulnerabilityRule::new(
             VulnerabilityCategory::NamingConventions,
             VulnerabilitySeverity::Low,
-            r"@param\s+\w+.*function\s+\w+\(\s*\)",
+            // Bounded gap: the @param tag lives in the NatSpec block directly above the
+            // function. Under the `(?s)` prefix a bare `.*` would run to the last
+            // zero-arg function in the file and annotate the whole file.
+            r"@param\s+\w+[\s\S]{0,300}?function\s+\w+\(\s*\)",
             "Documentation Parameter Mismatch".to_string(),
             "Function documentation mentions parameters but function has none".to_string(),
             "Fix documentation to match actual function signature".to_string(),
             true,
         )
         .unwrap(),
-    );
 
-    // Missing owner check pattern
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::AccessControl,
-        VulnerabilitySeverity::Critical,
-        r"function\s+setPassword\s*\([^)]*\)\s*external\s*\{[^}]*s_password\s*=",
-        "Critical: setPassword Missing Access Control".to_string(),
-        "setPassword function allows ANYONE to change the password - critical security vulnerability".to_string(),
-        "Add owner check: if (msg.sender != s_owner) revert(); at the beginning of the function".to_string(),
-        true,
-    ).unwrap());
+        // Missing owner check pattern
+        VulnerabilityRule::new(
+            VulnerabilityCategory::AccessControl,
+            VulnerabilitySeverity::Critical,
+            r"function\s+setPassword\s*\([^)]*\)\s*external\s*\{[^}]*s_password\s*=",
+            "Critical: setPassword Missing Access Control".to_string(),
+            "setPassword function allows ANYONE to change the password - critical security vulnerability".to_string(),
+            "Add owner check: if (msg.sender != s_owner) revert(); at the beginning of the function".to_string(),
+            true,
+        ).unwrap(),
 
-    // IMPROVED: Now only checks critical state-changing functions, not all external functions
-    // Better handled by the "Missing Access Control on State-Changing Function" rule above
-    // which specifically targets dangerous function names like set*, update*, withdraw*, etc.
+        // IMPROVED: Now only checks critical state-changing functions, not all external functions
+        // Better handled by the "Missing Access Control on State-Changing Function" rule above
+        // which specifically targets dangerous function names like set*, update*, withdraw*, etc.
 
-    // Additional delegate call patterns in main rules
-    rules.push(
+        // Additional delegate call patterns in main rules
         VulnerabilityRule::new(
             VulnerabilityCategory::DelegateCalls,
             VulnerabilitySeverity::Critical,
-            r"function\s+\w*proxy\w*\([^)]*\).*delegatecall",
+            // Bounded: the delegatecall must be inside this function's body, not the
+            // last delegatecall anywhere in the file (`(?s)` makes `.*` cross newlines).
+            r"function\s+\w*proxy\w*\([^)]*\)[\s\S]{0,400}?delegatecall",
             "Proxy Function with Delegatecall".to_string(),
             "Proxy functions using delegatecall can be exploited if implementation is malicious"
                 .to_string(),
@@ -1500,10 +1520,8 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             true,
         )
         .unwrap(),
-    );
 
-    // Delegatecall with external data
-    rules.push(
+        // Delegatecall with external data
         VulnerabilityRule::new(
             VulnerabilityCategory::DelegateCalls,
             VulnerabilitySeverity::High,
@@ -1515,10 +1533,8 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             false,
         )
         .unwrap(),
-    );
 
-    // Conditional delegatecall patterns
-    rules.push(
+        // Conditional delegatecall patterns
         VulnerabilityRule::new(
             VulnerabilityCategory::DelegateCalls,
             VulnerabilitySeverity::High,
@@ -1529,10 +1545,8 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             true,
         )
         .unwrap(),
-    );
 
-    // Delegatecall with storage variables
-    rules.push(
+        // Delegatecall with storage variables
         VulnerabilityRule::new(
             VulnerabilityCategory::DelegateCalls,
             VulnerabilitySeverity::Critical,
@@ -1543,15 +1557,13 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             false,
         )
         .unwrap(),
-    );
 
-    // Role-based access control detection patterns
+        // Role-based access control detection patterns
 
-    // REMOVED: "OpenZeppelin AccessControl Detected" is informational noise.
-    // Using OZ AccessControl is good practice, not a finding to report.
+        // REMOVED: "OpenZeppelin AccessControl Detected" is informational noise.
+        // Using OZ AccessControl is good practice, not a finding to report.
 
-    // Functions without role-based modifiers
-    rules.push(
+        // Functions without role-based modifiers
         VulnerabilityRule::new(
             VulnerabilityCategory::RoleBasedAccessControl,
             VulnerabilitySeverity::Critical,
@@ -1563,27 +1575,25 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             false,
         )
         .unwrap(),
-    );
 
-    // Missing role checks on critical functions
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::RoleBasedAccessControl,
-        VulnerabilitySeverity::Critical,
-        r"function\s+(mint|burn|pause|unpause|setRole|grantRole|revokeRole)\w*\([^)]*\)\s+(external|public)\s*\{",
-        "Critical Function Missing Role Check".to_string(),
-        "Critical administrative function lacks role-based access control".to_string(),
-        "Add onlyRole modifier with appropriate role (MINTER_ROLE, ADMIN_ROLE, etc.)".to_string(),
-        false,
-    ).unwrap());
+        // Missing role checks on critical functions
+        VulnerabilityRule::new(
+            VulnerabilityCategory::RoleBasedAccessControl,
+            VulnerabilitySeverity::Critical,
+            r"function\s+(mint|burn|pause|unpause|setRole|grantRole|revokeRole)\w*\([^)]*\)\s+(external|public)\s*\{",
+            "Critical Function Missing Role Check".to_string(),
+            "Critical administrative function lacks role-based access control".to_string(),
+            "Add onlyRole modifier with appropriate role (MINTER_ROLE, ADMIN_ROLE, etc.)".to_string(),
+            false,
+        ).unwrap(),
 
-    // REMOVED: Inline require(hasRole(...)) is perfectly valid access control.
-    // Flagging it as a vulnerability is misleading - it's a style preference.
+        // REMOVED: Inline require(hasRole(...)) is perfectly valid access control.
+        // Flagging it as a vulnerability is misleading - it's a style preference.
 
-    // REMOVED: "Role Definition Found" is purely informational - flagging every
-    // bytes32 constant ROLE definition adds noise without security value.
+        // REMOVED: "Role Definition Found" is purely informational - flagging every
+        // bytes32 constant ROLE definition adds noise without security value.
 
-    // Default admin role assignments
-    rules.push(
+        // Default admin role assignments
         VulnerabilityRule::new(
             VulnerabilityCategory::RoleBasedAccessControl,
             VulnerabilitySeverity::High,
@@ -1595,10 +1605,8 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             false,
         )
         .unwrap(),
-    );
 
-    // Missing role admin configuration
-    rules.push(
+        // Missing role admin configuration
         VulnerabilityRule::new(
             VulnerabilityCategory::RoleBasedAccessControl,
             VulnerabilitySeverity::Medium,
@@ -1609,73 +1617,77 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             false,
         )
         .unwrap(),
-    );
 
-    // Dangerous role combinations
-    rules.push(
+        // Dangerous role combinations
         VulnerabilityRule::new(
             VulnerabilityCategory::RoleBasedAccessControl,
             VulnerabilitySeverity::High,
-            r"onlyRole\s*\(\s*DEFAULT_ADMIN_ROLE\s*\).*function.*(mint|burn|transfer)",
+            // A modifier follows the function name in Solidity, so the previous
+            // `onlyRole(DEFAULT_ADMIN_ROLE).*function.*(mint|burn|transfer)` ordering
+            // could only ever match ACROSS functions -- and with `(?s)` the greedy `.*`
+            // ran to the end of the file. Match the real shape instead: a critical
+            // token function whose own signature carries onlyRole(DEFAULT_ADMIN_ROLE).
+            r"function\s+\w*(?:mint|burn|transfer)\w*\s*\([^)]*\)[^{;]*onlyRole\s*\(\s*DEFAULT_ADMIN_ROLE\s*\)",
             "Over-Privileged Admin Role".to_string(),
             "DEFAULT_ADMIN_ROLE has direct access to critical token functions".to_string(),
             "Separate admin role from operational roles (MINTER_ROLE, BURNER_ROLE)".to_string(),
             true,
         )
         .unwrap(),
-    );
 
-    // REMOVED: Flagging every grantRole() call is too noisy. OpenZeppelin AccessControl
-    // already includes renounceRole(). Custom role systems are caught by other rules.
+        // REMOVED: Flagging every grantRole() call is too noisy. OpenZeppelin AccessControl
+        // already includes renounceRole(). Custom role systems are caught by other rules.
 
-    // Role-based reentrancy issues
-    rules.push(
+        // Role-based reentrancy issues
         VulnerabilityRule::new(
             VulnerabilityCategory::RoleBasedAccessControl,
             VulnerabilitySeverity::High,
-            r"onlyRole.*external.*call\{value:",
+            // `external` precedes the modifier in a Solidity signature, so requiring
+            // `onlyRole.*external` only matched across functions; with `(?s)` both `.*`
+            // ran to the end of the file. Bound the gap to the guarded function body.
+            r"onlyRole\s*\([^)]*\)[\s\S]{0,400}?\.call\{value:",
             "Role-Based Function with External Call".to_string(),
             "Role-protected function makes external calls - potential reentrancy risk".to_string(),
             "Add reentrancy guards to role-protected functions making external calls".to_string(),
             true,
         )
         .unwrap(),
-    );
 
-    // Custom role system detection
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::RoleBasedAccessControl,
-        VulnerabilitySeverity::Medium,
-        r"mapping\s*\(\s*address\s*=>\s*bool\s*\)\s+(public\s+)?admins?|mapping\s*\(\s*address\s*=>\s*bool\s*\)\s+(public\s+)?operators?",
-        "Custom Role System Detected".to_string(),
-        "Custom role system using address => bool mapping".to_string(),
-        "Consider using OpenZeppelin AccessControl for standardized role management".to_string(),
-        false,
-    ).unwrap());
-
-    // REMOVED: Role enumeration (getRoleMemberCount/getRoleMember) is standard
-    // OpenZeppelin AccessControlEnumerable. Not a vulnerability.
-
-    // Missing role validation in constructors
-    rules.push(
+        // Custom role system detection
         VulnerabilityRule::new(
             VulnerabilityCategory::RoleBasedAccessControl,
             VulnerabilitySeverity::Medium,
-            r"constructor\s*\([^)]*\)\s*\{[^}]*grantRole.*msg\.sender",
+            r"mapping\s*\(\s*address\s*=>\s*bool\s*\)\s+(public\s+)?admins?|mapping\s*\(\s*address\s*=>\s*bool\s*\)\s+(public\s+)?operators?",
+            "Custom Role System Detected".to_string(),
+            "Custom role system using address => bool mapping".to_string(),
+            "Consider using OpenZeppelin AccessControl for standardized role management".to_string(),
+            false,
+        ).unwrap(),
+
+        // REMOVED: Role enumeration (getRoleMemberCount/getRoleMember) is standard
+        // OpenZeppelin AccessControlEnumerable. Not a vulnerability.
+
+        // Missing role validation in constructors
+        VulnerabilityRule::new(
+            VulnerabilityCategory::RoleBasedAccessControl,
+            VulnerabilitySeverity::Medium,
+            // `grantRole.*msg\.sender` with `(?s)` reached the last `msg.sender` in the
+            // file; the grantee is an argument of the very same call.
+            r"constructor\s*\([^)]*\)\s*\{[^}]*grantRole\s*\([^)]*msg\.sender",
             "Constructor Role Assignment to Deployer".to_string(),
             "Constructor automatically assigns roles to deployer without validation".to_string(),
             "Consider requiring explicit role setup or using parameter validation".to_string(),
             true,
         )
         .unwrap(),
-    );
 
-    // Role-based function without proper validation
-    rules.push(
+        // Role-based function without proper validation
         VulnerabilityRule::new(
             VulnerabilityCategory::RoleBasedAccessControl,
             VulnerabilitySeverity::High,
-            r"function\s+\w+\([^)]*address\s+\w+[^)]*\).*onlyRole.*grantRole\s*\([^,]*,\s*\w+\s*\)",
+            // onlyRole belongs to this function's signature (before the body brace) and
+            // the grantRole call to its body -- both `.*` were unbounded under `(?s)`.
+            r"function\s+\w+\([^)]*address\s+\w+[^)]*\)[^{;]*onlyRole[\s\S]{0,400}?grantRole\s*\([^,]*,\s*\w+\s*\)",
             "Role Assignment Without Address Validation".to_string(),
             "Function grants roles to addresses without proper validation".to_string(),
             "Add address validation (non-zero, not contract, etc.) before role assignment"
@@ -1683,13 +1695,11 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             true,
         )
         .unwrap(),
-    );
 
-    // REMOVED: "Timelock Integration Detected" is informational noise.
-    // Having a timelock is a GOOD security practice, not a finding.
+        // REMOVED: "Timelock Integration Detected" is informational noise.
+        // Having a timelock is a GOOD security practice, not a finding.
 
-    // Role inheritance issues
-    rules.push(
+        // Role inheritance issues
         VulnerabilityRule::new(
             VulnerabilityCategory::RoleBasedAccessControl,
             VulnerabilitySeverity::Medium,
@@ -1701,12 +1711,10 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             false,
         )
         .unwrap(),
-    );
 
-    // ZorpAudit Report Vulnerabilities - Storage DoS Attacks
+        // ZorpAudit Report Vulnerabilities - Storage DoS Attacks
 
-    // Unbounded mapping assignments - submitData pattern
-    rules.push(
+        // Unbounded mapping assignments - submitData pattern
         VulnerabilityRule::new(
             VulnerabilityCategory::StorageDoSAttacks,
             VulnerabilitySeverity::Critical,
@@ -1719,10 +1727,8 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             false,
         )
         .unwrap(),
-    );
 
-    // General unbounded storage pattern
-    rules.push(
+        // General unbounded storage pattern
         VulnerabilityRule::new(
             VulnerabilityCategory::StorageDoSAttacks,
             VulnerabilitySeverity::High,
@@ -1734,10 +1740,8 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             false,
         )
         .unwrap(),
-    );
 
-    // Unbounded array pushes
-    rules.push(
+        // Unbounded array pushes
         VulnerabilityRule::new(
             VulnerabilityCategory::StorageDoSAttacks,
             VulnerabilitySeverity::High,
@@ -1749,51 +1753,49 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             false,
         )
         .unwrap(),
-    );
 
-    // Submission functions without proper limits
-    rules.push(
+        // Submission functions without proper limits
         VulnerabilityRule::new(
             VulnerabilityCategory::StorageDoSAttacks,
             VulnerabilitySeverity::Medium,
-            r"function\s+submit\w*\([^)]*\)\s+external.*\{[^}]*\+\+",
+            // `.*\{` was greedy across the whole file under `(?s)`: it latched onto the
+            // LAST `{` in the file. `[^{]*\{` pins it to this function's own body.
+            r"function\s+submit\w*\([^)]*\)\s+external[^{]*\{[^}]*\+\+",
             "Submission Function Without Rate Limiting".to_string(),
             "Submission functions lack rate limiting or spam protection mechanisms".to_string(),
             "Add time-based limits, maximum submissions per user, or validation checks".to_string(),
             true,
         )
         .unwrap(),
-    );
 
-    // Storage operations in loops
-    rules.push(
+        // Storage operations in loops
         VulnerabilityRule::new(
             VulnerabilityCategory::StorageDoSAttacks,
             VulnerabilitySeverity::Medium,
-            r"for\s*\([^)]*\)\s*\{[^}]*mapping.*=",
+            // `mapping.*=` ran to the last `=` in the file under `(?s)`, stretching the
+            // reported span over everything after the loop. Keep it on one statement.
+            r"for\s*\([^)]*\)\s*\{[^}]*mapping[^;{}]*=",
             "Storage Operations in Loops".to_string(),
             "Storage operations within loops can cause excessive gas consumption".to_string(),
             "Consider batching operations or using different data structures".to_string(),
             true,
         )
         .unwrap(),
-    );
 
-    // ZorpAudit Report Vulnerabilities - Precision Loss
+        // ZorpAudit Report Vulnerabilities - Precision Loss
 
-    // Integer division without remainder handling - endStudy pattern
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::PrecisionLoss,
-        VulnerabilitySeverity::Critical,
-        r"participant_payout_amount\s*=\s*balance\s*/\s*valid_submissions",
-        "Financial Division Without Remainder Handling".to_string(),
-        "Division of funds without proper remainder handling causes precision loss and fund loss".to_string(),
-        "Use modulus operator (%) to calculate and handle remainders properly".to_string(),
-        false,
-    ).unwrap());
+        // Integer division without remainder handling - endStudy pattern
+        VulnerabilityRule::new(
+            VulnerabilityCategory::PrecisionLoss,
+            VulnerabilitySeverity::Critical,
+            r"participant_payout_amount\s*=\s*balance\s*/\s*valid_submissions",
+            "Financial Division Without Remainder Handling".to_string(),
+            "Division of funds without proper remainder handling causes precision loss and fund loss".to_string(),
+            "Use modulus operator (%) to calculate and handle remainders properly".to_string(),
+            false,
+        ).unwrap(),
 
-    // General balance division patterns
-    rules.push(
+        // General balance division patterns
         VulnerabilityRule::new(
             VulnerabilityCategory::PrecisionLoss,
             VulnerabilitySeverity::High,
@@ -1806,10 +1808,8 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             false,
         )
         .unwrap(),
-    );
 
-    // Payout calculations
-    rules.push(
+        // Payout calculations
         VulnerabilityRule::new(
             VulnerabilityCategory::PrecisionLoss,
             VulnerabilitySeverity::High,
@@ -1821,19 +1821,17 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             false,
         )
         .unwrap(),
-    );
 
-    // REMOVED: Flagged ALL uint256 division operations (uint256 x = a / b).
-    // Division is fundamental to Solidity - this generated massive false positives.
-    // Precision-sensitive division is caught by the more specific rules above
-    // (balance division, reward distribution, pricing calculations).
+        // REMOVED: Flagged ALL uint256 division operations (uint256 x = a / b).
+        // Division is fundamental to Solidity - this generated massive false positives.
+        // Precision-sensitive division is caught by the more specific rules above
+        // (balance division, reward distribution, pricing calculations).
 
-    // REMOVED: Pattern (reward|distribution|share)\w*\s*=.*\/ flagged ANY line containing
-    // "reward", "distribution", or "share" with ANY division anywhere on the line.
-    // This was far too broad - the specific patterns above catch real precision issues.
+        // REMOVED: Pattern (reward|distribution|share)\w*\s*=.*\/ flagged ANY line containing
+        // "reward", "distribution", or "share" with ANY division anywhere on the line.
+        // This was far too broad - the specific patterns above catch real precision issues.
 
-    // Missing remainder calculations
-    rules.push(
+        // Missing remainder calculations
         VulnerabilityRule::new(
             VulnerabilityCategory::PrecisionLoss,
             VulnerabilitySeverity::Low,
@@ -1845,10 +1843,8 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             false,
         )
         .unwrap(),
-    );
 
-    // Transfer remainder patterns that may be incorrect
-    rules.push(
+        // Transfer remainder patterns that may be incorrect
         VulnerabilityRule::new(
             VulnerabilityCategory::PrecisionLoss,
             VulnerabilitySeverity::Medium,
@@ -1860,12 +1856,10 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             false,
         )
         .unwrap(),
-    );
 
-    // Additional advanced detectors inspired by Slither
+        // Additional advanced detectors inspired by Slither
 
-    // Bad PRNG patterns
-    rules.push(
+        // Bad PRNG patterns
         VulnerabilityRule::new(
             VulnerabilityCategory::BadPRNG,
             VulnerabilitySeverity::High,
@@ -1877,10 +1871,8 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             false,
         )
         .unwrap(),
-    );
 
-    // Unchecked low-level calls
-    rules.push(
+        // Unchecked low-level calls
         VulnerabilityRule::new(
             VulnerabilityCategory::LowLevelCalls,
             VulnerabilitySeverity::Medium,
@@ -1892,18 +1884,16 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             false,
         )
         .unwrap(),
-    );
 
-    // REMOVED: "Missing Event Emission" flagged ALL transfer/approve/mint/burn function
-    // declarations without checking if events are actually emitted in the function body.
-    // This requires multi-line analysis and is better handled by the advanced analyzer.
+        // REMOVED: "Missing Event Emission" flagged ALL transfer/approve/mint/burn function
+        // declarations without checking if events are actually emitted in the function body.
+        // This requires multi-line analysis and is better handled by the advanced analyzer.
 
-    // REMOVED: Too broad - flags every variable declaration
-    // Solidity auto-initializes variables to default values, this is usually intentional
-    // Now handled by context-aware detection in scanner.rs
+        // REMOVED: Too broad - flags every variable declaration
+        // Solidity auto-initializes variables to default values, this is usually intentional
+        // Now handled by context-aware detection in scanner.rs
 
-    // Unused return values - only match ERC20 transferFrom (2+ args), not payable.transfer()
-    rules.push(
+        // Unused return values - only match ERC20 transferFrom (2+ args), not payable.transfer()
         VulnerabilityRule::new(
             VulnerabilityCategory::UnusedReturnValues,
             VulnerabilitySeverity::Medium,
@@ -1915,14 +1905,12 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             false,
         )
         .unwrap(),
-    );
 
-    // REMOVED: "Could be immutable" flagged every address state variable declaration
-    // without checking if the variable is actually only set in the constructor.
-    // This requires data-flow analysis that regex cannot provide.
+        // REMOVED: "Could be immutable" flagged every address state variable declaration
+        // without checking if the variable is actually only set in the constructor.
+        // This requires data-flow analysis that regex cannot provide.
 
-    // Shadowing state variables
-    rules.push(
+        // Shadowing state variables
         VulnerabilityRule::new(
             VulnerabilityCategory::ShadowingIssues,
             VulnerabilitySeverity::Medium,
@@ -1933,10 +1921,8 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             false,
         )
         .unwrap(),
-    );
 
-    // Incorrect equality comparisons
-    rules.push(
+        // Incorrect equality comparisons
         VulnerabilityRule::new(
             VulnerabilityCategory::IncorrectEquality,
             VulnerabilitySeverity::High,
@@ -1947,10 +1933,8 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             false,
         )
         .unwrap(),
-    );
 
-    // Assembly usage detection
-    rules.push(
+        // Assembly usage detection
         VulnerabilityRule::new(
             VulnerabilityCategory::AssemblyUsage,
             VulnerabilitySeverity::High,
@@ -1961,10 +1945,8 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             false,
         )
         .unwrap(),
-    );
 
-    // Deprecated functions
-    rules.push(
+        // Deprecated functions
         VulnerabilityRule::new(
             VulnerabilityCategory::DeprecatedFunctions,
             VulnerabilitySeverity::Medium,
@@ -1977,10 +1959,8 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             false,
         )
         .unwrap(),
-    );
 
-    // High complexity detection
-    rules.push(
+        // High complexity detection
         VulnerabilityRule::new(
             VulnerabilityCategory::ComplexityIssues,
             VulnerabilitySeverity::Info,
@@ -1991,14 +1971,12 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             true,
         )
         .unwrap(),
-    );
 
-    // REMOVED: "Public could be external" flagged every public view function.
-    // This is a minor gas optimization, not a vulnerability, and requires
-    // call-graph analysis to determine if the function is called internally.
+        // REMOVED: "Public could be external" flagged every public view function.
+        // This is a minor gas optimization, not a vulnerability, and requires
+        // call-graph analysis to determine if the function is called internally.
 
-    // Signature malleability
-    rules.push(
+        // Signature malleability
         VulnerabilityRule::new(
             VulnerabilityCategory::SignatureVulnerabilities,
             VulnerabilitySeverity::High,
@@ -2009,10 +1987,8 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             false,
         )
         .unwrap(),
-    );
 
-    // Oracle manipulation
-    rules.push(
+        // Oracle manipulation
         VulnerabilityRule::new(
             VulnerabilityCategory::OracleManipulation,
             VulnerabilitySeverity::Critical,
@@ -2024,10 +2000,8 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             false,
         )
         .unwrap(),
-    );
 
-    // Cache array length optimization
-    rules.push(
+        // Cache array length optimization
         VulnerabilityRule::new(
             VulnerabilityCategory::GasOptimization,
             VulnerabilitySeverity::Info,
@@ -2039,13 +2013,11 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             false,
         )
         .unwrap(),
-    );
 
-    // REMOVED: "Void Constructor Pattern" flagged ANY function starting with uppercase.
-    // This is only relevant for Solidity <0.4.22 and is handled by version-specific rules.
+        // REMOVED: "Void Constructor Pattern" flagged ANY function starting with uppercase.
+        // This is only relevant for Solidity <0.4.22 and is handled by version-specific rules.
 
-    // Missing zero address validation
-    rules.push(
+        // Missing zero address validation
         VulnerabilityRule::new(
             VulnerabilityCategory::AccessControl,
             VulnerabilitySeverity::Medium,
@@ -2056,10 +2028,8 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             false,
         )
         .unwrap(),
-    );
 
-    // Encode packed collision
-    rules.push(
+        // Encode packed collision
         VulnerabilityRule::new(
             VulnerabilityCategory::SignatureVulnerabilities,
             VulnerabilitySeverity::High,
@@ -2070,12 +2040,10 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             false,
         )
         .unwrap(),
-    );
 
-    // Additional ERC Standard Compliance Checks
+        // Additional ERC Standard Compliance Checks
 
-    // ERC-20 missing return values
-    rules.push(
+        // ERC-20 missing return values
         VulnerabilityRule::new(
             VulnerabilityCategory::ABITokenStandard,
             VulnerabilitySeverity::High,
@@ -2086,10 +2054,8 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             false,
         )
         .unwrap(),
-    );
 
-    // Missing zero address checks in critical functions
-    rules.push(
+        // Missing zero address checks in critical functions
         VulnerabilityRule::new(
             VulnerabilityCategory::AccessControl,
             VulnerabilitySeverity::High,
@@ -2101,10 +2067,8 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             false,
         )
         .unwrap(),
-    );
 
-    // Hardcoded gas values
-    rules.push(
+        // Hardcoded gas values
         VulnerabilityRule::new(
             VulnerabilityCategory::GasOptimization,
             VulnerabilitySeverity::Medium,
@@ -2115,10 +2079,8 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             false,
         )
         .unwrap(),
-    );
 
-    // Unbounded array iteration - more specific
-    rules.push(
+        // Unbounded array iteration - more specific
         VulnerabilityRule::new(
             VulnerabilityCategory::DoSAttacks,
             VulnerabilitySeverity::High,
@@ -2130,21 +2092,19 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             false,
         )
         .unwrap(),
-    );
 
-    // Missing input validation on amounts
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::AccessControl,
-        VulnerabilitySeverity::Medium,
-        r"function\s+\w*(deposit|stake|lock|add)\w*\s*\([^)]*uint\w*\s+amount[^)]*\)\s+(external|public)\s*\{",
-        "Missing Amount Validation".to_string(),
-        "Function accepts amount parameter - verify zero-value protection".to_string(),
-        "Consider adding 'require(amount > 0)' to prevent zero-value operations".to_string(),
-        false,
-    ).unwrap());
+        // Missing input validation on amounts
+        VulnerabilityRule::new(
+            VulnerabilityCategory::AccessControl,
+            VulnerabilitySeverity::Medium,
+            r"function\s+\w*(deposit|stake|lock|add)\w*\s*\([^)]*uint\w*\s+amount[^)]*\)\s+(external|public)\s*\{",
+            "Missing Amount Validation".to_string(),
+            "Function accepts amount parameter - verify zero-value protection".to_string(),
+            "Consider adding 'require(amount > 0)' to prevent zero-value operations".to_string(),
+            false,
+        ).unwrap(),
 
-    // Dangerous strict equality on ether balance
-    rules.push(
+        // Dangerous strict equality on ether balance
         VulnerabilityRule::new(
             VulnerabilityCategory::IncorrectEquality,
             VulnerabilitySeverity::Critical,
@@ -2155,27 +2115,25 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             false,
         )
         .unwrap(),
-    );
 
-    // ============================================================================
-    // REKT.NEWS REAL-WORLD EXPLOIT PATTERNS (2024-2025)
-    // Based on $3.1B+ in actual losses - High-priority detection rules
-    // ============================================================================
+        // ============================================================================
+        // REKT.NEWS REAL-WORLD EXPLOIT PATTERNS (2024-2025)
+        // Based on $3.1B+ in actual losses - High-priority detection rules
+        // ============================================================================
 
-    // 1. PROXY ADMIN VULNERABILITIES (Aevo/Ribbon Finance - $2.7M Dec 2025)
-    // Unprotected transferOwnership and setImplementation functions
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::ProxyAdminVulnerability,
-        VulnerabilitySeverity::Critical,
-        r"function\s+(transferOwnership|setImplementation)\s*\([^)]*\)\s+(external|public)\s*\{",
-        "Unprotected Proxy Admin Function (Aevo Pattern)".to_string(),
-        "CRITICAL: Proxy admin functions without access control - $2.7M Aevo exploit pattern".to_string(),
-        "Add onlyOwner or role-based access control to all proxy admin functions".to_string(),
-        false,
-    ).unwrap());
+        // 1. PROXY ADMIN VULNERABILITIES (Aevo/Ribbon Finance - $2.7M Dec 2025)
+        // Unprotected transferOwnership and setImplementation functions
+        VulnerabilityRule::new(
+            VulnerabilityCategory::ProxyAdminVulnerability,
+            VulnerabilitySeverity::Critical,
+            r"function\s+(transferOwnership|setImplementation)\s*\([^)]*\)\s+(external|public)\s*\{",
+            "Unprotected Proxy Admin Function (Aevo Pattern)".to_string(),
+            "CRITICAL: Proxy admin functions without access control - $2.7M Aevo exploit pattern".to_string(),
+            "Add onlyOwner or role-based access control to all proxy admin functions".to_string(),
+            false,
+        ).unwrap(),
 
-    // Unprotected proxy upgrade path (detected in advanced analyzer with proper checks)
-    rules.push(
+        // Unprotected proxy upgrade path (detected in advanced analyzer with proper checks)
         VulnerabilityRule::new(
             VulnerabilityCategory::UnprotectedProxyUpgrade,
             VulnerabilitySeverity::Critical,
@@ -2186,26 +2144,24 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             false,
         )
         .unwrap(),
-    );
 
-    // REMOVED: Too broad - matched ANY mention of upgradeTo/setImplementation including
-    // OpenZeppelin imports, comments, and properly protected implementations.
-    // Proxy upgrade detection is better handled by the specific function-signature rules above.
+        // REMOVED: Too broad - matched ANY mention of upgradeTo/setImplementation including
+        // OpenZeppelin imports, comments, and properly protected implementations.
+        // Proxy upgrade detection is better handled by the specific function-signature rules above.
 
-    // 2. CALLBACK REENTRANCY (ERC721/ERC1155 - Omni NFT $1.43M, Multiple 2024 incidents)
-    // onERC721Received callback exploitation
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::CallbackReentrancy,
-        VulnerabilitySeverity::Critical,
-        r"safeTransferFrom\s*\([^)]*\)|_safeMint\s*\(",
-        "ERC721 Callback Reentrancy Risk".to_string(),
-        "safeTransferFrom/safeMint trigger onERC721Received callback - reentrancy vector ($1.43M Omni)".to_string(),
-        "Use ReentrancyGuard or checks-effects-interactions pattern before safe transfers".to_string(),
-        false,
-    ).unwrap());
+        // 2. CALLBACK REENTRANCY (ERC721/ERC1155 - Omni NFT $1.43M, Multiple 2024 incidents)
+        // onERC721Received callback exploitation
+        VulnerabilityRule::new(
+            VulnerabilityCategory::CallbackReentrancy,
+            VulnerabilitySeverity::Critical,
+            r"safeTransferFrom\s*\([^)]*\)|_safeMint\s*\(",
+            "ERC721 Callback Reentrancy Risk".to_string(),
+            "safeTransferFrom/safeMint trigger onERC721Received callback - reentrancy vector ($1.43M Omni)".to_string(),
+            "Use ReentrancyGuard or checks-effects-interactions pattern before safe transfers".to_string(),
+            false,
+        ).unwrap(),
 
-    // onERC1155Received callback - all ERC1155 operations callback
-    rules.push(
+        // onERC1155Received callback - all ERC1155 operations callback
         VulnerabilityRule::new(
             VulnerabilityCategory::CallbackReentrancy,
             VulnerabilitySeverity::Critical,
@@ -2217,16 +2173,14 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             false,
         )
         .unwrap(),
-    );
 
-    // REMOVED: "State Change After Callback Operation". In dotall mode
-    // `(safeTransferFrom|...).*\n.*=` matched from any callback NAME (including standard
-    // interface implementations and function declarations) to any `=` later in the file.
-    // Real callback reentrancy is covered by the CEI detector and CFG reentrancy analysis.
+        // REMOVED: "State Change After Callback Operation". In dotall mode
+        // `(safeTransferFrom|...).*\n.*=` matched from any callback NAME (including standard
+        // interface implementations and function declarations) to any `=` later in the file.
+        // Real callback reentrancy is covered by the CEI detector and CFG reentrancy analysis.
 
-    // 3. ARBITRARY EXTERNAL CALLS ($21M across 18 incidents in 2024)
-    // User-controlled call targets
-    rules.push(
+        // 3. ARBITRARY EXTERNAL CALLS ($21M across 18 incidents in 2024)
+        // User-controlled call targets
         VulnerabilityRule::new(
             VulnerabilityCategory::ArbitraryExternalCall,
             VulnerabilitySeverity::Critical,
@@ -2240,10 +2194,8 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             true,
         )
         .unwrap(),
-    );
 
-    // Arbitrary calldata execution
-    rules.push(
+        // Arbitrary calldata execution
         VulnerabilityRule::new(
             VulnerabilityCategory::ArbitraryExternalCall,
             VulnerabilitySeverity::Critical,
@@ -2255,28 +2207,29 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             false,
         )
         .unwrap(),
-    );
 
-    // REMOVED: "Array Parameter Detected" — flagged every external/public function with
-    // an array parameter as High. detect_input_validation_patterns() in
-    // advanced_analysis.rs handles the dangerous case (function loops over the array
-    // without a length bound) with proper context checking.
+        // REMOVED: "Array Parameter Detected" — flagged every external/public function with
+        // an array parameter as High. detect_input_validation_patterns() in
+        // advanced_analysis.rs handles the dangerous case (function loops over the array
+        // without a length bound) with proper context checking.
 
-    // Address parameters - validated in advanced analyzer for zero-address checks
-    // Removed negative lookahead - handled by context-aware analysis
+        // Address parameters - validated in advanced analyzer for zero-address checks
+        // Removed negative lookahead - handled by context-aware analysis
 
-    // REMOVED: "Calldata Parameter Detected" - flagged every function with a calldata param
-    // as Critical. Calldata is a standard Solidity parameter location, not a vulnerability.
-    // The advanced_analysis.rs detect_input_validation_patterns() handles the dangerous case
-    // (bytes calldata without validation) with proper context checking.
+        // REMOVED: "Calldata Parameter Detected" - flagged every function with a calldata param
+        // as Critical. Calldata is a standard Solidity parameter location, not a vulnerability.
+        // The advanced_analysis.rs detect_input_validation_patterns() handles the dangerous case
+        // (bytes calldata without validation) with proper context checking.
 
-    // 5. DECIMAL/PRECISION MISMATCH (Aevo/Ribbon - precision mismatch exploited)
-    // Mixing different decimal precisions
-    rules.push(
+        // 5. DECIMAL/PRECISION MISMATCH (Aevo/Ribbon - precision mismatch exploited)
+        // Mixing different decimal precisions
         VulnerabilityRule::new(
             VulnerabilityCategory::DecimalPrecisionMismatch,
             VulnerabilitySeverity::Critical,
-            r"(1e18|1e8|10\*\*18|10\*\*8).*\+.*\(1e18|1e8|10\*\*18|10\*\*8\)",
+            // The second group's parentheses were escaped, turning the whole pattern into
+            // a top-level alternation: `(...)…\+…\(1e18` OR `1e8` OR `10**18` OR `10**8)`.
+            // Any line merely containing `1e8` was reported as a Critical mismatch.
+            r"(?:1e18|1e8|10\*\*18|10\*\*8).*\+.*(?:1e18|1e8|10\*\*18|10\*\*8)",
             "Decimal Precision Mismatch Risk".to_string(),
             "Mixing different decimal precisions (18 vs 8) - Aevo $2.7M exploit pattern"
                 .to_string(),
@@ -2284,18 +2237,16 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             false,
         )
         .unwrap(),
-    );
 
-    // REMOVED: Flagging all .decimals() usage is counterproductive - using decimals()
-    // is the correct way to handle token precision. The decimal mismatch rule above
-    // already catches the real vulnerability (mixing different precisions).
+        // REMOVED: Flagging all .decimals() usage is counterproductive - using decimals()
+        // is the correct way to handle token precision. The decimal mismatch rule above
+        // already catches the real vulnerability (mixing different precisions).
 
-    // 6. SIGNATURE REPLAY ATTACKS (Multiple cross-chain incidents 2024-2025)
-    // Signature verification patterns - detailed checks in advanced analyzer
-    // (ecrecover usage triggers advanced analysis for nonce and chainId)
+        // 6. SIGNATURE REPLAY ATTACKS (Multiple cross-chain incidents 2024-2025)
+        // Signature verification patterns - detailed checks in advanced analyzer
+        // (ecrecover usage triggers advanced analysis for nonce and chainId)
 
-    // Missing deadline in permit/meta-transactions
-    rules.push(
+        // Missing deadline in permit/meta-transactions
         VulnerabilityRule::new(
             VulnerabilityCategory::SignatureReplay,
             VulnerabilitySeverity::High,
@@ -2307,14 +2258,12 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             false,
         )
         .unwrap(),
-    );
 
-    // 7. MEV FRONT-RUNNING (19% YoY increase, $675M MEV profits 2025)
-    // Swap functions - detailed MEV check in advanced analyzer
-    // (checks for both slippage AND deadline)
+        // 7. MEV FRONT-RUNNING (19% YoY increase, $675M MEV profits 2025)
+        // Swap functions - detailed MEV check in advanced analyzer
+        // (checks for both slippage AND deadline)
 
-    // Public liquidation without priority
-    rules.push(
+        // Public liquidation without priority
         VulnerabilityRule::new(
             VulnerabilityCategory::MEVExploitable,
             VulnerabilitySeverity::Medium,
@@ -2325,14 +2274,12 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             false,
         )
         .unwrap(),
-    );
 
-    // Oracle and callback patterns - detailed checks in advanced analyzer
-    // (These require context analysis to avoid false positives)
+        // Oracle and callback patterns - detailed checks in advanced analyzer
+        // (These require context analysis to avoid false positives)
 
-    // 9. PRECISION LOSS IN CRITICAL CALCULATIONS (Multiple incidents)
-    // Division before multiplication in pricing
-    rules.push(
+        // 9. PRECISION LOSS IN CRITICAL CALCULATIONS (Multiple incidents)
+        // Division before multiplication in pricing
         VulnerabilityRule::new(
             VulnerabilityCategory::PrecisionLoss,
             VulnerabilitySeverity::Critical,
@@ -2343,10 +2290,8 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             false,
         )
         .unwrap(),
-    );
 
-    // Integer division without remainder handling in distributions
-    rules.push(
+        // Integer division without remainder handling in distributions
         VulnerabilityRule::new(
             VulnerabilityCategory::PrecisionLoss,
             VulnerabilitySeverity::High,
@@ -2357,14 +2302,12 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             false,
         )
         .unwrap(),
-    );
 
-    // ============================================================================
-    // 2025 SECURITY PATTERNS - Additional critical vulnerabilities
-    // ============================================================================
+        // ============================================================================
+        // 2025 SECURITY PATTERNS - Additional critical vulnerabilities
+        // ============================================================================
 
-    // EIP-4337 Account Abstraction - validateUserOp without proper validation
-    rules.push(
+        // EIP-4337 Account Abstraction - validateUserOp without proper validation
         VulnerabilityRule::new(
             VulnerabilityCategory::AccessControl,
             VulnerabilitySeverity::Critical,
@@ -2377,10 +2320,8 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             false,
         )
         .unwrap(),
-    );
 
-    // CREATE2 with attacker-controlled salt
-    rules.push(
+        // CREATE2 with attacker-controlled salt
         VulnerabilityRule::new(
             VulnerabilityCategory::ArbitraryExternalCall,
             VulnerabilitySeverity::High,
@@ -2391,10 +2332,8 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             false,
         )
         .unwrap(),
-    );
 
-    // ERC-2612 permit without deadline validation
-    rules.push(
+        // ERC-2612 permit without deadline validation
         VulnerabilityRule::new(
             VulnerabilityCategory::SignatureReplay,
             VulnerabilitySeverity::High,
@@ -2406,10 +2345,8 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             false,
         )
         .unwrap(),
-    );
 
-    // Fee-on-transfer token handling
-    rules.push(
+        // Fee-on-transfer token handling
         VulnerabilityRule::new(
             VulnerabilityCategory::InputValidationFailure,
             VulnerabilitySeverity::High,
@@ -2420,14 +2357,12 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             false,
         )
         .unwrap(),
-    );
 
-    // REMOVED: "Rebasing Token Balance Tracking" flagged ALL balance increments (balance += x).
-    // This is standard accounting code. Rebasing token issues require semantic analysis
-    // of token types, not pattern matching on balance updates.
+        // REMOVED: "Rebasing Token Balance Tracking" flagged ALL balance increments (balance += x).
+        // This is standard accounting code. Rebasing token issues require semantic analysis
+        // of token types, not pattern matching on balance updates.
 
-    // Self-destruct in proxy implementation
-    rules.push(
+        // Self-destruct in proxy implementation
         VulnerabilityRule::new(
             VulnerabilityCategory::UnprotectedProxyUpgrade,
             VulnerabilitySeverity::Critical,
@@ -2440,14 +2375,12 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             false,
         )
         .unwrap(),
-    );
 
-    // REMOVED: Flagging ALL IERC20/721/1155 casts is too noisy. Interface casting is
-    // standard Solidity practice. ERC-165 checks are only needed for unknown addresses,
-    // not for trusted contract references.
+        // REMOVED: Flagging ALL IERC20/721/1155 casts is too noisy. Interface casting is
+        // standard Solidity practice. ERC-165 checks are only needed for unknown addresses,
+        // not for trusted contract references.
 
-    // Unchecked block.number usage for randomness
-    rules.push(
+        // Unchecked block.number usage for randomness
         VulnerabilityRule::new(
             VulnerabilityCategory::BadPRNG,
             VulnerabilitySeverity::High,
@@ -2458,25 +2391,23 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             false,
         )
         .unwrap(),
-    );
 
-    // Cross-chain message verification
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::CrossChainReplay,
-        VulnerabilitySeverity::Critical,
-        r"function\s+(receiveMessage|processMessage|onMessage)\w*\s*\([^)]*\)\s+(external|public)",
-        "Cross-Chain Message Handler".to_string(),
-        "Cross-chain message handlers must verify source chain and sender".to_string(),
-        "Verify srcChainId, trustedRemote sender, and implement replay protection".to_string(),
-        false,
-    ).unwrap());
+        // Cross-chain message verification
+        VulnerabilityRule::new(
+            VulnerabilityCategory::CrossChainReplay,
+            VulnerabilitySeverity::Critical,
+            r"function\s+(receiveMessage|processMessage|onMessage)\w*\s*\([^)]*\)\s+(external|public)",
+            "Cross-Chain Message Handler".to_string(),
+            "Cross-chain message handlers must verify source chain and sender".to_string(),
+            "Verify srcChainId, trustedRemote sender, and implement replay protection".to_string(),
+            false,
+        ).unwrap(),
 
-    // REMOVED: INCORRECT RULE - keccak256(abi.encode(...)) is actually the SAFE pattern.
-    // abi.encode pads arguments to 32 bytes preventing collisions.
-    // abi.encodePacked is the one with collision risk (already detected above).
+        // REMOVED: INCORRECT RULE - keccak256(abi.encode(...)) is actually the SAFE pattern.
+        // abi.encode pads arguments to 32 bytes preventing collisions.
+        // abi.encodePacked is the one with collision risk (already detected above).
 
-    // Unprotected callback functions
-    rules.push(
+        // Unprotected callback functions
         VulnerabilityRule::new(
             VulnerabilityCategory::CallbackReentrancy,
             VulnerabilitySeverity::High,
@@ -2487,12 +2418,10 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             false,
         )
         .unwrap(),
-    );
 
-    // REMOVED: Duplicate of "Hardcoded Gas Value" rule at line ~1101
+        // REMOVED: Duplicate of "Hardcoded Gas Value" rule at line ~1101
 
-    // Incorrect use of address(0) checks
-    rules.push(
+        // Incorrect use of address(0) checks
         VulnerabilityRule::new(
             VulnerabilityCategory::InputValidationFailure,
             VulnerabilitySeverity::Medium,
@@ -2503,12 +2432,13 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             false,
         )
         .unwrap(),
-    );
 
-    // Unsafe downcasting without checks
-    rules.push(
+        // Unsafe downcasting without checks.
+        // Categorised as UnsafeDowncast, not ArithmeticIssues: truncation is a distinct
+        // bug from overflow, and filing it under the math group made deduplication
+        // collapse it together with genuine overflow findings on the same line.
         VulnerabilityRule::new(
-            VulnerabilityCategory::ArithmeticIssues,
+            VulnerabilityCategory::UnsafeDowncast,
             VulnerabilitySeverity::High,
             r"uint8\s*\(\w+\)|uint16\s*\(\w+\)|uint32\s*\(\w+\)|uint64\s*\(\w+\)|uint128\s*\(\w+\)",
             "Unsafe Integer Downcast".to_string(),
@@ -2518,55 +2448,53 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             false,
         )
         .unwrap(),
-    );
 
-    // Note: Missing receive/fallback detection requires AST analysis
-    // and is handled in advanced_analysis.rs for contracts receiving ETH
+        // Note: Missing receive/fallback detection requires AST analysis
+        // and is handled in advanced_analysis.rs for contracts receiving ETH
 
-    // ============================================================================
-    // 2025 OWASP SMART CONTRACT TOP 10 & RECENT EXPLOIT PATTERNS
-    // Based on $1.42B in losses documented in 2024
-    // ============================================================================
+        // ============================================================================
+        // 2025 OWASP SMART CONTRACT TOP 10 & RECENT EXPLOIT PATTERNS
+        // Based on $1.42B in losses documented in 2024
+        // ============================================================================
 
-    // ===========================================
-    // FLASH LOAN ATTACK PATTERNS (OWASP #4 - $33.8M)
-    // ===========================================
+        // ===========================================
+        // FLASH LOAN ATTACK PATTERNS (OWASP #4 - $33.8M)
+        // ===========================================
 
-    // Flash loan callback without validation
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::FlashLoanAttack,
-        VulnerabilitySeverity::Critical,
-        r"function\s+(executeOperation|onFlashLoan|uniswapV2Call|uniswapV3FlashCallback|pancakeCall)\s*\(",
-        "Flash Loan Callback Function".to_string(),
-        "Flash loan callback detected - verify proper validation of loan initiator and amount".to_string(),
-        "Verify msg.sender is the lending pool, validate initiator == address(this), check amounts match".to_string(),
-        false,
-    ).unwrap());
+        // Flash loan callback without validation
+        VulnerabilityRule::new(
+            VulnerabilityCategory::FlashLoanAttack,
+            VulnerabilitySeverity::Critical,
+            r"function\s+(executeOperation|onFlashLoan|uniswapV2Call|uniswapV3FlashCallback|pancakeCall)\s*\(",
+            "Flash Loan Callback Function".to_string(),
+            "Flash loan callback detected - verify proper validation of loan initiator and amount".to_string(),
+            "Verify msg.sender is the lending pool, validate initiator == address(this), check amounts match".to_string(),
+            false,
+        ).unwrap(),
 
-    // Flash loan amount not validated - match within a single function (limit search window)
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::FlashLoanAttack,
-        VulnerabilitySeverity::Critical,
-        r"function\s+\w*(flashLoan|executeOperation|onFlashLoan)\w*\s*\([^)]*uint\w*\s+(amount|loanAmount)",
-        "Flash Loan Amount Manipulation Risk".to_string(),
-        "Flash loan amount passed to critical logic without validation enables price manipulation".to_string(),
-        "Validate flash loan amounts against protocol limits and check price impact".to_string(),
-        false,
-    ).unwrap());
+        // Flash loan amount not validated - match within a single function (limit search window)
+        VulnerabilityRule::new(
+            VulnerabilityCategory::FlashLoanAttack,
+            VulnerabilitySeverity::Critical,
+            r"function\s+\w*(flashLoan|executeOperation|onFlashLoan)\w*\s*\([^)]*uint\w*\s+(amount|loanAmount)",
+            "Flash Loan Amount Manipulation Risk".to_string(),
+            "Flash loan amount passed to critical logic without validation enables price manipulation".to_string(),
+            "Validate flash loan amounts against protocol limits and check price impact".to_string(),
+            false,
+        ).unwrap(),
 
-    // Price calculation using spot reserves (vulnerable to flash loans)
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::FlashLoanAttack,
-        VulnerabilitySeverity::Critical,
-        r"getReserves\(\).*price|reserve\d\s*/\s*reserve\d|token\d+\.balanceOf.*price",
-        "Flash Loan Price Manipulation Vector".to_string(),
-        "Using spot reserves/balances for pricing is manipulable via flash loans (Abracadabra $13M)".to_string(),
-        "Use TWAP oracles, Chainlink feeds, or implement flash loan guards".to_string(),
-        false,
-    ).unwrap());
+        // Price calculation using spot reserves (vulnerable to flash loans)
+        VulnerabilityRule::new(
+            VulnerabilityCategory::FlashLoanAttack,
+            VulnerabilitySeverity::Critical,
+            r"getReserves\(\).*price|reserve\d\s*/\s*reserve\d|token\d+\.balanceOf.*price",
+            "Flash Loan Price Manipulation Vector".to_string(),
+            "Using spot reserves/balances for pricing is manipulable via flash loans (Abracadabra $13M)".to_string(),
+            "Use TWAP oracles, Chainlink feeds, or implement flash loan guards".to_string(),
+            false,
+        ).unwrap(),
 
-    // Missing flash loan protection in governance
-    rules.push(
+        // Missing flash loan protection in governance
         VulnerabilityRule::new(
             VulnerabilityCategory::GovernanceAttack,
             VulnerabilitySeverity::Critical,
@@ -2578,14 +2506,12 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             false,
         )
         .unwrap(),
-    );
 
-    // ===========================================
-    // LOGIC ERROR PATTERNS (OWASP #2 - $63.8M)
-    // ===========================================
+        // ===========================================
+        // LOGIC ERROR PATTERNS (OWASP #2 - $63.8M)
+        // ===========================================
 
-    // Incorrect reward calculation (common DeFi bug)
-    rules.push(
+        // Incorrect reward calculation (common DeFi bug)
         VulnerabilityRule::new(
             VulnerabilityCategory::LogicError,
             VulnerabilitySeverity::High,
@@ -2598,10 +2524,8 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             false,
         )
         .unwrap(),
-    );
 
-    // Missing check for zero shares/supply (division by zero in DeFi)
-    rules.push(
+        // Missing check for zero shares/supply (division by zero in DeFi)
         VulnerabilityRule::new(
             VulnerabilityCategory::LogicError,
             VulnerabilitySeverity::Critical,
@@ -2614,74 +2538,75 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             false,
         )
         .unwrap(),
-    );
 
-    // Incorrect withdrawal logic
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::LogicError,
-        VulnerabilitySeverity::High,
-        r"function\s+withdraw.*\{[^}]*balance\s*-=|function\s+withdraw.*\{[^}]*balance\s*=\s*balance\s*-",
-        "Withdrawal Balance Update Logic".to_string(),
-        "Withdrawal function modifies balance - verify it happens BEFORE external transfer".to_string(),
-        "Follow CEI: update balance, then transfer. Add reentrancy guard.".to_string(),
-        true,
-    ).unwrap());
+        // Incorrect withdrawal logic
+        VulnerabilityRule::new(
+            VulnerabilityCategory::LogicError,
+            VulnerabilitySeverity::High,
+            // Both branches shared the same prefix, and `withdraw.*\{` was greedy across the
+            // file under `(?s)` -- it paired a `withdraw` function with a `balance -=` in a
+            // completely different function. Factor the alternation and pin the brace.
+            r"function\s+withdraw[^{]*\{[^}]*balance\s*(?:-=|=\s*balance\s*-)",
+            "Withdrawal Balance Update Logic".to_string(),
+            "Withdrawal function modifies balance - verify it happens BEFORE external transfer".to_string(),
+            "Follow CEI: update balance, then transfer. Add reentrancy guard.".to_string(),
+            true,
+        ).unwrap(),
 
-    // REMOVED: Flagging every approve() call as a logic error is too broad.
-    // approve() is standard ERC20 - the front-running issue is well-known and
-    // OpenZeppelin's implementation handles it. This generated massive noise.
+        // REMOVED: Flagging every approve() call as a logic error is too broad.
+        // approve() is standard ERC20 - the front-running issue is well-known and
+        // OpenZeppelin's implementation handles it. This generated massive noise.
 
-    // ===========================================
-    // META-TRANSACTION / TRUSTED FORWARDER (KiloEx $7.4M)
-    // ===========================================
+        // ===========================================
+        // META-TRANSACTION / TRUSTED FORWARDER (KiloEx $7.4M)
+        // ===========================================
 
-    // MinimalForwarder pattern (KiloEx exploit)
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::MetaTransactionVulnerability,
-        VulnerabilitySeverity::Critical,
-        r"MinimalForwarder|MinimalForwarderUpgradeable|TrustedForwarder",
-        "CRITICAL: MinimalForwarder Pattern (KiloEx $7.4M)".to_string(),
-        "MinimalForwarder detected - exact pattern from KiloEx $7.4M exploit".to_string(),
-        "Verify execute() validates signatures against provided data, check trustedForwarder list".to_string(),
-        false,
-    ).unwrap());
+        // MinimalForwarder pattern (KiloEx exploit)
+        VulnerabilityRule::new(
+            VulnerabilityCategory::MetaTransactionVulnerability,
+            VulnerabilitySeverity::Critical,
+            r"MinimalForwarder|MinimalForwarderUpgradeable|TrustedForwarder",
+            "CRITICAL: MinimalForwarder Pattern (KiloEx $7.4M)".to_string(),
+            "MinimalForwarder detected - exact pattern from KiloEx $7.4M exploit".to_string(),
+            "Verify execute() validates signatures against provided data, check trustedForwarder list".to_string(),
+            false,
+        ).unwrap(),
 
-    // Trusted forwarder without signature validation
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::TrustedForwarderBypass,
-        VulnerabilitySeverity::Critical,
-        r"function\s+execute\s*\([^)]*ForwardRequest[^)]*\)",
-        "Meta-Transaction Execute Function".to_string(),
-        "Meta-transaction execute function must properly validate signatures against request data".to_string(),
-        "Verify signature matches (from, to, value, gas, nonce, data) and increment nonce".to_string(),
-        false,
-    ).unwrap());
+        // Trusted forwarder without signature validation
+        VulnerabilityRule::new(
+            VulnerabilityCategory::TrustedForwarderBypass,
+            VulnerabilitySeverity::Critical,
+            r"function\s+execute\s*\([^)]*ForwardRequest[^)]*\)",
+            "Meta-Transaction Execute Function".to_string(),
+            "Meta-transaction execute function must properly validate signatures against request data".to_string(),
+            "Verify signature matches (from, to, value, gas, nonce, data) and increment nonce".to_string(),
+            false,
+        ).unwrap(),
 
-    // REMOVED: _msgSender()/_msgData() are standard OpenZeppelin Context functions used
-    // by virtually every OZ-based contract. Flagging every occurrence floods results.
-    // Meta-tx risks are better caught by the MinimalForwarder and ERC2771Context rules.
+        // REMOVED: _msgSender()/_msgData() are standard OpenZeppelin Context functions used
+        // by virtually every OZ-based contract. Flagging every occurrence floods results.
+        // Meta-tx risks are better caught by the MinimalForwarder and ERC2771Context rules.
 
-    // REMOVED: ERC2771Context and isTrustedForwarder are standard OZ implementations.
-    // Flagging their presence is noise - the MinimalForwarder rule catches real issues.
+        // REMOVED: ERC2771Context and isTrustedForwarder are standard OZ implementations.
+        // Flagging their presence is noise - the MinimalForwarder rule catches real issues.
 
-    // ===========================================
-    // UNCHECKED MATH OPERATIONS (Cetus $223M style)
-    // ===========================================
+        // ===========================================
+        // UNCHECKED MATH OPERATIONS (Cetus $223M style)
+        // ===========================================
 
-    // Custom overflow check implementation
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::UncheckedMathOperation,
-        VulnerabilitySeverity::Critical,
-        r"function\s+\w*(checked|safe)\w*(Mul|Add|Sub|Div|Shl|Shr)\w*\(",
-        "Custom Safe Math Implementation (Cetus Pattern)".to_string(),
-        "Custom overflow checks detected - Cetus $223M exploit used flawed checked_shlw".to_string(),
-        "Prefer OpenZeppelin SafeMath or Solidity 0.8+ built-in checks over custom implementations".to_string(),
-        false,
-    ).unwrap());
+        // Custom overflow check implementation
+        VulnerabilityRule::new(
+            VulnerabilityCategory::UncheckedMathOperation,
+            VulnerabilitySeverity::Critical,
+            r"function\s+\w*(checked|safe)\w*(Mul|Add|Sub|Div|Shl|Shr)\w*\(",
+            "Custom Safe Math Implementation (Cetus Pattern)".to_string(),
+            "Custom overflow checks detected - Cetus $223M exploit used flawed checked_shlw".to_string(),
+            "Prefer OpenZeppelin SafeMath or Solidity 0.8+ built-in checks over custom implementations".to_string(),
+            false,
+        ).unwrap(),
 
-    // Bit shift operations with variable shift amount (potential overflow)
-    // Only flag variable-amount shifts; constant shifts like << 1 are safe and common
-    rules.push(
+        // Bit shift operations with variable shift amount (potential overflow)
+        // Only flag variable-amount shifts; constant shifts like << 1 are safe and common
         VulnerabilityRule::new(
             VulnerabilityCategory::UncheckedMathOperation,
             VulnerabilitySeverity::High,
@@ -2692,10 +2617,8 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             false,
         )
         .unwrap(),
-    );
 
-    // Unchecked block with complex calculations
-    rules.push(
+        // Unchecked block with complex calculations
         VulnerabilityRule::new(
             VulnerabilityCategory::UncheckedMathOperation,
             VulnerabilitySeverity::Critical,
@@ -2708,25 +2631,23 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             true,
         )
         .unwrap(),
-    );
 
-    // Liquidity calculation patterns (AMM vulnerability)
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::UncheckedMathOperation,
-        VulnerabilitySeverity::Critical,
-        r"liquidity\s*=.*sqrt|deltaLiquidity|getLiquidity.*<<",
-        "AMM Liquidity Calculation (Cetus Pattern)".to_string(),
-        "Liquidity calculation with sqrt/shifts - exact pattern from Cetus $223M exploit".to_string(),
-        "Validate inputs before calculation, add bounds checking, use well-audited math libraries".to_string(),
-        false,
-    ).unwrap());
+        // Liquidity calculation patterns (AMM vulnerability)
+        VulnerabilityRule::new(
+            VulnerabilityCategory::UncheckedMathOperation,
+            VulnerabilitySeverity::Critical,
+            r"liquidity\s*=.*sqrt|deltaLiquidity|getLiquidity.*<<",
+            "AMM Liquidity Calculation (Cetus Pattern)".to_string(),
+            "Liquidity calculation with sqrt/shifts - exact pattern from Cetus $223M exploit".to_string(),
+            "Validate inputs before calculation, add bounds checking, use well-audited math libraries".to_string(),
+            false,
+        ).unwrap(),
 
-    // ===========================================
-    // GOVERNANCE ATTACK PATTERNS
-    // ===========================================
+        // ===========================================
+        // GOVERNANCE ATTACK PATTERNS
+        // ===========================================
 
-    // Voting without timelock
-    rules.push(
+        // Voting without timelock
         VulnerabilityRule::new(
             VulnerabilityCategory::GovernanceAttack,
             VulnerabilitySeverity::High,
@@ -2737,10 +2658,8 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             false,
         )
         .unwrap(),
-    );
 
-    // Emergency functions bypassing governance
-    rules.push(
+        // Emergency functions bypassing governance
         VulnerabilityRule::new(
             VulnerabilityCategory::GovernanceAttack,
             VulnerabilitySeverity::High,
@@ -2752,10 +2671,8 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             false,
         )
         .unwrap(),
-    );
 
-    // Quorum not checked
-    rules.push(
+        // Quorum not checked
         VulnerabilityRule::new(
             VulnerabilityCategory::GovernanceAttack,
             VulnerabilitySeverity::Medium,
@@ -2767,14 +2684,12 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             false,
         )
         .unwrap(),
-    );
 
-    // ===========================================
-    // LIQUIDITY MANIPULATION PATTERNS
-    // ===========================================
+        // ===========================================
+        // LIQUIDITY MANIPULATION PATTERNS
+        // ===========================================
 
-    // Unprotected addLiquidity
-    rules.push(
+        // Unprotected addLiquidity
         VulnerabilityRule::new(
             VulnerabilityCategory::LiquidityManipulation,
             VulnerabilitySeverity::High,
@@ -2787,20 +2702,23 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             false,
         )
         .unwrap(),
-    );
 
-    // REMOVED: "LP Token Manipulation in Single Transaction" (mint.*burn dotall regex).
-    // In multiline mode this matched any FILE containing both words "mint" and "burn"
-    // anywhere — including comments and standard token/bridge contracts that legitimately
-    // mint and burn (24 Critical false positives on OpenZeppelin bridges/wrappers).
-    // Flash-LP attacks are covered by the first-depositor and flash-loan rules.
+        // REMOVED: "LP Token Manipulation in Single Transaction" (mint.*burn dotall regex).
+        // In multiline mode this matched any FILE containing both words "mint" and "burn"
+        // anywhere — including comments and standard token/bridge contracts that legitimately
+        // mint and burn (24 Critical false positives on OpenZeppelin bridges/wrappers).
+        // Flash-LP attacks are covered by the first-depositor and flash-loan rules.
 
-    // First depositor/LP attack vector
-    rules.push(
+        // First depositor/LP attack vector
         VulnerabilityRule::new(
             VulnerabilityCategory::LiquidityManipulation,
             VulnerabilitySeverity::Critical,
-            r"totalSupply\s*==\s*0.*mint|if\s*\(\s*totalSupply\s*==\s*0\s*\)",
+            // `|` binds looser than concatenation, so the second branch stood alone and
+            // fired Critical on EVERY `if (totalSupply == 0)` -- including vaults that
+            // are correctly mitigated with a virtual-shares offset. Keep only the first
+            // branch's intent (a zero-supply special case that mints) and bound the gap
+            // (`.*` crossed newlines to the last `mint` in the file under `(?s)`).
+            r"totalSupply\s*==\s*0[\s\S]{0,400}?\b_?mint\s*\(",
             "First Depositor Attack Vector".to_string(),
             "First deposit special case can be exploited to steal subsequent deposits".to_string(),
             "Mint initial shares to address(0) or use virtual shares offset (e.g., 1e3)"
@@ -2808,14 +2726,12 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             true,
         )
         .unwrap(),
-    );
 
-    // ===========================================
-    // BRIDGE VULNERABILITY PATTERNS
-    // ===========================================
+        // ===========================================
+        // BRIDGE VULNERABILITY PATTERNS
+        // ===========================================
 
-    // Cross-chain message without source verification
-    rules.push(
+        // Cross-chain message without source verification
         VulnerabilityRule::new(
             VulnerabilityCategory::BridgeVulnerability,
             VulnerabilitySeverity::Critical,
@@ -2828,21 +2744,19 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             false,
         )
         .unwrap(),
-    );
 
-    // Bridge withdraw without proof verification
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::BridgeVulnerability,
-        VulnerabilitySeverity::Critical,
-        r"function\s+\w*(claim|withdraw|redeem)\w*\([^)]*bytes\s+(calldata\s+)?proof[^)]*\)",
-        "Bridge Proof Verification".to_string(),
-        "Bridge claim function with proof parameter - verify Merkle/signature proof thoroughly".to_string(),
-        "Use well-audited proof verification, check for replay (mark claimed), validate amounts".to_string(),
-        false,
-    ).unwrap());
+        // Bridge withdraw without proof verification
+        VulnerabilityRule::new(
+            VulnerabilityCategory::BridgeVulnerability,
+            VulnerabilitySeverity::Critical,
+            r"function\s+\w*(claim|withdraw|redeem)\w*\([^)]*bytes\s+(calldata\s+)?proof[^)]*\)",
+            "Bridge Proof Verification".to_string(),
+            "Bridge claim function with proof parameter - verify Merkle/signature proof thoroughly".to_string(),
+            "Use well-audited proof verification, check for replay (mark claimed), validate amounts".to_string(),
+            false,
+        ).unwrap(),
 
-    // LayerZero/Wormhole/Axelar integration
-    rules.push(
+        // LayerZero/Wormhole/Axelar integration
         VulnerabilityRule::new(
             VulnerabilityCategory::BridgeVulnerability,
             VulnerabilitySeverity::High,
@@ -2855,10 +2769,8 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             false,
         )
         .unwrap(),
-    );
 
-    // Bridge relayer trust
-    rules.push(
+        // Bridge relayer trust
         VulnerabilityRule::new(
             VulnerabilityCategory::BridgeVulnerability,
             VulnerabilitySeverity::High,
@@ -2871,18 +2783,18 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             false,
         )
         .unwrap(),
-    );
 
-    // ===========================================
-    // ENHANCED ACCESS CONTROL (OWASP #1 - $953M)
-    // ===========================================
+        // ===========================================
+        // ENHANCED ACCESS CONTROL (OWASP #1 - $953M)
+        // ===========================================
 
-    // Function selector collision risk
-    rules.push(
+        // Function selector collision risk
         VulnerabilityRule::new(
             VulnerabilityCategory::AccessControl,
             VulnerabilitySeverity::High,
-            r"fallback\s*\(\s*\)\s*external.*delegatecall",
+            // Bounded: the delegatecall belongs to the fallback body. `.*` under `(?s)`
+            // reached the last delegatecall in the file.
+            r"fallback\s*\(\s*\)\s*external[\s\S]{0,400}?delegatecall",
             "Fallback Delegatecall - Selector Collision Risk".to_string(),
             "Fallback with delegatecall allows calling any function via selector collision"
                 .to_string(),
@@ -2890,10 +2802,8 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             true,
         )
         .unwrap(),
-    );
 
-    // Unprotected initializer (proxy pattern)
-    rules.push(
+        // Unprotected initializer (proxy pattern)
         VulnerabilityRule::new(
             VulnerabilityCategory::AccessControl,
             VulnerabilitySeverity::Critical,
@@ -2905,10 +2815,8 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             false,
         )
         .unwrap(),
-    );
 
-    // tx.origin for authentication
-    rules.push(
+        // tx.origin for authentication
         VulnerabilityRule::new(
             VulnerabilityCategory::AccessControl,
             VulnerabilitySeverity::Critical,
@@ -2919,10 +2827,8 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             false,
         )
         .unwrap(),
-    );
 
-    // Missing two-step ownership transfer
-    rules.push(
+        // Missing two-step ownership transfer
         VulnerabilityRule::new(
             VulnerabilityCategory::AccessControl,
             VulnerabilitySeverity::Medium,
@@ -2933,20 +2839,21 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             false,
         )
         .unwrap(),
-    );
 
-    // ===========================================
-    // RESEARCH PAPER VULNERABILITIES
-    // From: "Security Analysis of DeFi" (arXiv:2205.09524v1)
-    // ===========================================
+        // ===========================================
+        // RESEARCH PAPER VULNERABILITIES
+        // From: "Security Analysis of DeFi" (arXiv:2205.09524v1)
+        // ===========================================
 
-    // Strict Balance Equality (SWC-132) - Table I from paper
-    // Can be bypassed via selfdestruct forcing ETH into contract
-    rules.push(
+        // Strict Balance Equality (SWC-132) - Table I from paper
+        // Can be bypassed via selfdestruct forcing ETH into contract
         VulnerabilityRule::new(
             VulnerabilityCategory::StrictBalanceEquality,
             VulnerabilitySeverity::Medium,
-            r"(require|if)\s*\([^)]*\.balance\s*==\s*\d+|\.balance\s*==\s*\w+",
+            // Top-level `|` made the second branch stand alone, matching any
+            // `.balance == x` anywhere and rendering the first branch dead. Also
+            // `[^)]*` could not reach past the `)` of `address(this).balance`.
+            r"(?:require|assert|if|while)\s*\([^;{}]*\.balance\s*==\s*\w+",
             "Strict Balance Equality Check (SWC-132)".to_string(),
             "Using strict equality (==) for balance checks can be bypassed via selfdestruct"
                 .to_string(),
@@ -2954,11 +2861,9 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             false,
         )
         .unwrap(),
-    );
 
-    // Misleading Data Location - Table I from paper
-    // Incorrect storage/memory type can lead to data corruption
-    rules.push(
+        // Misleading Data Location - Table I from paper
+        // Incorrect storage/memory type can lead to data corruption
         VulnerabilityRule::new(
             VulnerabilityCategory::MisleadingDataLocation,
             VulnerabilitySeverity::High,
@@ -2970,103 +2875,101 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             false,
         )
         .unwrap(),
-    );
 
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::MisleadingDataLocation,
-        VulnerabilitySeverity::Medium,
-        r"\w+\[\]\s+memory\s+\w+\s*=\s*\w+\s*;",
-        "Potential Storage to Memory Copy".to_string(),
-        "Copying storage array to memory creates independent copy - modifications won't persist".to_string(),
-        "Use storage reference if you need to modify the original array".to_string(),
-        false,
-    ).unwrap());
+        VulnerabilityRule::new(
+            VulnerabilityCategory::MisleadingDataLocation,
+            VulnerabilitySeverity::Medium,
+            r"\w+\[\]\s+memory\s+\w+\s*=\s*\w+\s*;",
+            "Potential Storage to Memory Copy".to_string(),
+            "Copying storage array to memory creates independent copy - modifications won't persist".to_string(),
+            "Use storage reference if you need to modify the original array".to_string(),
+            false,
+        ).unwrap(),
 
-    // REMOVED: "Conditional Without Return in All Paths" (MissingReturnValue).
-    // Determining whether all code paths return requires control-flow analysis; a regex
-    // with [^}]* cannot handle nested braces and matched nearly every function containing
-    // an if-block (76 false positives on OpenZeppelin alone, ~0 true positives).
+        // REMOVED: "Conditional Without Return in All Paths" (MissingReturnValue).
+        // Determining whether all code paths return requires control-flow analysis; a regex
+        // with [^}]* cannot handle nested braces and matched nearly every function containing
+        // an if-block (76 false positives on OpenZeppelin alone, ~0 true positives).
 
-    // REMOVED: "Payable Receive/Fallback" flagged every receive()/fallback() as a greedy
-    // contract risk. Checking if a withdraw mechanism exists requires cross-function analysis
-    // that single-line regex cannot do. This generated noise for all payable contracts.
+        // REMOVED: "Payable Receive/Fallback" flagged every receive()/fallback() as a greedy
+        // contract risk. Checking if a withdraw mechanism exists requires cross-function analysis
+        // that single-line regex cannot do. This generated noise for all payable contracts.
 
-    // REMOVED: "DeFi Function Without Pause Check" regex rule.
-    // Duplicated the detect_missing_emergency_stop() in advanced_analysis.rs which
-    // already reports once per contract (with break) and checks for Pausable pattern.
-    // The regex version fired per-function, generating 15+ findings on a single contract.
+        // REMOVED: "DeFi Function Without Pause Check" regex rule.
+        // Duplicated the detect_missing_emergency_stop() in advanced_analysis.rs which
+        // already reports once per contract (with break) and checks for Pausable pattern.
+        // The regex version fired per-function, generating 15+ findings on a single contract.
 
-    // ERC-777 Callback Reentrancy (dForce $24M attack) - Section IV.3 of paper
-    // tokensReceived/tokensToSend hooks enable reentrancy
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::ERC777CallbackReentrancy,
-        VulnerabilitySeverity::Critical,
-        r"IERC777|ERC777|tokensReceived|tokensToSend|ERC777TokensSender|ERC777TokensRecipient",
-        "ERC-777 Token Integration (dForce Attack Pattern)".to_string(),
-        "ERC-777 tokens have callback hooks that can enable reentrancy attacks ($24M dForce exploit)".to_string(),
-        "Use ReentrancyGuard on all ERC-777 interactions, follow checks-effects-interactions".to_string(),
-        false,
-    ).unwrap());
+        // ERC-777 Callback Reentrancy (dForce $24M attack) - Section IV.3 of paper
+        // tokensReceived/tokensToSend hooks enable reentrancy
+        VulnerabilityRule::new(
+            VulnerabilityCategory::ERC777CallbackReentrancy,
+            VulnerabilitySeverity::Critical,
+            r"IERC777|ERC777|tokensReceived|tokensToSend|ERC777TokensSender|ERC777TokensRecipient",
+            "ERC-777 Token Integration (dForce Attack Pattern)".to_string(),
+            "ERC-777 tokens have callback hooks that can enable reentrancy attacks ($24M dForce exploit)".to_string(),
+            "Use ReentrancyGuard on all ERC-777 interactions, follow checks-effects-interactions".to_string(),
+            false,
+        ).unwrap(),
 
-    // DepositFor Reentrancy (Grim Finance $30M attack) - Section IV.3 of paper
-    // depositFor pattern with callbacks before state update
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::DepositForReentrancy,
-        VulnerabilitySeverity::Critical,
-        r"function\s+depositFor\s*\([^)]*address\s+\w+[^)]*\)\s+(external|public)",
-        "DepositFor Pattern (Grim Finance Attack)".to_string(),
-        "depositFor functions can be exploited via callback reentrancy ($30M Grim Finance exploit)".to_string(),
-        "Add ReentrancyGuard, validate input address, update state before external calls".to_string(),
-        false,
-    ).unwrap());
+        // DepositFor Reentrancy (Grim Finance $30M attack) - Section IV.3 of paper
+        // depositFor pattern with callbacks before state update
+        VulnerabilityRule::new(
+            VulnerabilityCategory::DepositForReentrancy,
+            VulnerabilitySeverity::Critical,
+            r"function\s+depositFor\s*\([^)]*address\s+\w+[^)]*\)\s+(external|public)",
+            "DepositFor Pattern (Grim Finance Attack)".to_string(),
+            "depositFor functions can be exploited via callback reentrancy ($30M Grim Finance exploit)".to_string(),
+            "Add ReentrancyGuard, validate input address, update state before external calls".to_string(),
+            false,
+        ).unwrap(),
 
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::DepositForReentrancy,
-        VulnerabilitySeverity::High,
-        r"function\s+deposit\s*\([^)]*address\s+(to|recipient|receiver|beneficiary)\w*[^)]*\)",
-        "Deposit Function with Recipient Address".to_string(),
-        "Deposit function with external recipient can be exploited via callback if recipient is contract".to_string(),
-        "Add nonReentrant modifier and validate recipient address".to_string(),
-        false,
-    ).unwrap());
+        VulnerabilityRule::new(
+            VulnerabilityCategory::DepositForReentrancy,
+            VulnerabilitySeverity::High,
+            r"function\s+deposit\s*\([^)]*address\s+(to|recipient|receiver|beneficiary)\w*[^)]*\)",
+            "Deposit Function with Recipient Address".to_string(),
+            "Deposit function with external recipient can be exploited via callback if recipient is contract".to_string(),
+            "Add nonReentrant modifier and validate recipient address".to_string(),
+            false,
+        ).unwrap(),
 
-    // Double Claiming Attack (Popsicle Finance $25M) - Section IV.5 of paper
-    // Only flag external/public claim functions (not internal helpers)
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::DoubleClaiming,
-        VulnerabilitySeverity::High,
-        r"function\s+\w*(claim|harvest|getReward|collectFees)\w*\s*\([^)]*\)\s+(external|public)",
-        "Reward Claiming Function (Popsicle Finance Pattern)".to_string(),
-        "Reward claiming without transfer lockout can enable double-claiming attacks ($25M Popsicle Finance)".to_string(),
-        "Track claimed amounts per address, use claimable mapping that resets on transfer".to_string(),
-        false,
-    ).unwrap());
+        // Double Claiming Attack (Popsicle Finance $25M) - Section IV.5 of paper
+        // Only flag external/public claim functions (not internal helpers)
+        VulnerabilityRule::new(
+            VulnerabilityCategory::DoubleClaiming,
+            VulnerabilitySeverity::High,
+            r"function\s+\w*(claim|harvest|getReward|collectFees)\w*\s*\([^)]*\)\s+(external|public)",
+            "Reward Claiming Function (Popsicle Finance Pattern)".to_string(),
+            "Reward claiming without transfer lockout can enable double-claiming attacks ($25M Popsicle Finance)".to_string(),
+            "Track claimed amounts per address, use claimable mapping that resets on transfer".to_string(),
+            false,
+        ).unwrap(),
 
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::DoubleClaiming,
-        VulnerabilitySeverity::High,
-        r"balanceOf\s*\(\s*msg\.sender\s*\)\s*\*\s*\w*(reward|fee)|reward\w*\s*\*\s*balanceOf",
-        "Reward Calculation Based on Balance".to_string(),
-        "Calculating rewards based on current balance without tracking is vulnerable to transfer-and-claim".to_string(),
-        "Use rewardDebt pattern: track claimed amounts and subtract from total rewards".to_string(),
-        false,
-    ).unwrap());
+        VulnerabilityRule::new(
+            VulnerabilityCategory::DoubleClaiming,
+            VulnerabilitySeverity::High,
+            r"balanceOf\s*\(\s*msg\.sender\s*\)\s*\*\s*\w*(reward|fee)|reward\w*\s*\*\s*balanceOf",
+            "Reward Calculation Based on Balance".to_string(),
+            "Calculating rewards based on current balance without tracking is vulnerable to transfer-and-claim".to_string(),
+            "Use rewardDebt pattern: track claimed amounts and subtract from total rewards".to_string(),
+            false,
+        ).unwrap(),
 
-    // Signature Verification Bypass (Wormhole $326M) - Section IV.5 of paper
-    // Incomplete signature verification allows message forgery
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::SignatureVerificationBypass,
-        VulnerabilitySeverity::Critical,
-        r"function\s+verify\w*[Ss]ignature\w*\s*\([^)]*\)\s+(external|public|internal)",
-        "Custom Signature Verification Function (Wormhole Pattern)".to_string(),
-        "Custom signature verification may be bypassable ($326M Wormhole exploit)".to_string(),
-        "Use well-audited libraries (OpenZeppelin ECDSA), verify signer address, check replay protection".to_string(),
-        false,
-    ).unwrap());
+        // Signature Verification Bypass (Wormhole $326M) - Section IV.5 of paper
+        // Incomplete signature verification allows message forgery
+        VulnerabilityRule::new(
+            VulnerabilityCategory::SignatureVerificationBypass,
+            VulnerabilitySeverity::Critical,
+            r"function\s+verify\w*[Ss]ignature\w*\s*\([^)]*\)\s+(external|public|internal)",
+            "Custom Signature Verification Function (Wormhole Pattern)".to_string(),
+            "Custom signature verification may be bypassable ($326M Wormhole exploit)".to_string(),
+            "Use well-audited libraries (OpenZeppelin ECDSA), verify signer address, check replay protection".to_string(),
+            false,
+        ).unwrap(),
 
-    // Note: ecrecover/ECDSA.recover validation is handled by advanced_analysis.rs
-    // with context-aware checking for require() statements
-    rules.push(
+        // Note: ecrecover/ECDSA.recover validation is handled by advanced_analysis.rs
+        // with context-aware checking for require() statements
         VulnerabilityRule::new(
             VulnerabilityCategory::SignatureVerificationBypass,
             VulnerabilitySeverity::Medium,
@@ -3077,9 +2980,7 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             false,
         )
         .unwrap(),
-    );
 
-    rules.push(
         VulnerabilityRule::new(
             VulnerabilityCategory::SignatureVerificationBypass,
             VulnerabilitySeverity::Medium,
@@ -3090,47 +2991,53 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             false,
         )
         .unwrap(),
-    );
 
-    // FN-1: msg.value used in a loop (CRITICAL) - Logic bug, not arithmetic
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::LogicError,
-        VulnerabilitySeverity::Critical,
-        // [^}]* keeps the match inside the loop's own block: a `msg.value` that appears
-        // after any closing brace (i.e. outside the loop or in a later function) no
-        // longer matches. Conservative for nested blocks, but eliminates cross-function FPs.
-        r"(for|while)\s*\([^)]*\)\s*\{[^}]*msg\.value",
-        "msg.value Reused in Loop".to_string(),
-        "msg.value is constant across loop iterations - each iteration uses the full value, not a fraction".to_string(),
-        "Track total sent and decrement from msg.value, or use a separate amount per iteration".to_string(),
-        true,
-    ).unwrap());
+        // FN-1: msg.value used in a loop (CRITICAL) - Logic bug, not arithmetic
+        VulnerabilityRule::new(
+            VulnerabilityCategory::LogicError,
+            VulnerabilitySeverity::Critical,
+            // [^}]* keeps the match inside the loop's own block: a `msg.value` that appears
+            // after any closing brace (i.e. outside the loop or in a later function) no
+            // longer matches. Conservative for nested blocks, but eliminates cross-function FPs.
+            r"(for|while)\s*\([^)]*\)\s*\{[^}]*msg\.value",
+            "msg.value Reused in Loop".to_string(),
+            "msg.value is constant across loop iterations - each iteration uses the full value, not a fraction".to_string(),
+            "Track total sent and decrement from msg.value, or use a separate amount per iteration".to_string(),
+            true,
+        ).unwrap(),
 
-    // FN-2: isContract/extcodesize bypass during construction
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::InputValidationFailure,
-        VulnerabilitySeverity::High,
-        r"isContract\s*\(|\.code\.length\s*(==|>)\s*0|extcodesize\s*\(",
-        "Contract Check Bypassable During Construction".to_string(),
-        "isContract()/extcodesize returns 0 during constructor execution - attacker contracts can bypass this check".to_string(),
-        "Do not rely on isContract() for security. Use msg.sender == tx.origin for EOA checks or implement whitelisting".to_string(),
-        false,
-    ).unwrap());
+        // FN-2: isContract/extcodesize bypass during construction.
+        //
+        // Scoped to the *caller*. A code-size check only carries this weakness when it
+        // gates access ("EOAs only"), which means it tests `msg.sender`/`tx.origin`:
+        // an attacker bypasses it by acting from a constructor. The same check applied to
+        // a parameter is almost always asking a different question -- "does this token
+        // exist?", "should I invoke the receiver hook?" -- and is not a bug. Matching any
+        // `.code.length` produced 11 findings across OpenZeppelin, all of them the benign
+        // parameter form.
+        VulnerabilityRule::new(
+            VulnerabilityCategory::InputValidationFailure,
+            VulnerabilitySeverity::High,
+            r"isContract\s*\(\s*(?:msg\.sender|tx\.origin)\s*\)|(?:msg\.sender|tx\.origin)\.code\.length\s*(==|>)\s*0|extcodesize\s*\(\s*(?:caller\(\)|msg\.sender|tx\.origin)\s*\)",
+            "Contract Check Bypassable During Construction".to_string(),
+            "isContract()/extcodesize returns 0 during constructor execution - attacker contracts can bypass this check".to_string(),
+            "Do not rely on isContract() for security. Use msg.sender == tx.origin for EOA checks or implement whitelisting".to_string(),
+            false,
+        ).unwrap(),
 
-    // FN-3: Return bomb attack - unbounded return data capture
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::LowLevelCalls,
-        VulnerabilitySeverity::Medium,
-        r"\(bool\s+\w+,\s*bytes\s+memory\s+\w+\)\s*=\s*\w+\.(call|delegatecall|staticcall)",
-        "Return Bomb Risk - Unbounded Return Data".to_string(),
-        "Capturing full return data from external calls allows callee to return enormous data, consuming all gas in memory expansion".to_string(),
-        "Use assembly to limit return data size, or use `(bool success, ) = addr.call(...)` if return data is not needed".to_string(),
-        false,
-    ).unwrap());
+        // FN-3: Return bomb attack - unbounded return data capture
+        VulnerabilityRule::new(
+            VulnerabilityCategory::LowLevelCalls,
+            VulnerabilitySeverity::Medium,
+            r"\(bool\s+\w+,\s*bytes\s+memory\s+\w+\)\s*=\s*\w+\.(call|delegatecall|staticcall)",
+            "Return Bomb Risk - Unbounded Return Data".to_string(),
+            "Capturing full return data from external calls allows callee to return enormous data, consuming all gas in memory expansion".to_string(),
+            "Use assembly to limit return data size, or use `(bool success, ) = addr.call(...)` if return data is not needed".to_string(),
+            false,
+        ).unwrap(),
 
-    // FN-4: Unchecked ERC20 transfer (2 args = token transfer, not payable)
-    // Match both `token.transfer(to, amount)` and `IERC20(token).transfer(to, amount)`
-    rules.push(
+        // FN-4: Unchecked ERC20 transfer (2 args = token transfer, not payable)
+        // Match both `token.transfer(to, amount)` and `IERC20(token).transfer(to, amount)`
         VulnerabilityRule::new(
             VulnerabilityCategory::UnusedReturnValues,
             VulnerabilitySeverity::Medium,
@@ -3142,280 +3049,335 @@ pub fn create_vulnerability_rules() -> Vec<VulnerabilityRule> {
             false,
         )
         .unwrap(),
-    );
 
-    // ====================================================================
-    // Security Hardening Rules (v0.6.0) - New Detections
-    // ====================================================================
+        // ====================================================================
+        // Security Hardening Rules (v0.6.0) - New Detections
+        // ====================================================================
 
-    // REMOVED: 41S-050 regex variant of "Missing Storage Gap". It fired on every
-    // `contract X is ...Upgradeable...` line without ever checking whether __gap (or
-    // ERC-7201 namespaced storage) is present. detect_storage_collision_proxy() in
-    // advanced_analysis.rs performs the same detection with the __gap check.
+        // REMOVED: 41S-050 regex variant of "Missing Storage Gap". It fired on every
+        // `contract X is ...Upgradeable...` line without ever checking whether __gap (or
+        // ERC-7201 namespaced storage) is present. detect_storage_collision_proxy() in
+        // advanced_analysis.rs performs the same detection with the __gap check.
 
-    // 41S-052: selfdestruct deprecation (EIP-6780)
-    // Post-Dencun, selfdestruct only sends ETH without destroying the contract
-    // except during the same transaction as creation. Using it is misleading.
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::SelfdestructDeprecation,
-        VulnerabilitySeverity::High,
-        r"\bselfdestruct\s*\(|\.selfdestruct\s*\(",
-        "Deprecated selfdestruct Usage (EIP-6780)".to_string(),
-        "selfdestruct is deprecated and restricted post-Dencun (EIP-6780). It no longer destroys contract code/storage except during the same creation transaction.".to_string(),
-        "Remove selfdestruct. Use withdraw patterns for fund recovery. For upgradeable contracts, use the proxy upgrade pattern instead.".to_string(),
-        false,
-    ).unwrap());
+        // 41S-052: selfdestruct deprecation (EIP-6780)
+        // Post-Dencun, selfdestruct only sends ETH without destroying the contract
+        // except during the same transaction as creation. Using it is misleading.
+        VulnerabilityRule::new(
+            VulnerabilityCategory::SelfdestructDeprecation,
+            VulnerabilitySeverity::High,
+            r"\bselfdestruct\s*\(|\.selfdestruct\s*\(",
+            "Deprecated selfdestruct Usage (EIP-6780)".to_string(),
+            "selfdestruct is deprecated and restricted post-Dencun (EIP-6780). It no longer destroys contract code/storage except during the same creation transaction.".to_string(),
+            "Remove selfdestruct. Use withdraw patterns for fund recovery. For upgradeable contracts, use the proxy upgrade pattern instead.".to_string(),
+            false,
+        ).unwrap(),
 
-    // 41S-053: Uninitialized implementation contract
-    // If a proxy's implementation contract isn't initialized, an attacker can
-    // call initialize() on the implementation directly and potentially take control.
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::UninitializedImplementation,
-        VulnerabilitySeverity::Critical,
-        r"function\s+initialize\s*\([^)]*\)\s*(?:external|public)\s+initializer",
-        "Potentially Uninitialized Implementation".to_string(),
-        "Implementation contracts behind proxies must be initialized in the constructor to prevent attackers from calling initialize() directly.".to_string(),
-        "Add `_disableInitializers()` in the constructor, or use `/// @custom:oz-upgrades-unsafe-allow constructor` with a constructor that calls `_disableInitializers()`.".to_string(),
-        false,
-    ).unwrap());
+        // 41S-053: Uninitialized implementation contract
+        // If a proxy's implementation contract isn't initialized, an attacker can
+        // call initialize() on the implementation directly and potentially take control.
+        VulnerabilityRule::new(
+            VulnerabilityCategory::UninitializedImplementation,
+            VulnerabilitySeverity::Critical,
+            r"function\s+initialize\s*\([^)]*\)\s*(?:external|public)\s+initializer",
+            "Potentially Uninitialized Implementation".to_string(),
+            "Implementation contracts behind proxies must be initialized in the constructor to prevent attackers from calling initialize() directly.".to_string(),
+            "Add `_disableInitializers()` in the constructor, or use `/// @custom:oz-upgrades-unsafe-allow constructor` with a constructor that calls `_disableInitializers()`.".to_string(),
+            false,
+        ).unwrap(),
 
-    // 41S-054: Unsafe integer downcast
-    // Casting uint256 to a smaller type silently truncates in Solidity < 0.8.0.
-    // Even in 0.8+, explicit casts like uint128(x) silently truncate.
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::UnsafeDowncast,
-        VulnerabilitySeverity::Medium,
-        r"\b(?:uint(?:8|16|24|32|48|64|96|128|160|192|224)|int(?:8|16|24|32|48|64|96|128|160|192|224))\s*\(\s*\w+\s*\)",
-        "Unsafe Integer Downcast".to_string(),
-        "Casting to a smaller integer type silently truncates the value, potentially causing incorrect calculations or loss of funds.".to_string(),
-        "Use OpenZeppelin's SafeCast library (e.g., toUint128()) which reverts on overflow, or add explicit range validation.".to_string(),
-        false,
-    ).unwrap());
+        // 41S-054: Unsafe integer downcast
+        // Casting uint256 to a smaller type silently truncates in Solidity < 0.8.0.
+        // Even in 0.8+, explicit casts like uint128(x) silently truncate.
+        VulnerabilityRule::new(
+            VulnerabilityCategory::UnsafeDowncast,
+            VulnerabilitySeverity::Medium,
+            r"\b(?:uint(?:8|16|24|32|48|64|96|128|160|192|224)|int(?:8|16|24|32|48|64|96|128|160|192|224))\s*\(\s*\w+\s*\)",
+            "Unsafe Integer Downcast".to_string(),
+            "Casting to a smaller integer type silently truncates the value, potentially causing incorrect calculations or loss of funds.".to_string(),
+            "Use OpenZeppelin's SafeCast library (e.g., toUint128()) which reverts on overflow, or add explicit range validation.".to_string(),
+            false,
+        ).unwrap(),
 
-    // 41S-056: Missing deadline in swap functions
-    // DEX swap functions without a deadline parameter are vulnerable to
-    // transaction sitting in the mempool and being executed at an unfavorable time.
-    // Note: Context filtering in scanner.rs checks for deadline in function body.
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::MissingSwapDeadline,
-        VulnerabilitySeverity::Medium,
-        r"function\s+\w*(?:swap|Swap)\w*\s*\([^)]*\)\s*(?:external|public)",
-        "Missing Deadline Parameter in Swap Function".to_string(),
-        "Swap functions without a deadline parameter allow transactions to sit in the mempool indefinitely and be executed at an unfavorable time.".to_string(),
-        "Add a `uint256 deadline` parameter and validate with `require(block.timestamp <= deadline)`.".to_string(),
-        false,
-    ).unwrap());
+        // 41S-056: Missing deadline in swap functions
+        // DEX swap functions without a deadline parameter are vulnerable to
+        // transaction sitting in the mempool and being executed at an unfavorable time.
+        // Note: Context filtering in scanner.rs checks for deadline in function body.
+        VulnerabilityRule::new(
+            VulnerabilityCategory::MissingSwapDeadline,
+            VulnerabilitySeverity::Medium,
+            r"function\s+\w*(?:swap|Swap)\w*\s*\([^)]*\)\s*(?:external|public)",
+            "Missing Deadline Parameter in Swap Function".to_string(),
+            "Swap functions without a deadline parameter allow transactions to sit in the mempool indefinitely and be executed at an unfavorable time.".to_string(),
+            "Add a `uint256 deadline` parameter and validate with `require(block.timestamp <= deadline)`.".to_string(),
+            false,
+        ).unwrap(),
 
-    // 41S-057: Hardcoded gas amount in external calls
-    // Hardcoded gas values break when EVM gas costs change (e.g., Istanbul, Berlin).
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::HardcodedGasAmount,
-        VulnerabilitySeverity::Medium,
-        r"\.call\{[^}]*gas\s*:\s*\d+",
-        "Hardcoded Gas Amount in External Call".to_string(),
-        "Hardcoded gas values may break after EVM upgrades that change opcode gas costs (e.g., EIP-1884 in Istanbul, EIP-2929 in Berlin).".to_string(),
-        "Avoid hardcoding gas amounts. Forward all available gas or use a configurable gas parameter.".to_string(),
-        false,
-    ).unwrap());
+        // 41S-057: Hardcoded gas amount in external calls
+        // Hardcoded gas values break when EVM gas costs change (e.g., Istanbul, Berlin).
+        VulnerabilityRule::new(
+            VulnerabilityCategory::HardcodedGasAmount,
+            VulnerabilitySeverity::Medium,
+            r"\.call\{[^}]*gas\s*:\s*\d+",
+            "Hardcoded Gas Amount in External Call".to_string(),
+            "Hardcoded gas values may break after EVM upgrades that change opcode gas costs (e.g., EIP-1884 in Istanbul, EIP-2929 in Berlin).".to_string(),
+            "Avoid hardcoding gas amounts. Forward all available gas or use a configurable gas parameter.".to_string(),
+            false,
+        ).unwrap(),
 
-    // 41S-058: address.transfer() with 2300 gas stipend
-    // .transfer() and .send() only forward 2300 gas which may not be enough
-    // if the recipient is a contract with a receive/fallback function.
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::UnsafeTransferGas,
-        VulnerabilitySeverity::Low,
-        r"\.\s*transfer\s*\(\s*[^,)]+\s*\)\s*;",
-        "Low Gas Stipend with .transfer()".to_string(),
-        "address.transfer() forwards only 2300 gas, which can cause failures if the recipient is a contract with logic in receive/fallback (especially after EIP-1884 gas cost changes).".to_string(),
-        "Use `.call{value: amount}(\"\")` with proper return value checking instead of `.transfer()`.".to_string(),
-        false,
-    ).unwrap());
+        // 41S-058: address.transfer() with 2300 gas stipend
+        // .transfer() and .send() only forward 2300 gas which may not be enough
+        // if the recipient is a contract with a receive/fallback function.
+        VulnerabilityRule::new(
+            VulnerabilityCategory::UnsafeTransferGas,
+            VulnerabilitySeverity::Low,
+            r"\.\s*transfer\s*\(\s*[^,)]+\s*\)\s*;",
+            "Low Gas Stipend with .transfer()".to_string(),
+            "address.transfer() forwards only 2300 gas, which can cause failures if the recipient is a contract with logic in receive/fallback (especially after EIP-1884 gas cost changes).".to_string(),
+            "Use `.call{value: amount}(\"\")` with proper return value checking instead of `.transfer()`.".to_string(),
+            false,
+        ).unwrap(),
 
-    // 41S-059: Double initialization risk
-    // Contracts with initialize() that don't use the initializer modifier
-    // or Initializable pattern can be initialized multiple times.
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::DoubleInitialization,
-        VulnerabilitySeverity::Critical,
-        r"function\s+initialize\s*\([^)]*\)\s+(?:external|public)\s*(?:\{|returns)",
-        "Missing Initializer Modifier".to_string(),
-        "The initialize() function lacks the `initializer` modifier, allowing it to be called multiple times which can reset critical state.".to_string(),
-        "Add OpenZeppelin's `initializer` modifier: `function initialize(...) external initializer { ... }`".to_string(),
-        false,
-    ).unwrap());
+        // 41S-059: Double initialization risk
+        // Contracts with initialize() that don't use the initializer modifier
+        // or Initializable pattern can be initialized multiple times.
+        VulnerabilityRule::new(
+            VulnerabilityCategory::DoubleInitialization,
+            VulnerabilitySeverity::Critical,
+            r"function\s+initialize\s*\([^)]*\)\s+(?:external|public)\s*(?:\{|returns)",
+            "Missing Initializer Modifier".to_string(),
+            "The initialize() function lacks the `initializer` modifier, allowing it to be called multiple times which can reset critical state.".to_string(),
+            "Add OpenZeppelin's `initializer` modifier: `function initialize(...) external initializer { ... }`".to_string(),
+            false,
+        ).unwrap(),
 
-    // Missing events on critical state changes (detected per-line, filtered by context in scanner)
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::MissingEvents,
-        VulnerabilitySeverity::Low,
-        r"function\s+(set|update|change|modify)\w+\s*\([^)]*\)\s+(?:external|public)",
-        "Missing Event Emission on State Change".to_string(),
-        "State-changing function may not emit an event, making off-chain monitoring and auditing difficult.".to_string(),
-        "Emit an event at the end of every state-changing function for transparency and monitoring.".to_string(),
-        false,
-    ).unwrap());
+        // Missing events on critical state changes (detected per-line, filtered by context in scanner)
+        VulnerabilityRule::new(
+            VulnerabilityCategory::MissingEvents,
+            VulnerabilitySeverity::Low,
+            r"function\s+(set|update|change|modify)\w+\s*\([^)]*\)\s+(?:external|public)",
+            "Missing Event Emission on State Change".to_string(),
+            "State-changing function may not emit an event, making off-chain monitoring and auditing difficult.".to_string(),
+            "Emit an event at the end of every state-changing function for transparency and monitoring.".to_string(),
+            false,
+        ).unwrap(),
 
-    // ====================================================================
-    // 2026 Exploit Patterns (v0.9.0) - 41S-078..084
-    // ====================================================================
+        // ====================================================================
+        // 2026 Exploit Patterns (v0.9.0) - 41S-078..084
+        // ====================================================================
 
-    // 41S-078: ERC-4337 paymaster validation accepts any user op without nonce/replay guard
-    // Multiline because solc style commonly wraps `external` modifier onto its own line.
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::ERC4337PaymasterAbuse,
-        VulnerabilitySeverity::High,
-        r"function\s+validatePaymasterUserOp\s*\([^)]*\)[^{;]*(?:external|public)",
-        "ERC-4337 Paymaster Validation".to_string(),
-        "Paymaster validatePaymasterUserOp must enforce sender allowlist, signature freshness, and gas budget caps. Misconfigured paymasters have been drained by adversarial bundlers.".to_string(),
-        "Validate userOpHash against signed nonce, enforce per-sender daily budget, and revert on stale signatures (deadline). Pin verifying signer in storage.".to_string(),
-        true,
-    ).unwrap());
+        // 41S-078: ERC-4337 paymaster validation accepts any user op without nonce/replay guard
+        // Multiline because solc style commonly wraps `external` modifier onto its own line.
+        VulnerabilityRule::new(
+            VulnerabilityCategory::ERC4337PaymasterAbuse,
+            VulnerabilitySeverity::High,
+            r"function\s+validatePaymasterUserOp\s*\([^)]*\)[^{;]*(?:external|public)",
+            "ERC-4337 Paymaster Validation".to_string(),
+            "Paymaster validatePaymasterUserOp must enforce sender allowlist, signature freshness, and gas budget caps. Misconfigured paymasters have been drained by adversarial bundlers.".to_string(),
+            "Validate userOpHash against signed nonce, enforce per-sender daily budget, and revert on stale signatures (deadline). Pin verifying signer in storage.".to_string(),
+            true,
+        ).unwrap(),
 
-    // 41S-079: EIP-1271 isValidSignature without replay/nonce
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::EIP1271SignatureReplay,
-        VulnerabilitySeverity::High,
-        r"function\s+isValidSignature\s*\([^)]*bytes(?:32)?[^)]*,\s*bytes[^)]*\)\s+(?:external|public)\s+view",
-        "EIP-1271 Signature Without Nonce Tracking".to_string(),
-        "Smart-wallet isValidSignature returning MAGICVALUE without nonce or used-hash tracking allows the same signature to authorize repeat actions across protocols.".to_string(),
-        "Track consumed signature hashes (mapping(bytes32 => bool)) and require deadlines. Bind sigs to chainId+verifyingContract via EIP-712.".to_string(),
-        false,
-    ).unwrap());
+        // 41S-079: EIP-1271 isValidSignature without replay/nonce
+        VulnerabilityRule::new(
+            VulnerabilityCategory::EIP1271SignatureReplay,
+            VulnerabilitySeverity::High,
+            r"function\s+isValidSignature\s*\([^)]*bytes(?:32)?[^)]*,\s*bytes[^)]*\)\s+(?:external|public)\s+view",
+            "EIP-1271 Signature Without Nonce Tracking".to_string(),
+            "Smart-wallet isValidSignature returning MAGICVALUE without nonce or used-hash tracking allows the same signature to authorize repeat actions across protocols.".to_string(),
+            "Track consumed signature hashes (mapping(bytes32 => bool)) and require deadlines. Bind sigs to chainId+verifyingContract via EIP-712.".to_string(),
+            false,
+        ).unwrap(),
 
-    // 41S-080: Permit2 with unlimited (type(uint).max / max uint160) approval
-    // Use a wider span; the call site may include nested address(this), commas, etc.
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::Permit2UnlimitedApproval,
-        VulnerabilitySeverity::Medium,
-        r"(?i)permit2?\s*\.\s*approve\s*\([^;]*?type\s*\(\s*uint(?:160|256)?\s*\)\s*\.\s*max",
-        "Permit2 Unlimited Allowance".to_string(),
-        "Granting Permit2 a type(uint).max allowance bypasses the per-spender expiration model and converts a UX optimisation into a permanent drain primitive if any approved spender is compromised.".to_string(),
-        "Set finite amount with explicit expiration (uint48). Re-approve per-session rather than persisting infinite approval.".to_string(),
-        true,
-    ).unwrap());
+        // 41S-080: Permit2 with unlimited (type(uint).max / max uint160) approval
+        // Use a wider span; the call site may include nested address(this), commas, etc.
+        VulnerabilityRule::new(
+            VulnerabilityCategory::Permit2UnlimitedApproval,
+            VulnerabilitySeverity::Medium,
+            r"(?i)permit2?\s*\.\s*approve\s*\([^;]*?type\s*\(\s*uint(?:160|256)?\s*\)\s*\.\s*max",
+            "Permit2 Unlimited Allowance".to_string(),
+            "Granting Permit2 a type(uint).max allowance bypasses the per-spender expiration model and converts a UX optimisation into a permanent drain primitive if any approved spender is compromised.".to_string(),
+            "Set finite amount with explicit expiration (uint48). Re-approve per-session rather than persisting infinite approval.".to_string(),
+            true,
+        ).unwrap(),
 
-    // 41S-081: LRT re-hypothecation pattern - asset accounted twice
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::LRTRehypothecation,
-        VulnerabilitySeverity::High,
-        r"(?i)function\s+\w*(?:restake|delegate|deposit)\w*\s*\([^)]*\)\s+(?:external|public)[^{]*\{[^}]*(?:totalAssets|totalSupply|totalShares)\s*\+=",
-        "Possible LRT Re-Hypothecation".to_string(),
-        "Liquid restaking deposits that increment totalAssets/totalShares without a withdrawal queue or per-operator cap allow the same collateral to back multiple AVS commitments. EigenLayer-style accounting must net out outstanding obligations.".to_string(),
-        "Track delegated-amount per operator separately, require withdrawal queue with delay, and validate (totalAssets - delegated) >= pendingRedemptions.".to_string(),
-        true,
-    ).unwrap());
+        // 41S-081: LRT re-hypothecation pattern - asset accounted twice
+        VulnerabilityRule::new(
+            VulnerabilityCategory::LRTRehypothecation,
+            VulnerabilitySeverity::High,
+            r"(?i)function\s+\w*(?:restake|delegate|deposit)\w*\s*\([^)]*\)\s+(?:external|public)[^{]*\{[^}]*(?:totalAssets|totalSupply|totalShares)\s*\+=",
+            "Possible LRT Re-Hypothecation".to_string(),
+            "Liquid restaking deposits that increment totalAssets/totalShares without a withdrawal queue or per-operator cap allow the same collateral to back multiple AVS commitments. EigenLayer-style accounting must net out outstanding obligations.".to_string(),
+            "Track delegated-amount per operator separately, require withdrawal queue with delay, and validate (totalAssets - delegated) >= pendingRedemptions.".to_string(),
+            true,
+        ).unwrap(),
 
-    // 41S-082: Storage layout collision in upgradeable contracts (inheritance reorder)
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::StorageLayoutCollision,
-        VulnerabilitySeverity::High,
-        r"contract\s+\w+\s+is\s+[A-Za-z_][A-Za-z0-9_]*(?:\s*,\s*[A-Za-z_][A-Za-z0-9_]*){2,}[^{]*Upgradeable",
-        "Upgradeable Storage Layout Risk".to_string(),
-        "Multi-inheritance upgradeable contracts must keep the inheritance order stable across upgrades. Inserting or reordering parents shifts storage slots and corrupts state.".to_string(),
-        "Pin inheritance order, add per-base __gap[50], and run `forge inspect storage-layout` diff in CI between versions.".to_string(),
-        false,
-    ).unwrap());
+        // 41S-082: Storage layout collision in upgradeable contracts (inheritance reorder)
+        VulnerabilityRule::new(
+            VulnerabilityCategory::StorageLayoutCollision,
+            VulnerabilitySeverity::High,
+            r"contract\s+\w+\s+is\s+[A-Za-z_][A-Za-z0-9_]*(?:\s*,\s*[A-Za-z_][A-Za-z0-9_]*){2,}[^{]*Upgradeable",
+            "Upgradeable Storage Layout Risk".to_string(),
+            "Multi-inheritance upgradeable contracts must keep the inheritance order stable across upgrades. Inserting or reordering parents shifts storage slots and corrupts state.".to_string(),
+            "Pin inheritance order, add per-base __gap[50], and run `forge inspect storage-layout` diff in CI between versions.".to_string(),
+            false,
+        ).unwrap(),
 
-    // 41S-083: Governance vote based on current balance (flash-loan vote-buying)
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::GovernanceFlashloanVoting,
-        VulnerabilitySeverity::Critical,
-        r"(?i)function\s+(?:vote|castVote)\w*\s*\([^)]*\)[^{]*\{[^}]*balanceOf\s*\(\s*msg\.sender\s*\)",
-        "Governance Vote Uses Live balanceOf".to_string(),
-        "Reading balanceOf(msg.sender) at vote time lets an attacker borrow tokens via flash loan, vote, then repay in the same tx. Governance must use checkpointed/snapshotted balances at proposal creation.".to_string(),
-        "Use ERC20Votes (getPastVotes at proposal snapshot block) or Compound Bravo style checkpoints. Never read live balanceOf inside vote().".to_string(),
-        true,
-    ).unwrap());
+        // 41S-083: Governance vote based on current balance (flash-loan vote-buying)
+        VulnerabilityRule::new(
+            VulnerabilityCategory::GovernanceFlashloanVoting,
+            VulnerabilitySeverity::Critical,
+            r"(?i)function\s+(?:vote|castVote)\w*\s*\([^)]*\)[^{]*\{[^}]*balanceOf\s*\(\s*msg\.sender\s*\)",
+            "Governance Vote Uses Live balanceOf".to_string(),
+            "Reading balanceOf(msg.sender) at vote time lets an attacker borrow tokens via flash loan, vote, then repay in the same tx. Governance must use checkpointed/snapshotted balances at proposal creation.".to_string(),
+            "Use ERC20Votes (getPastVotes at proposal snapshot block) or Compound Bravo style checkpoints. Never read live balanceOf inside vote().".to_string(),
+            true,
+        ).unwrap(),
 
-    // 41S-084: Price-sensitive write without commit-reveal / TWAP / minOut
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::SandwichResistantMissing,
-        VulnerabilitySeverity::Medium,
-        r"(?i)function\s+\w*(?:rebalance|harvest|compound|skim|rebase)\w*\s*\([^)]*\)\s+(?:external|public)",
-        "MEV-Exposed Rebalance/Harvest".to_string(),
-        "Public rebalance/harvest/compound entrypoints that touch AMM pools without a TWAP guard or commit-reveal can be sandwiched. Searchers extract value at LP expense each call.".to_string(),
-        "Restrict to keeper role, or enforce a TWAP price band (Chainlink/Univ3 oracle deviation < N bps) before pool interaction. For public callers add minOut/maxIn slippage params.".to_string(),
-        false,
-    ).unwrap());
+        // 41S-084: Price-sensitive write without commit-reveal / TWAP / minOut
+        VulnerabilityRule::new(
+            VulnerabilityCategory::SandwichResistantMissing,
+            VulnerabilitySeverity::Medium,
+            r"(?i)function\s+\w*(?:rebalance|harvest|compound|skim|rebase)\w*\s*\([^)]*\)\s+(?:external|public)",
+            "MEV-Exposed Rebalance/Harvest".to_string(),
+            "Public rebalance/harvest/compound entrypoints that touch AMM pools without a TWAP guard or commit-reveal can be sandwiched. Searchers extract value at LP expense each call.".to_string(),
+            "Restrict to keeper role, or enforce a TWAP price band (Chainlink/Univ3 oracle deviation < N bps) before pool interaction. For public callers add minOut/maxIn slippage params.".to_string(),
+            false,
+        ).unwrap(),
 
-    // ========================================================================
-    // Mid-2026 Exploit Patterns (v0.10.0)
-    // ========================================================================
+        // ========================================================================
+        // Mid-2026 Exploit Patterns (v0.10.0)
+        // ========================================================================
 
-    // 41S-085: Solidity 0.8.28-0.8.33 transient-storage clearing codegen bug.
-    // When a contract clears both a persistent and a transient variable of the same
-    // type via the IR pipeline, the shared Yul clearing helper collides and the
-    // compiler emits the wrong opcode (sstore<->tstore swap). Solidity blog 2026-02-18.
-    // Heuristic: affected pragma range + any `transient` state variable declaration.
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::TransientStorageCompilerBug,
-        VulnerabilitySeverity::High,
-        r"pragma\s+solidity\s*[^;]*0\.8\.(?:2[89]|3[0-3])\b[^;]*;[\s\S]*?\btransient\s+\w+\s*;",
-        "Transient Storage Clearing Bug (solc 0.8.28-0.8.33)".to_string(),
-        "Compilers 0.8.28-0.8.33 with the IR pipeline emit the wrong opcode (sstore instead of tstore, or vice versa) when a persistent and a transient variable of the same type are both cleared - the generated Yul clearing helpers share a name and one overwrites the other. State can silently corrupt or transient locks can persist.".to_string(),
-        "Upgrade to solc >= 0.8.34 (fixed release), or avoid clearing persistent and transient variables of the same type in one contract. Verify with the Solidity 2026-02-18 security advisory.".to_string(),
-        true,
-    ).unwrap());
+        // 41S-085: Solidity 0.8.28-0.8.33 transient-storage clearing codegen bug.
+        // When a contract clears both a persistent and a transient variable of the same
+        // type via the IR pipeline, the shared Yul clearing helper collides and the
+        // compiler emits the wrong opcode (sstore<->tstore swap). Solidity blog 2026-02-18.
+        // Heuristic: affected pragma range + any `transient` state variable declaration.
+        VulnerabilityRule::new(
+            VulnerabilityCategory::TransientStorageCompilerBug,
+            VulnerabilitySeverity::High,
+            r"pragma\s+solidity\s*[^;]*0\.8\.(?:2[89]|3[0-3])\b[^;]*;[\s\S]*?\btransient\s+\w+\s*;",
+            "Transient Storage Clearing Bug (solc 0.8.28-0.8.33)".to_string(),
+            "Compilers 0.8.28-0.8.33 with the IR pipeline emit the wrong opcode (sstore instead of tstore, or vice versa) when a persistent and a transient variable of the same type are both cleared - the generated Yul clearing helpers share a name and one overwrites the other. State can silently corrupt or transient locks can persist.".to_string(),
+            "Upgrade to solc >= 0.8.34 (fixed release), or avoid clearing persistent and transient variables of the same type in one contract. Verify with the Solidity 2026-02-18 security advisory.".to_string(),
+            true,
+        ).unwrap(),
 
-    // 41S-086: EIP-7702 delegate implementation with raw (non-namespaced) storage.
-    // A 7702 delegate runs in the EOA's storage context. If the user later re-delegates
-    // to a different implementation, slot-0 variables collide and are reinterpreted.
-    // Heuristic: the self-execution auth idiom (msg.sender == address(this)) that only
-    // 7702/account-abstraction delegates use, in a contract declaring plain state vars.
-    // The scanner-side context filter suppresses this when ERC-7201 namespaced storage
-    // (@custom:storage-location) is present in the file.
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::EIP7702DelegateStorageCollision,
-        VulnerabilitySeverity::High,
-        r"require\s*\(\s*msg\.sender\s*==\s*address\s*\(\s*this\s*\)|msg\.sender\s*==\s*address\s*\(\s*this\s*\)\s*(?:,|\))[\s\S]{0,600}?revert",
-        "EIP-7702 Delegate Uses Raw Storage Slots".to_string(),
-        "This contract authenticates via msg.sender == address(this), the EIP-7702 delegate self-execution idiom. Delegates execute in the EOA's own storage; when the EOA re-delegates to another implementation with a different layout, slot-0 state (owners, nonces, guards) is reinterpreted by the new code - a storage collision that can brick or hijack the account.".to_string(),
-        "Use ERC-7201 namespaced storage (@custom:storage-location erc7201:...) for all delegate state so independent implementations cannot collide. Include a storage-version marker and validate it on initialization.".to_string(),
-        true,
-    ).unwrap());
+        // 41S-086: EIP-7702 delegate implementation with raw (non-namespaced) storage.
+        // A 7702 delegate runs in the EOA's storage context. If the user later re-delegates
+        // to a different implementation, slot-0 variables collide and are reinterpreted.
+        // Heuristic: the self-execution auth idiom (msg.sender == address(this)) that only
+        // 7702/account-abstraction delegates use, in a contract declaring plain state vars.
+        // The scanner-side context filter suppresses this when ERC-7201 namespaced storage
+        // (@custom:storage-location) is present in the file.
+        VulnerabilityRule::new(
+            VulnerabilityCategory::EIP7702DelegateStorageCollision,
+            VulnerabilitySeverity::High,
+            // The two branches are DELIBERATELY asymmetric, and the grouping below makes
+            // that explicit so the precedence is not misread as a bug:
+            //   1. `require(msg.sender == address(this)` -- a complete self-execution guard.
+            //      Self-sufficient: the idiom alone is the finding (see the description),
+            //      and the ERC-7201 context filter in scanner.rs is what suppresses it.
+            //   2. the bare comparison in any other spelling (`if (...)`, `assert(...)`),
+            //      which needs a nearby `revert` to show it is an authorisation check.
+            // Do NOT hoist the `revert` clause out onto branch 1: that silences 41S-086 on
+            // the canonical delegate shape (test_contracts/test_2026_midyear_exploits.sol).
+            r"(?:require\s*\(\s*msg\.sender\s*==\s*address\s*\(\s*this\s*\))|(?:msg\.sender\s*==\s*address\s*\(\s*this\s*\)\s*(?:,|\))[\s\S]{0,600}?revert)",
+            "EIP-7702 Delegate Uses Raw Storage Slots".to_string(),
+            "This contract authenticates via msg.sender == address(this), the EIP-7702 delegate self-execution idiom. Delegates execute in the EOA's own storage; when the EOA re-delegates to another implementation with a different layout, slot-0 state (owners, nonces, guards) is reinterpreted by the new code - a storage collision that can brick or hijack the account.".to_string(),
+            "Use ERC-7201 namespaced storage (@custom:storage-location erc7201:...) for all delegate state so independent implementations cannot collide. Include a storage-version marker and validate it on initialization.".to_string(),
+            true,
+        ).unwrap(),
 
-    // 41S-087: LayerZero V2 OApp secured by a single required DVN.
-    // Kelp DAO lost $293M (April 2026) when its 1-of-1 verifier was isolated via DDoS
-    // and fed forged cross-chain messages. Flag explicit single-DVN configurations.
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::LayerZeroSingleDVN,
-        VulnerabilitySeverity::High,
-        r"(?i)requiredDVNs?\s*=\s*new\s+address\[\]\(\s*1\s*\)|requiredDVNCount\s*=\s*1\b|confirmations?\s*:\s*1\s*,\s*requiredDVN",
-        "LayerZero Single Required DVN".to_string(),
-        "The OApp security stack requires only one DVN to verify cross-chain messages. A single verifier is a single point of failure: Kelp DAO's 1-of-1 DVN was isolated with DDoS and fed forged messages, authorizing a $293M mint (April 2026).".to_string(),
-        "Require at least 2 independent DVNs (requiredDVNs) plus optional DVNs with a threshold. Prefer DVNs operated by unrelated infrastructure providers and monitor DVN liveness.".to_string(),
-        false,
-    ).unwrap());
+        // 41S-087: LayerZero V2 OApp secured by a single required DVN.
+        // Kelp DAO lost $293M (April 2026) when its 1-of-1 verifier was isolated via DDoS
+        // and fed forged cross-chain messages. Flag explicit single-DVN configurations.
+        VulnerabilityRule::new(
+            VulnerabilityCategory::LayerZeroSingleDVN,
+            VulnerabilitySeverity::High,
+            r"(?i)requiredDVNs?\s*=\s*new\s+address\[\]\(\s*1\s*\)|requiredDVNCount\s*=\s*1\b|confirmations?\s*:\s*1\s*,\s*requiredDVN",
+            "LayerZero Single Required DVN".to_string(),
+            "The OApp security stack requires only one DVN to verify cross-chain messages. A single verifier is a single point of failure: Kelp DAO's 1-of-1 DVN was isolated with DDoS and fed forged messages, authorizing a $293M mint (April 2026).".to_string(),
+            "Require at least 2 independent DVNs (requiredDVNs) plus optional DVNs with a threshold. Prefer DVNs operated by unrelated infrastructure providers and monitor DVN liveness.".to_string(),
+            false,
+        ).unwrap(),
 
-    // 41S-088: ERC-7683 destination settler that decodes originData in fill() without
-    // validating the caller/settler. Anyone can invoke fill() with crafted originData
-    // unless the settler restricts who may fill or verifies the order against the
-    // origin settlement contract. Context filter suppresses when an auth check exists
-    // inside the fill body.
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::ERC7683UnvalidatedFill,
-        VulnerabilitySeverity::High,
-        r"function\s+fill\s*\(\s*bytes32\s+\w+\s*,\s*bytes\s+calldata\s+originData[^)]*\)[^{]*\{[\s\S]{0,800}?abi\.decode\s*\(\s*originData",
-        "ERC-7683 fill() Decodes originData Without Validation".to_string(),
-        "The destination settler decodes caller-supplied originData directly. ERC-7683 delegates settlement security to the implementation: without validating the order hash against the origin settler, checking a filler allowlist, or replay-protecting the orderId, an attacker can craft originData that releases escrowed funds or double-fills an order.".to_string(),
-        "Verify orderId == keccak256(originData) binding, track filled orderIds in a mapping, and restrict fill() to authorized fillers or verify the origin-chain settlement proof before releasing funds.".to_string(),
-        true,
-    ).unwrap());
+        // 41S-088: ERC-7683 destination settler that decodes originData in fill() without
+        // validating the caller/settler. Anyone can invoke fill() with crafted originData
+        // unless the settler restricts who may fill or verifies the order against the
+        // origin settlement contract. Context filter suppresses when an auth check exists
+        // inside the fill body.
+        VulnerabilityRule::new(
+            VulnerabilityCategory::ERC7683UnvalidatedFill,
+            VulnerabilitySeverity::High,
+            r"function\s+fill\s*\(\s*bytes32\s+\w+\s*,\s*bytes\s+calldata\s+originData[^)]*\)[^{]*\{[\s\S]{0,800}?abi\.decode\s*\(\s*originData",
+            "ERC-7683 fill() Decodes originData Without Validation".to_string(),
+            "The destination settler decodes caller-supplied originData directly. ERC-7683 delegates settlement security to the implementation: without validating the order hash against the origin settler, checking a filler allowlist, or replay-protecting the orderId, an attacker can craft originData that releases escrowed funds or double-fills an order.".to_string(),
+            "Verify orderId == keccak256(originData) binding, track filled orderIds in a mapping, and restrict fill() to authorized fillers or verify the origin-chain settlement proof before releasing funds.".to_string(),
+            true,
+        ).unwrap(),
 
-    // 41S-089: Uniswap V4 flash-accounting hook takes funds to a caller-controlled
-    // recipient. Mismatched ERC-6909 claim vs raw ERC-20 accounting inside hooks lets
-    // an attacker sync/settle/take to drain the pool's underlying currency.
-    rules.push(VulnerabilityRule::new(
-        VulnerabilityCategory::ERC6909FlashAccountingDrain,
-        VulnerabilitySeverity::High,
-        r"(?i)poolManager\s*\.\s*take\s*\(\s*[^,]+,\s*(?:msg\.sender|\w*(?:recipient|receiver|_to)\w*)\s*,",
-        "V4 Flash Accounting take() to Caller-Controlled Recipient".to_string(),
-        "poolManager.take() sends real tokens against the transient delta. When the recipient is caller-controlled and the hook's ERC-6909 claim accounting does not exactly mirror raw ERC-20 balances, an attacker can sync, claim on behalf of the PoolManager, settle, and take - extracting the pool's underlying currency.".to_string(),
-        "Take to address(this) and distribute after reconciling deltas, or require the final currencyDelta to be zero for every touched currency before unlock returns. Fuzz claim-vs-raw accounting for rounding drift.".to_string(),
-        false,
-    ).unwrap());
+        // 41S-089: Uniswap V4 flash-accounting hook takes funds to a caller-controlled
+        // recipient. Mismatched ERC-6909 claim vs raw ERC-20 accounting inside hooks lets
+        // an attacker sync/settle/take to drain the pool's underlying currency.
+        VulnerabilityRule::new(
+            VulnerabilityCategory::ERC6909FlashAccountingDrain,
+            VulnerabilitySeverity::High,
+            r"(?i)poolManager\s*\.\s*take\s*\(\s*[^,]+,\s*(?:msg\.sender|\w*(?:recipient|receiver|_to)\w*)\s*,",
+            "V4 Flash Accounting take() to Caller-Controlled Recipient".to_string(),
+            "poolManager.take() sends real tokens against the transient delta. When the recipient is caller-controlled and the hook's ERC-6909 claim accounting does not exactly mirror raw ERC-20 balances, an attacker can sync, claim on behalf of the PoolManager, settle, and take - extracting the pool's underlying currency.".to_string(),
+            "Take to address(this) and distribute after reconciling deltas, or require the final currencyDelta to be zero for every touched currency before unlock returns. Fuzz claim-vs-raw accounting for rounding drift.".to_string(),
+            false,
+        ).unwrap(),
 
-    rules
+        // ========================================================================
+        // Late-2026 Smart-Account Execution Surface (v0.11.0)
+        // ========================================================================
+
+        // 41S-090: ERC-7579 modular smart account exposes installModule/uninstallModule
+        // without access control. ERC-7579 accounts delegate all logic to installed
+        // validator/executor/hook/fallback modules; whoever can install a module controls
+        // the account. The scanner-side context filter suppresses this when the function
+        // signature or its opening lines carry an auth modifier or msg.sender/self check.
+        VulnerabilityRule::new(
+            VulnerabilityCategory::ERC7579UnprotectedModule,
+            VulnerabilitySeverity::High,
+            r"function\s+(?:installModule|uninstallModule)\s*\(",
+            "ERC-7579 Module (Un)Installation Without Access Control".to_string(),
+            "This ERC-7579 modular account exposes installModule/uninstallModule with no visible caller restriction. Modules (validators, executors, hooks, fallbacks) are the account's authorization and execution logic - an attacker who installs a malicious validator can sign for the account, and a malicious executor can move all its assets, a full account takeover.".to_string(),
+            "Restrict installModule/uninstallModule to the EntryPoint or the account itself (onlyEntryPointOrSelf / require(msg.sender == address(this))), validate moduleTypeId and the module address, and emit ModuleInstalled/Uninstalled events for monitoring.".to_string(),
+            false,
+        ).unwrap(),
+
+        // 41S-091: ERC-7821 minimal batch executor. The standardized entrypoint is
+        // execute(bytes32 mode, bytes calldata executionData) and is meant to run only
+        // from the EntryPoint or the account itself. If unrestricted, anyone can execute
+        // arbitrary batched calls from the account's context. Context filter suppresses
+        // when an auth modifier / self check is present.
+        VulnerabilityRule::new(
+            VulnerabilityCategory::ERC7821UnprotectedExecute,
+            VulnerabilitySeverity::High,
+            r"function\s+execute\s*\(\s*bytes32\s+\w+\s*,\s*bytes\s+calldata\s+\w+\s*\)",
+            "ERC-7821 Batch execute() Without Caller Restriction".to_string(),
+            "This looks like the ERC-7821 batch-execution entrypoint execute(bytes32 mode, bytes executionData). It runs the decoded calls from the account's own context; without restricting the caller to the EntryPoint or the account itself, anyone can execute arbitrary calls - transferring tokens, approving spenders, or self-destructing the account.".to_string(),
+            "Gate execute() with onlyEntryPointOrSelf (require msg.sender == entryPoint() || msg.sender == address(this)), or route third-party calls through a validated ERC-4337 UserOp so signatures are checked before execution.".to_string(),
+            false,
+        ).unwrap(),
+
+        // 41S-092: ERC-7579 executeFromExecutor() is the entrypoint installed executor
+        // modules call to dispatch actions as the account. It MUST verify the caller is a
+        // currently-installed executor module; otherwise any address dispatches arbitrary
+        // calls as the account. Context filter suppresses when a module/auth check exists.
+        VulnerabilityRule::new(
+            VulnerabilityCategory::ERC7579UnrestrictedExecutor,
+            VulnerabilitySeverity::High,
+            r"function\s+executeFromExecutor\s*\(",
+            "ERC-7579 executeFromExecutor() Without Installed-Module Gate".to_string(),
+            "executeFromExecutor() lets an executor module run calls in the account's context. If it does not verify that msg.sender is an installed executor module (e.g. onlyExecutorModule / isModuleInstalled(TYPE_EXECUTOR, msg.sender)), any caller can dispatch arbitrary calls as the account and drain it.".to_string(),
+            "Guard executeFromExecutor() so it only accepts calls from installed executor modules: require(isModuleInstalled(MODULE_TYPE_EXECUTOR, msg.sender, \"\")) or an onlyExecutorModule modifier.".to_string(),
+            false,
+        ).unwrap(),
+    ]
 }
 
 impl VulnerabilitySeverity {
@@ -3609,6 +3571,15 @@ impl VulnerabilityCategory {
             VulnerabilityCategory::ERC6909FlashAccountingDrain => {
                 "ERC-6909 Flash Accounting Drain"
             }
+            VulnerabilityCategory::ERC7579UnprotectedModule => {
+                "ERC-7579 Unprotected Module Installation"
+            }
+            VulnerabilityCategory::ERC7821UnprotectedExecute => {
+                "ERC-7821 Unprotected Batch Execute"
+            }
+            VulnerabilityCategory::ERC7579UnrestrictedExecutor => {
+                "ERC-7579 Unrestricted Executor Dispatch"
+            }
         }
     }
 }
@@ -3697,7 +3668,16 @@ pub fn create_version_specific_rules(version: &CompilerVersion) -> Vec<Vulnerabi
             rules.push(VulnerabilityRule::new(
                 VulnerabilityCategory::ArithmeticIssues,
                 VulnerabilitySeverity::High,
-                r"unchecked\s*\{[^}]*[\+\-\*]",
+                // `[\+\-\*]` also matched `unchecked { ++i; }` -- the standard 0.8+ loop
+                // counter idiom, which cannot overflow. Require a real arithmetic
+                // assignment so only genuinely wrappable math is reported.
+                //
+                // NOTE: this rule currently produces no output under the default
+                // configuration -- `false_positive_filter::filter_arithmetic` drops every
+                // `ArithmeticIssues` finding when the contract is Solidity 0.8+, which is
+                // exactly when this rule is registered. See the report accompanying this
+                // change for the filter-side fix (that file is owned elsewhere).
+                r"unchecked\s*\{[^}]*(?:\+=|-=|\*=|\w+\s*=\s*\w+\s*[\+\-\*]\s*\w+)",
                 "Unchecked Arithmetic in 0.8.0+".to_string(),
                 "Using unchecked block disables overflow protection in Solidity 0.8.0+".to_string(),
                 "Remove unchecked block unless gas optimization is critical and overflow is impossible".to_string(),
@@ -3749,22 +3729,19 @@ pub fn create_version_specific_rules(version: &CompilerVersion) -> Vec<Vulnerabi
     );
 
     // Version-specific constructor patterns
-    match version {
-        CompilerVersion::V04 => {
-            rules.push(
-                VulnerabilityRule::new(
-                    VulnerabilityCategory::NamingConventions,
-                    VulnerabilitySeverity::Critical,
-                    r"function\s+[A-Z]\w+\s*\([^)]*\)\s+public\s*\{",
-                    "Constructor as Function Name (0.4.x)".to_string(),
-                    "Using contract name as constructor is deprecated and error-prone".to_string(),
-                    "Use constructor() keyword instead (requires Solidity >= 0.4.22)".to_string(),
-                    false,
-                )
-                .unwrap(),
-            );
-        }
-        _ => {}
+    if version == &CompilerVersion::V04 {
+        rules.push(
+            VulnerabilityRule::new(
+                VulnerabilityCategory::NamingConventions,
+                VulnerabilitySeverity::Critical,
+                r"function\s+[A-Z]\w+\s*\([^)]*\)\s+public\s*\{",
+                "Constructor as Function Name (0.4.x)".to_string(),
+                "Using contract name as constructor is deprecated and error-prone".to_string(),
+                "Use constructor() keyword instead (requires Solidity >= 0.4.22)".to_string(),
+                false,
+            )
+            .unwrap(),
+        );
     }
 
     // tx.origin authentication (all versions but especially problematic in older versions)
@@ -4171,7 +4148,14 @@ fn add_compiler_vulnerabilities(rules: &mut Vec<VulnerabilityRule>, version: &Co
                 VulnerabilityRule::new(
                     VulnerabilityCategory::UnsafeExternalCalls,
                     VulnerabilitySeverity::Critical,
-                    r"pragma\s+solidity\s+0\.8\.[0-6]\b.*struct",
+                    // `.*struct` under `(?s)` fired on ANY 0.8.0-0.8.6 file containing
+                    // the word `struct` and spanned pragma -> last `struct` in the file,
+                    // i.e. a whole-file Critical annotation in SARIF. The bug only bites
+                    // when a struct crosses an ABI boundary, so require the evidence the
+                    // recommendation already names: an external/public function taking a
+                    // user-defined (capitalised) type in calldata/memory. Only structs
+                    // and struct arrays can carry a data location, so this is precise.
+                    r"pragma\s+solidity\s+0\.8\.[0-6]\b[\s\S]{0,4000}?\bfunction\s+\w+\s*\([^)]*\b[A-Z]\w*(?:\[\])?\s+(?:calldata|memory)\b[^)]*\)[^;{]*\b(?:external|public)\b",
                     "ABI Encoder Struct Bug (0.8.0-0.8.6)".to_string(),
                     "Solidity 0.8.0-0.8.6 have critical bugs in ABI encoding of structs"
                         .to_string(),

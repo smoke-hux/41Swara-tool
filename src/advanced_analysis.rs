@@ -21,7 +21,6 @@
 //! - **Research paper vulns**: ERC-777 reentrancy, greedy contracts, double claiming,
 //!   emergency stops, signature verification bypass
 
-#![allow(dead_code)]
 
 use crate::vulnerabilities::{Vulnerability, VulnerabilityCategory, VulnerabilitySeverity};
 use once_cell::sync::Lazy;
@@ -45,11 +44,19 @@ macro_rules! re {
 /// on Solidity smart contract source code.
 ///
 /// Each public `analyze_*` method returns a `Vec<Vulnerability>` that the scanner
-/// merges into the final report. The analyzer is stateless apart from the `verbose`
-/// flag; all analysis is performed per-invocation on the raw source text.
-pub struct AdvancedAnalyzer {
-    #[allow(dead_code)] // Reserved for future verbose diagnostic output
-    verbose: bool,
+/// merges into the final report. The analyzer is stateless; all analysis is performed
+/// per-invocation on the raw source text.
+pub struct AdvancedAnalyzer;
+
+
+/// Expand the `uint`/`int` aliases to their explicit 256-bit widths so callers can
+/// parse a width off the type name without special-casing the bare form.
+fn normalize_int_type(ty: &str) -> String {
+    match ty {
+        "uint" => "uint256".to_string(),
+        "int" => "int256".to_string(),
+        other => other.to_string(),
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -62,44 +69,13 @@ struct ExtractedFunction {
 
 impl AdvancedAnalyzer {
     /// Create a new `AdvancedAnalyzer`.
-    ///
-    /// `verbose` is reserved for future diagnostic output and currently unused.
-    pub fn new(verbose: bool) -> Self {
-        Self { verbose }
+    pub fn new() -> Self {
+        Self
     }
 
     fn strip_comment_lines(&self, content: &str) -> String {
-        let mut stripped = String::with_capacity(content.len());
-        let mut in_block_comment = false;
-
-        for line in content.lines() {
-            let trimmed = line.trim_start();
-            if in_block_comment {
-                if let Some(end_idx) = line.find("*/") {
-                    in_block_comment = false;
-                    stripped.push_str(&line[(end_idx + 2)..]);
-                }
-                stripped.push('\n');
-                continue;
-            }
-
-            if trimmed.starts_with("/*") && !trimmed.contains("*/") {
-                in_block_comment = true;
-                stripped.push('\n');
-                continue;
-            }
-
-            if trimmed.starts_with("//") || trimmed.starts_with("/*") || trimmed.starts_with('*') {
-                stripped.push('\n');
-                continue;
-            }
-
-            let code_only = line.split("//").next().unwrap_or("");
-            stripped.push_str(code_only);
-            stripped.push('\n');
-        }
-
-        stripped
+        // Delegates to the shared, string-aware stripper (see parser::strip_comments).
+        crate::parser::strip_comments(content)
     }
 
     // ========================================================================
@@ -118,9 +94,7 @@ impl AdvancedAnalyzer {
         let mut vulnerabilities = Vec::new();
 
         // Check for reentrancy patterns with state changes after external calls
-        if let Some(vuln) = self.detect_reentrancy_pattern(content) {
-            vulnerabilities.push(vuln);
-        }
+        vulnerabilities.extend(self.detect_reentrancy_pattern(content));
 
         // Check for flash loan attack vectors
         if let Some(vuln) = self.detect_flash_loan_vulnerability(content) {
@@ -135,79 +109,578 @@ impl AdvancedAnalyzer {
         vulnerabilities
     }
 
-    // Advanced reentrancy detection: walks lines after each external call
-    // (.call{}, .transfer(), .send()) looking for state modifications within the
-    // next 10 lines. Skips contracts with ReentrancyGuard / nonReentrant and
-    // lines inside try-catch blocks. Only flags storage writes (excludes memory/calldata).
-    fn detect_reentrancy_pattern(&self, content: &str) -> Option<Vulnerability> {
-        // Skip if ReentrancyGuard is present
-        if content.contains("ReentrancyGuard") || content.contains("nonReentrant") {
-            return None;
+    // Checks-Effects-Interactions analysis, scoped per function.
+    //
+    // For every function without a reentrancy guard, finds control-transferring
+    // external calls and reports writes to *contract state variables* that happen
+    // after them. Two things matter for accuracy:
+    //
+    // 1. The call surface must include gas-forwarding helpers, not just `.call{}`.
+    //    OpenZeppelin's `Address.sendValue` forwards all remaining gas, so it is
+    //    exactly as reentrant as a raw `.call{value:}` -- missing it hides the
+    //    canonical "refund before zeroing the slot" bug. `.transfer()`/`.send()`
+    //    stay excluded: their 2300 gas stipend cannot re-enter.
+    // 2. The guard check is per-function. A contract where *one* function is
+    //    `nonReentrant` says nothing about its other functions, so a file-wide
+    //    `contains("nonReentrant")` bail-out silently disables the whole detector.
+    fn detect_reentrancy_pattern(&self, content: &str) -> Vec<Vulnerability> {
+        let mut vulnerabilities = Vec::new();
+        let state_vars = self.extract_state_variable_names(content);
+        if state_vars.is_empty() {
+            return vulnerabilities;
         }
 
-        // Only flag .call{} as dangerous — .transfer() and .send() use 2300 gas (safe from reentrancy)
-        let external_call_pattern = re!(r"\.call\{");
-        let state_change_pattern =
-            re!(r"(\w+)\s*=\s*[^=]|\w+\[.*\]\s*=\s*|\+\+|--");
+        // Calls that hand control to an untrusted callee with enough gas to re-enter.
+        // `.transfer(`/`.send(` are deliberately absent (2300 gas stipend).
+        let external_call = re!(
+            r"\.call\{|\.call\s*\.\s*value\s*\(|\bsendValue\s*\(|\bfunctionCallWithValue\s*\(|\bfunctionCall\s*\(|\.delegatecall\s*\("
+        );
+        let guard = re!(r"\bnonReentrant\b|\bnoReentrancy\b|\block\b\s*\(");
 
-        let lines: Vec<&str> = content.lines().collect();
-
-        for (idx, line) in lines.iter().enumerate() {
-            // Skip comments
-            if line.trim().starts_with("//") || line.trim().starts_with("*") {
+        for func in self.extract_functions(content) {
+            // Guards and read-only functions cannot be exploited this way.
+            if guard.is_match(&func.signature) {
+                continue;
+            }
+            if re!(r"\b(view|pure)\b").is_match(&func.signature) {
                 continue;
             }
 
-            if external_call_pattern.is_match(line) {
-                // Check if this is in a try-catch (safer pattern)
-                if idx > 0 && lines[idx - 1].contains("try") {
+            let body_lines: Vec<&str> = func.body.lines().collect();
+            let mut call_idx: Option<usize> = None;
+            // Variables already written *before* the call. A variable that is written
+            // on both sides of the call is a set/reset guard -- OpenZeppelin's
+            // `AccessManager.execute` saves `_executionId`, sets it, calls, then
+            // restores it -- not a checks-effects-interactions violation.
+            let mut written_before: HashSet<String> = HashSet::new();
+
+            for (i, raw) in body_lines.iter().enumerate() {
+                let line = raw.trim();
+                if line.starts_with("//") || line.starts_with("*") || line.starts_with("/*") {
                     continue;
                 }
 
-                // Check if the enclosing function has access control (onlyOwner etc.)
-                let only_re = re!(r"\bonly\w+|nonReentrant|whenNotPaused");
-                // Scan backwards from current line to find function declaration
-                let mut func_sig = String::new();
-                for i in (0..=idx).rev() {
-                    if let Some(l) = lines.get(i) {
-                        func_sig.insert_str(0, l);
-                        func_sig.insert(0, ' ');
-                        if l.contains("function ") {
-                            break;
-                        }
+                if call_idx.is_none() {
+                    // try/catch bounds the callee's effect on our control flow far less
+                    // than it looks, but it is a deliberate pattern -- keep skipping it.
+                    if external_call.is_match(line) && !line.contains("try ") {
+                        call_idx = Some(i);
+                    } else if let Some(var) = self.state_write_target(line, &state_vars) {
+                        written_before.insert(var);
                     }
-                }
-                if only_re.is_match(&func_sig) {
                     continue;
                 }
 
-                // Check if there are state changes after this external call
-                for future_line in &lines[(idx + 1)..lines.len().min(idx + 10)] {
-                    // Skip closing braces and comments
-                    if future_line.trim() == "}" || future_line.trim().starts_with("//") {
+                let Some(ci) = call_idx else { continue };
+                if let Some(var) = self.state_write_target(line, &state_vars) {
+                    if written_before.contains(&var) {
                         continue;
                     }
-
-                    // Check for state changes (but not comparisons with ==)
-                    if state_change_pattern.is_match(future_line) && !future_line.contains("==") {
-                        // Make sure it's actual state modification, not local variable
-                        if !future_line.contains("memory") && !future_line.contains("calldata") {
-                            return Some(Vulnerability::high_confidence(
-                                VulnerabilitySeverity::Critical,
-                                VulnerabilityCategory::Reentrancy,
-                                "Critical: State Change After External Call".to_string(),
-                                "State modification detected after external call - violates Checks-Effects-Interactions pattern".to_string(),
-                                idx + 1,
-                                line.to_string(),
-                                "Move all state changes before external calls to prevent reentrancy attacks".to_string(),
-                            ));
-                        }
-                    }
+                    let call_line = func.start_line + ci;
+                    let write_line = func.start_line + i;
+                    vulnerabilities.push(Vulnerability::high_confidence(
+                        VulnerabilitySeverity::Critical,
+                        VulnerabilityCategory::Reentrancy,
+                        format!("State Change After External Call in {}", func.name),
+                        format!(
+                            "`{}` performs an external call on line {} and only then writes to the \
+                             state variable `{}` on line {}. The callee regains control before that \
+                             write lands, so it can re-enter `{}` while the stale state still passes \
+                             every check -- the classic drain pattern.",
+                            func.name, call_line, var, write_line, func.name
+                        ),
+                        call_line,
+                        body_lines[ci].trim().to_string(),
+                        format!(
+                            "Apply checks-effects-interactions: move the `{}` write above the \
+                             external call, or add a `nonReentrant` guard to `{}`.",
+                            var, func.name
+                        ),
+                    ));
+                    break; // one finding per function
                 }
             }
         }
 
+        vulnerabilities
+    }
+
+    // Returns the state variable a line writes to, if any.
+    //
+    // Recognises plain assignment, compound assignment, `delete`, `push`/`pop`, and
+    // `++`/`--`. Comparisons (`==`, `!=`, `>=`, `<=`) and writes to locals are ignored,
+    // which is what keeps this from firing on every `require(...)` after a call.
+    fn state_write_target(&self, line: &str, state_vars: &HashSet<String>) -> Option<String> {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed == "}" || trimmed.starts_with("return") {
+            return None;
+        }
+        // A local declaration shadows nothing we care about: `uint256 x = ...`.
+        if re!(r"^\s*(?:uint\d*|int\d*|address|bool|bytes\d*|string|mapping)\b[^=]*\s+(?:memory|calldata|storage)?\s*\w+\s*=").is_match(trimmed) {
+            return None;
+        }
+
+        let assign = re!(r"^([A-Za-z_]\w*)\s*(?:\[[^\]]*\]|\.\w+)*\s*(?:\+|-|\*|/|\|| &|\^)?=[^=]");
+        let delete_re = re!(r"^delete\s+([A-Za-z_]\w*)");
+        let push_pop = re!(r"^([A-Za-z_]\w*)\s*(?:\[[^\]]*\])*\s*\.\s*(?:push|pop)\s*\(");
+        let incdec = re!(r"^([A-Za-z_]\w*)\s*(?:\[[^\]]*\]|\.\w+)*\s*(?:\+\+|--)");
+
+        for re_candidate in [&assign, &delete_re, &push_pop, &incdec] {
+            if let Some(caps) = re_candidate.captures(trimmed) {
+                let name = caps.get(1)?.as_str();
+                if state_vars.contains(name) {
+                    return Some(name.to_string());
+                }
+            }
+        }
         None
+    }
+
+    /// Unchecked arithmetic on contract state, for Solidity < 0.8.0.
+    ///
+    /// Only called when the pragma resolves to a pre-0.8 compiler, where `+`, `-`,
+    /// and `*` wrap silently. The regex rules this complements only match local
+    /// *declarations* (`uint256 x = a + b;`), which is the low-risk case -- a local
+    /// that overflows usually just reverts downstream. The damaging pattern is an
+    /// accumulator held in storage (`totalFees = totalFees + fee;`): it wraps, and
+    /// the wrapped value persists.
+    ///
+    /// Narrow accumulators (`uint8` .. `uint64`) are escalated, because the value
+    /// needed to wrap them is reachable in practice -- `uint64` tops out around
+    /// 18.4 ETH when the variable holds wei.
+    pub fn detect_legacy_unchecked_arithmetic(&self, content: &str) -> Vec<Vulnerability> {
+        let mut vulnerabilities = Vec::new();
+        let types = self.extract_state_variable_types(content);
+        if types.is_empty() {
+            return vulnerabilities;
+        }
+
+        // `using SafeMath for uint256` alone proves nothing -- what matters is whether
+        // *this* statement routes through it, so the check is per line below.
+        let safemath_call = re!(r"\.\s*(?:add|sub|mul|div)\s*\(");
+        let compound = re!(r"^([A-Za-z_]\w*)\s*(?:\[[^\]]*\])?\s*(\+=|-=|\*=)");
+        let assign = re!(r"^([A-Za-z_]\w*)\s*(?:\[[^\]]*\])?\s*=\s*(.+)$");
+        let arith = re!(r"[^=!<>+*/-]\s*[+*-]\s*[^=]|\bSafeCast\b");
+
+        for func in self.extract_functions(content) {
+            if re!(r"\b(view|pure)\b").is_match(&func.signature) {
+                continue;
+            }
+
+            for (i, raw) in func.body.lines().enumerate() {
+                let line = raw.trim();
+                if line.starts_with("//") || line.starts_with("*") || safemath_call.is_match(line) {
+                    continue;
+                }
+                if line.contains("unchecked") {
+                    continue;
+                }
+
+                let (var, op_desc) = if let Some(caps) = compound.captures(line) {
+                    (
+                        caps.get(1).map_or("", |m| m.as_str()).to_string(),
+                        caps.get(2).map_or("", |m| m.as_str()).to_string(),
+                    )
+                } else if let Some(caps) = assign.captures(line) {
+                    let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
+                    let rhs = caps.get(2).map_or("", |m| m.as_str());
+                    // Only self-referencing arithmetic: `x = x + y` accumulates, while
+                    // `x = someQuote()` just overwrites and cannot wrap.
+                    if !rhs.contains(&name) || !arith.is_match(rhs) {
+                        continue;
+                    }
+                    (name, "=".to_string())
+                } else {
+                    continue;
+                };
+
+                let Some(ty) = types.get(&var) else { continue };
+                if !ty.starts_with("uint") && !ty.starts_with("int") {
+                    continue;
+                }
+
+                let width: u32 = ty
+                    .trim_start_matches("uint")
+                    .trim_start_matches("int")
+                    .parse()
+                    .unwrap_or(256);
+                let narrow = width < 128;
+                let severity = if narrow {
+                    VulnerabilitySeverity::High
+                } else {
+                    VulnerabilitySeverity::Medium
+                };
+
+                let mut description = format!(
+                    "`{}` updates the `{}` state variable `{}` with `{}` under a pre-0.8.0 \
+                     compiler, which wraps silently instead of reverting.",
+                    func.name, ty, var, op_desc
+                );
+                if narrow {
+                    description.push_str(&format!(
+                        " `{}` is a narrow accumulator: it wraps at {} and the wrapped value is \
+                         then written to storage permanently, so accumulated funds or counts are lost.",
+                        ty,
+                        if width == 64 {
+                            "~18.4e18 (18.4 ETH in wei)".to_string()
+                        } else {
+                            format!("2^{}", width)
+                        }
+                    ));
+                }
+
+                vulnerabilities.push(Vulnerability::high_confidence(
+                    severity,
+                    VulnerabilityCategory::ArithmeticIssues,
+                    format!("Unchecked Arithmetic on State Variable `{}`", var),
+                    description,
+                    func.start_line + i,
+                    line.to_string(),
+                    format!(
+                        "Upgrade to Solidity 0.8.x for checked arithmetic, or route the update \
+                         through SafeMath (`{}.add(...)`). Widening `{}` to `uint256` removes the \
+                         narrow-accumulator risk.",
+                        var, var
+                    ),
+                ));
+            }
+        }
+
+        vulnerabilities
+    }
+
+    /// Map contract-level state variable names to their declared elementary type.
+    ///
+    /// Mapping value types are unwrapped (`mapping(address => uint64) x` yields
+    /// `uint64` for `x`) so accumulator-width checks work on mappings too.
+    fn extract_state_variable_types(&self, content: &str) -> HashMap<String, String> {
+        let mut types = HashMap::new();
+        let mapping_re = re!(
+            r"^\s*mapping\s*\(.*=>\s*([A-Za-z_]\w*)\s*\)\s*(?:(?:public|private|internal)\s+)*([A-Za-z_]\w*)\s*;"
+        );
+        let plain_re = re!(
+            r"^\s*(uint\d*|int\d*|address|bool|bytes\d*|string)\s+(?:(?:public|private|internal|constant|immutable|override)\s+)*([A-Za-z_]\w*)\s*(?:=|;)"
+        );
+        let container_re = re!(r"^\s*(?:abstract\s+)?(?:contract|library|interface)\s+\w+");
+
+        let mut depth: i32 = 0;
+        let mut in_container = false;
+
+        for line in content.lines() {
+            if !in_container && container_re.is_match(line) {
+                in_container = true;
+            }
+            if in_container && depth == 1 && !line.trim().starts_with("//") {
+                if let Some(caps) = mapping_re.captures(line) {
+                    types.insert(
+                        caps[2].to_string(),
+                        normalize_int_type(&caps[1]),
+                    );
+                } else if let Some(caps) = plain_re.captures(line) {
+                    types.insert(caps[2].to_string(), normalize_int_type(&caps[1]));
+                }
+            }
+            depth += line.matches('{').count() as i32;
+            depth -= line.matches('}').count() as i32;
+            if depth <= 0 {
+                depth = 0;
+                in_container = false;
+            }
+        }
+
+        types
+    }
+
+    /// Push payments to an address the contract does not control.
+    ///
+    /// `(bool ok,) = recipient.call{value: x}(""); require(ok);` looks defensive, but
+    /// when `recipient` is an arbitrary address the require hands that address a veto:
+    /// a contract with no `receive`/`fallback`, or one that simply reverts, makes the
+    /// whole transaction fail. If the call sits in a state-machine step -- paying out a
+    /// winner, closing a round -- the protocol is stuck there permanently.
+    ///
+    /// Payments to `msg.sender` are excluded: the caller can only grief themselves.
+    pub fn detect_push_payment_dos(&self, content: &str) -> Vec<Vulnerability> {
+        let mut vulnerabilities = Vec::new();
+        let value_call =
+            re!(r"([A-Za-z_]\w*)\s*\.\s*call\{\s*value\s*:[^}]*\}|\bsendValue\s*\(\s*([A-Za-z_]\w*)");
+        let success_require = re!(r"require\s*\(\s*\w*(?i:success|sent|ok)\w*|if\s*\(\s*!\s*\w*(?i:success|sent|ok)");
+        let safe_mint = re!(r"\b_safeMint\s*\(|\bsafeTransferFrom\s*\(");
+
+        for func in self.extract_functions(content) {
+            if re!(r"\b(view|pure)\b").is_match(&func.signature) {
+                continue;
+            }
+
+            let body_lines: Vec<&str> = func.body.lines().collect();
+            for (i, raw) in body_lines.iter().enumerate() {
+                let line = raw.trim();
+                if line.starts_with("//") || line.starts_with("*") {
+                    continue;
+                }
+                let Some(caps) = value_call.captures(line) else {
+                    continue;
+                };
+                let recipient = caps
+                    .get(1)
+                    .or_else(|| caps.get(2))
+                    .map_or("", |m| m.as_str())
+                    .to_string();
+
+                // Self-payment can only block the caller's own transaction.
+                if recipient.contains("msg") || recipient == "sender" || recipient.is_empty() {
+                    continue;
+                }
+                // Withdrawal-style functions ARE the pull pattern already.
+                let fname = func.name.to_lowercase();
+                if fname.contains("withdraw") || fname.contains("claim") || fname.contains("redeem")
+                {
+                    continue;
+                }
+
+                // The revert-on-failure has to be present for the recipient to hold a veto.
+                let window_end = (i + 4).min(body_lines.len());
+                let window = body_lines[i..window_end].join(" ");
+                let reverts_on_failure = success_require.is_match(&window);
+                let mints_after = body_lines[i..].iter().any(|l| safe_mint.is_match(l));
+
+                if !reverts_on_failure && !mints_after {
+                    continue;
+                }
+
+                let mut description = format!(
+                    "`{}` pushes ETH to `{}` and reverts if the transfer fails. `{}` is not the \
+                     caller, so whoever controls that address decides whether this function can \
+                     ever succeed: a contract without a payable `receive`/`fallback`, or one that \
+                     reverts on purpose, blocks it for everyone.",
+                    func.name, recipient, recipient
+                );
+                if mints_after {
+                    description.push_str(
+                        " The function also calls `_safeMint`/`safeTransferFrom` afterwards, which \
+                         invokes a receiver hook on the same address -- a second veto over the \
+                         same transaction.",
+                    );
+                }
+
+                vulnerabilities.push(Vulnerability::high_confidence(
+                    VulnerabilitySeverity::Medium,
+                    VulnerabilityCategory::DoSAttacks,
+                    format!("Push Payment to Arbitrary Recipient in {}", func.name),
+                    description,
+                    func.start_line + i,
+                    line.to_string(),
+                    "Use the pull-payment pattern: record the amount owed \
+                     (`pendingWithdrawals[recipient] += amount`) and let the recipient claim it in \
+                     a separate transaction, so one uncooperative address cannot stall the protocol."
+                        .to_string(),
+                ));
+                break;
+            }
+        }
+
+        vulnerabilities
+    }
+
+    /// Address state variables assigned from a parameter with no zero-address check.
+    ///
+    /// Covers constructors as well as setters. `address(0)` is the default value of
+    /// every unset address, so assigning one silently is indistinguishable from never
+    /// having configured the variable -- fees routed to `address(0)` are burned, and an
+    /// owner set to `address(0)` locks the contract out of its own admin functions.
+    pub fn detect_missing_zero_address_check(&self, content: &str) -> Vec<Vulnerability> {
+        let mut vulnerabilities = Vec::new();
+        let types = self.extract_state_variable_types(content);
+        if types.is_empty() {
+            return vulnerabilities;
+        }
+
+        let param_re = re!(r"address\s+(?:payable\s+)?(?:memory\s+|calldata\s+)?([A-Za-z_]\w*)");
+        let assign_re = re!(r"^([A-Za-z_]\w*)\s*=\s*([A-Za-z_]\w*)\s*;");
+
+        for func in self.extract_functions_with_constructors(content) {
+            if re!(r"\b(view|pure)\b").is_match(&func.signature) {
+                continue;
+            }
+
+            // Address-typed parameters of this function.
+            let params: HashSet<String> = param_re
+                .captures_iter(&func.signature)
+                .filter_map(|c| c.get(1).map(|m| m.as_str().to_string()))
+                .collect();
+            if params.is_empty() {
+                continue;
+            }
+
+            for (i, raw) in func.body.lines().enumerate() {
+                let line = raw.trim();
+                if line.starts_with("//") || line.starts_with("*") {
+                    continue;
+                }
+                let Some(caps) = assign_re.captures(line) else {
+                    continue;
+                };
+                let target = caps.get(1).map_or("", |m| m.as_str());
+                let source = caps.get(2).map_or("", |m| m.as_str());
+
+                if !params.contains(source) {
+                    continue;
+                }
+                if types.get(target).map(String::as_str) != Some("address") {
+                    continue;
+                }
+
+                // Any zero-check on this parameter anywhere in the function counts,
+                // including OpenZeppelin-style custom errors.
+                // Built per-parameter, so it cannot use the cached `re!` macro.
+                let escaped = regex::escape(source);
+                let Ok(guard) = Regex::new(&format!(
+                    r"(?:require|assert|if)\s*\([^)]*\b{0}\b[^)]*address\s*\(\s*0\s*\)|\b{0}\b\s*!=\s*address\s*\(\s*0\s*\)|address\s*\(\s*0\s*\)\s*!=\s*\b{0}\b",
+                    escaped
+                )) else {
+                    continue;
+                };
+                if guard.is_match(&func.body) {
+                    continue;
+                }
+
+                vulnerabilities.push(Vulnerability::new(
+                    VulnerabilitySeverity::Low,
+                    VulnerabilityCategory::InputValidationFailure,
+                    format!("Missing Zero-Address Check on `{}`", target),
+                    format!(
+                        "`{}` assigns the parameter `{}` to the address state variable `{}` without \
+                         checking it against `address(0)`. Passing zero -- by mistake or from an \
+                         uninitialised caller-side variable -- is accepted silently, and value sent \
+                         to `{}` afterwards is unrecoverable.",
+                        func.name, source, target, target
+                    ),
+                    func.start_line + i,
+                    line.to_string(),
+                    format!(
+                        "Validate before assigning: `require({} != address(0), \"zero address\");`",
+                        source
+                    ),
+                ));
+            }
+        }
+
+        vulnerabilities
+    }
+
+    /// Lookup functions that return `0` to mean "not found".
+    ///
+    /// Index 0 is a perfectly valid position in an array, so a caller cannot tell
+    /// "found at index 0" from "absent". Anyone at index 0 who trusts the return value
+    /// -- to request a refund, claim a slot, or index into the array -- acts on the
+    /// wrong entry, and callers that treat 0 as "absent" lock that position out.
+    pub fn detect_ambiguous_sentinel_index(&self, content: &str) -> Vec<Vulnerability> {
+        let mut vulnerabilities = Vec::new();
+        let loop_re = re!(r"\bfor\s*\(");
+        let return_var = re!(r"^return\s+([A-Za-z_]\w*)\s*;");
+        let return_zero = re!(r"^return\s+0\s*;");
+
+        for func in self.extract_functions(content) {
+            // Only index lookups: an unsigned return with no explicit "found" flag.
+            if !re!(r"returns\s*\(\s*uint\d*\s*\)").is_match(&func.signature) {
+                continue;
+            }
+
+            let body_lines: Vec<&str> = func.body.lines().collect();
+            let mut in_loop = false;
+            let mut returns_index_in_loop = false;
+            let mut trailing_zero_line: Option<usize> = None;
+
+            for (i, raw) in body_lines.iter().enumerate() {
+                let line = raw.trim();
+                if loop_re.is_match(line) {
+                    in_loop = true;
+                }
+                if in_loop && return_var.is_match(line) {
+                    returns_index_in_loop = true;
+                }
+                if return_zero.is_match(line) {
+                    trailing_zero_line = Some(i);
+                }
+            }
+
+            let (true, Some(zero_line)) = (returns_index_in_loop, trailing_zero_line) else {
+                continue;
+            };
+
+            vulnerabilities.push(Vulnerability::new(
+                VulnerabilitySeverity::Low,
+                VulnerabilityCategory::LogicError,
+                format!("Ambiguous Sentinel Return in {}", func.name),
+                format!(
+                    "`{}` scans an array, returns the matching index, and falls through to \
+                     `return 0` when nothing matches. Index 0 is itself a valid position, so the \
+                     caller cannot distinguish \"found at index 0\" from \"not present\". The entry \
+                     at index 0 is effectively unaddressable, and callers that treat 0 as \"absent\" \
+                     will act on the wrong element.",
+                    func.name
+                ),
+                func.start_line + zero_line,
+                body_lines[zero_line].trim().to_string(),
+                "Return an explicit found flag (`returns (uint256 index, bool found)`), revert when \
+                 there is no match, or use a 1-based index where 0 is reserved for \"absent\"."
+                    .to_string(),
+            ));
+        }
+
+        vulnerabilities
+    }
+
+    /// Like [`Self::extract_functions`], plus constructors.
+    ///
+    /// `extract_functions` keys off the `function` keyword, so it never sees a
+    /// `constructor(...)` -- which is exactly where addresses are first wired up.
+    fn extract_functions_with_constructors(&self, content: &str) -> Vec<ExtractedFunction> {
+        let mut functions = self.extract_functions(content);
+        let ctor_re = re!(r"^\s*constructor\s*\(");
+        let lines: Vec<&str> = content.lines().collect();
+
+        let mut idx = 0;
+        while idx < lines.len() {
+            if !ctor_re.is_match(lines[idx]) {
+                idx += 1;
+                continue;
+            }
+
+            let mut signature = String::new();
+            let mut body = String::new();
+            let mut depth: i32 = 0;
+            let mut saw_open = false;
+            let mut end_idx = idx;
+
+            for (scan_idx, line) in lines.iter().enumerate().skip(idx) {
+                if !saw_open {
+                    signature.push(' ');
+                    signature.push_str(line.trim());
+                }
+                body.push_str(line);
+                body.push('\n');
+                depth += line.matches('{').count() as i32;
+                if line.contains('{') {
+                    saw_open = true;
+                }
+                depth -= line.matches('}').count() as i32;
+                end_idx = scan_idx;
+                if saw_open && depth <= 0 {
+                    break;
+                }
+            }
+
+            functions.push(ExtractedFunction {
+                name: "constructor".to_string(),
+                start_line: idx + 1,
+                signature: signature.trim().to_string(),
+                body,
+            });
+            idx = end_idx + 1;
+        }
+
+        functions
     }
 
     // Detect flash loan attack vulnerabilities by looking for contracts that
@@ -383,16 +856,14 @@ impl AdvancedAnalyzer {
             || content.contains("IERC20")
             || content.contains("allowance")
             || (content.contains("balanceOf") && content.contains("totalSupply"));
-        let erc_standard_functions = vec![
-            "transfer",
+        let erc_standard_functions = ["transfer",
             "transferfrom",
             "approve",
             "mint",
             "burn",
             "deposit",
             "withdraw",
-            "redeem",
-        ];
+            "redeem"];
 
         // Match the start of a function declaration (may span multiple lines)
         let function_start_pattern = re!(r"function\s+(\w+)\s*\(");
@@ -466,10 +937,10 @@ impl AdvancedAnalyzer {
                 // This handles multi-line signatures with modifiers on separate lines
                 let full_sig = {
                     let mut sig = String::new();
-                    for line_idx in idx..lines.len().min(idx + 10) {
-                        sig.push_str(lines[line_idx]);
+                    for &sig_line in lines.iter().skip(idx).take(10) {
+                        sig.push_str(sig_line);
                         sig.push(' ');
-                        if lines[line_idx].contains('{') {
+                        if sig_line.contains('{') {
                             break;
                         }
                     }
@@ -575,8 +1046,8 @@ impl AdvancedAnalyzer {
                     !name.ends_with("Proxy") && !name.ends_with("Beacon")
                 })
         });
-        if is_upgradeable_impl {
-            if (content.contains("constructor(") || content.contains("constructor ("))
+        if is_upgradeable_impl
+            && (content.contains("constructor(") || content.contains("constructor ("))
                 // A constructor that calls _disableInitializers() is the OZ-recommended
                 // pattern for implementation contracts — not a defect.
                 && !content.contains("_disableInitializers")
@@ -592,7 +1063,6 @@ impl AdvancedAnalyzer {
                         .to_string(),
                 ));
             }
-        }
 
         vulnerabilities
     }
@@ -1105,14 +1575,13 @@ impl AdvancedAnalyzer {
                         has_call = true;
                         call_line = i;
                     }
-                    if has_call && i > call_line {
-                        if body_line.contains("balance") && body_line.contains("=")
-                            || body_line.contains("balances[") && body_line.contains("=")
+                    if has_call && i > call_line
+                        && (body_line.contains("balance") && body_line.contains("=")
+                            || body_line.contains("balances[") && body_line.contains("="))
                         {
                             has_state_update_after = true;
                             break;
                         }
-                    }
                 }
 
                 if has_call && has_state_update_after && !content.contains("nonReentrant") {
@@ -1396,7 +1865,7 @@ impl AdvancedAnalyzer {
                     || line.contains("deposit"))
             {
                 // Check if function uses safeTransferFrom within it
-                let func_body: Vec<&str> = lines.iter().skip(idx).take(30).map(|s| *s).collect();
+                let func_body: Vec<&str> = lines.iter().skip(idx).take(30).copied().collect();
                 let uses_safe_transfer = func_body
                     .iter()
                     .any(|l| l.contains("safeTransferFrom") || l.contains("_safeMint"));
@@ -1411,8 +1880,8 @@ impl AdvancedAnalyzer {
                         {
                             transfer_idx = i;
                         }
-                        if i > transfer_idx && transfer_idx > 0 {
-                            if body_line.contains("=")
+                        if i > transfer_idx && transfer_idx > 0
+                            && body_line.contains("=")
                                 && !body_line.contains("==")
                                 && (body_line.contains("balance")
                                     || body_line.contains("amount")
@@ -1422,7 +1891,6 @@ impl AdvancedAnalyzer {
                                 state_change_after = true;
                                 break;
                             }
-                        }
                     }
 
                     if state_change_after {
@@ -1893,8 +2361,7 @@ impl AdvancedAnalyzer {
             }
             if transfer_pattern.is_match(line) {
                 // Check if state updates happen AFTER this transfer
-                for future_idx in (idx + 1)..lines.len().min(idx + 10) {
-                    let future_line = lines[future_idx];
+                for &future_line in lines.iter().skip(idx + 1).take(9) {
                     if future_line.trim() == "}" {
                         break;
                     }
@@ -2307,8 +2774,8 @@ impl AdvancedAnalyzer {
             re!(r"assets\s*=\s*shares\s*\*\s*totalAssets\s*/\s*totalSupply");
 
         for (idx, line) in content.lines().enumerate() {
-            if share_calc_pattern.is_match(line) || asset_calc_pattern.is_match(line) {
-                if !has_virtual_offset && !has_min_deposit {
+            if (share_calc_pattern.is_match(line) || asset_calc_pattern.is_match(line))
+                && !has_virtual_offset && !has_min_deposit {
                     vulnerabilities.push(Vulnerability::high_confidence(
                         VulnerabilitySeverity::Critical,
                         VulnerabilityCategory::LogicError,
@@ -2319,7 +2786,6 @@ impl AdvancedAnalyzer {
                         "Add virtual offset to shares/assets: _decimalsOffset() returning 3-6, or require minimum initial deposit of significant amount".to_string(),
                     ));
                 }
-            }
         }
 
         // Also check convertToShares/convertToAssets functions
@@ -2421,8 +2887,7 @@ impl AdvancedAnalyzer {
                 let context_start = idx.saturating_sub(10);
                 let context_end = (idx + 10).min(lines.len());
 
-                for check_idx in context_start..context_end {
-                    let check_line = lines[check_idx];
+                for &check_line in &lines[context_start..context_end] {
 
                     // Check if dangerous view functions are called
                     for view_fn in &dangerous_views {
@@ -3650,15 +4115,13 @@ impl AdvancedAnalyzer {
         for (idx, line) in lines.iter().enumerate() {
             if line.contains(".send(") || line.contains("IERC777(") {
                 // Look for state changes after the transfer
-                for future_idx in (idx + 1)..lines.len().min(idx + 10) {
-                    let future_line = lines[future_idx];
+                for &future_line in lines.iter().skip(idx + 1).take(9) {
                     if (future_line.contains("=") && !future_line.contains("=="))
                         && (future_line.contains("balance")
                             || future_line.contains("total")
                             || future_line.contains("amount")
                             || future_line.contains("debt"))
-                    {
-                        if !has_protection {
+                        && !has_protection {
                             vulnerabilities.push(Vulnerability::high_confidence(
                                 VulnerabilitySeverity::Critical,
                                 VulnerabilityCategory::ERC777CallbackReentrancy,
@@ -3670,7 +4133,6 @@ impl AdvancedAnalyzer {
                             ));
                             break;
                         }
-                    }
                 }
             }
         }
@@ -3811,16 +4273,14 @@ impl AdvancedAnalyzer {
         let mut vulnerabilities = Vec::new();
 
         // Check if this is a DeFi contract with critical operations
-        let defi_operations = vec![
-            "swap",
+        let defi_operations = ["swap",
             "deposit",
             "withdraw",
             "stake",
             "unstake",
             "borrow",
             "repay",
-            "liquidate",
-        ];
+            "liquidate"];
         let is_defi = defi_operations
             .iter()
             .any(|op| content.to_lowercase().contains(op));
@@ -5505,15 +5965,45 @@ impl AdvancedAnalyzer {
         functions
     }
 
+    /// Collect the names of *contract-level* state variables.
+    ///
+    /// Depth-aware on purpose: a flat line scan also picks up locals such as
+    /// `uint256 tokenId = totalSupply();`, and callers that use this set to decide
+    /// "is this a storage write?" would then treat local assignments as state
+    /// changes. Only declarations at brace depth 1 (directly inside a contract,
+    /// library, or interface body) count. Array declarations (`address[] public
+    /// players;`) are included -- they are the storage that array-index writes
+    /// like `players[i] = address(0)` target.
     fn extract_state_variable_names(&self, content: &str) -> HashSet<String> {
         let mut vars = HashSet::new();
-        let var_re = re!(r"^\s*(?:mapping\s*\([^)]+\)|address|uint\d*|int\d*|bool|bytes\d*|string|bytes)\s+(?:(?:public|private|internal|constant|immutable)\s+)*([A-Za-z_]\w*)\b");
+        let var_re = re!(r"^\s*(?:mapping\s*\(.+\)|address|uint\d*|int\d*|bool|bytes\d*|string|bytes)(?:\s*\[[^\]]*\])*\s+(?:(?:public|private|internal|constant|immutable|override)\s+)*([A-Za-z_]\w*)\s*(?:=|;)");
+        let container_re = re!(r"^\s*(?:abstract\s+)?(?:contract|library|interface)\s+\w+");
+
+        let mut depth: i32 = 0;
+        let mut in_container = false;
 
         for line in content.lines() {
-            if let Some(caps) = var_re.captures(line) {
-                if let Some(name) = caps.get(1) {
-                    vars.insert(name.as_str().to_string());
+            let trimmed = line.trim();
+            if !in_container && container_re.is_match(line) {
+                in_container = true;
+            }
+
+            // Declarations sit at depth 1: inside the container body, outside any
+            // function body. Measure before applying this line's own braces so a
+            // one-line `contract C { ... }` does not shift the frame.
+            if in_container && depth == 1 && !trimmed.starts_with("//") {
+                if let Some(caps) = var_re.captures(line) {
+                    if let Some(name) = caps.get(1) {
+                        vars.insert(name.as_str().to_string());
+                    }
                 }
+            }
+
+            depth += line.matches('{').count() as i32;
+            depth -= line.matches('}').count() as i32;
+            if depth <= 0 {
+                depth = 0;
+                in_container = false;
             }
         }
 
@@ -5527,7 +6017,7 @@ mod tests {
 
     #[test]
     fn extract_functions_skips_interface_prototypes() {
-        let analyzer = AdvancedAnalyzer::new(false);
+        let analyzer = AdvancedAnalyzer::new();
         let content = r#"
 interface IERC20Like {
     function balanceOf(address account) external view returns (uint256);
@@ -5560,7 +6050,7 @@ contract ExampleVault {
 
     #[test]
     fn detects_erc4626_liability_drift_after_interface_declarations() {
-        let analyzer = AdvancedAnalyzer::new(false);
+        let analyzer = AdvancedAnalyzer::new();
         let content = r#"// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
@@ -5600,5 +6090,33 @@ contract ERC4626SlashLiabilityDrift {
         let findings = analyzer.analyze_2025_exploit_patterns(content);
 
         assert!(findings.iter().any(|finding| finding.title == "ERC4626 Liability Drift After Slash"));
+    }
+}
+
+#[cfg(test)]
+mod legacy_arith_tests {
+    use super::AdvancedAnalyzer;
+
+    #[test]
+    fn flags_narrow_state_accumulator() {
+        let a = AdvancedAnalyzer::new();
+        let src = r#"
+contract A {
+    uint64 public totalFees = 0;
+    uint256 public counter;
+
+    function bump(uint256 fee) external {
+        totalFees = totalFees + uint64(fee);
+        counter += fee;
+    }
+}
+"#;
+        let types = a.extract_state_variable_types(src);
+        println!("TYPES {:?}", types);
+        let v = a.detect_legacy_unchecked_arithmetic(src);
+        for x in &v {
+            println!("FOUND {} @{}", x.title, x.line_number);
+        }
+        assert!(!v.is_empty());
     }
 }

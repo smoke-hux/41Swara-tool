@@ -5,7 +5,6 @@
 //! - Persisting cache to disk for CI/CD
 //! - Fast incremental analysis
 
-#![allow(dead_code)]
 
 use blake3::Hasher;
 use dashmap::DashMap;
@@ -98,11 +97,6 @@ impl ScanCache {
         cache
     }
 
-    /// Create in-memory only cache
-    pub fn in_memory() -> Self {
-        Self::new(None, 24)
-    }
-
     /// Create persistent cache
     pub fn persistent(cache_dir: &Path) -> Self {
         let cache_file = cache_dir.join(".41swara_cache.json");
@@ -180,19 +174,6 @@ impl ScanCache {
         self.entries.insert(file_path.to_string(), entry);
     }
 
-    /// Invalidate cache entry for a file
-    pub fn invalidate(&self, file_path: &str) {
-        self.entries.remove(file_path);
-        self.stats.lock().unwrap().invalidations += 1;
-    }
-
-    /// Clear entire cache
-    pub fn clear(&self) {
-        self.entries.clear();
-        let mut stats = self.stats.lock().unwrap();
-        *stats = CacheStats::default();
-    }
-
     /// Save cache to disk
     pub fn save_to_disk(&self) -> Result<(), std::io::Error> {
         if let Some(path) = &self.cache_path {
@@ -252,24 +233,6 @@ impl ScanCache {
             .retain(|_, entry| now - entry.scan_timestamp <= ttl_secs);
     }
 
-    /// Get number of cached files
-    pub fn len(&self) -> usize {
-        self.entries.len()
-    }
-
-    /// Check if cache is empty
-    pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
-    }
-
-    /// Check which files from a list need scanning (not cached or modified)
-    pub fn files_needing_scan(&self, files: &[(String, String)]) -> Vec<String> {
-        files
-            .iter()
-            .filter(|(path, content)| !self.is_cached(path, content))
-            .map(|(path, _)| path.clone())
-            .collect()
-    }
 }
 
 impl Drop for ScanCache {

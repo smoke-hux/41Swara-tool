@@ -15,15 +15,11 @@ pub struct ProjectScanner {
 
 #[derive(Debug, Clone)]
 pub struct ContractInfo {
-    #[allow(dead_code)] // Used in debug output and future analysis
     pub path: PathBuf,
     pub name: String,
     pub imports: Vec<String>,
-    #[allow(dead_code)] // Reserved for function-level cross-file analysis
     pub functions: Vec<String>,
-    #[allow(dead_code)] // Reserved for modifier propagation analysis
     pub modifiers: Vec<String>,
-    #[allow(dead_code)] // Reserved for state variable collision detection
     pub state_variables: Vec<String>,
     pub vulnerabilities: Vec<Vulnerability>,
 }
@@ -297,14 +293,12 @@ impl ProjectScanner {
                     && !trimmed.starts_with("//")
                     && !trimmed.starts_with("function")
                     && !trimmed.starts_with("modifier")
-                {
-                    if trimmed.contains("public")
+                    && (trimmed.contains("public")
                         || trimmed.contains("private")
-                        || trimmed.contains("internal")
+                        || trimmed.contains("internal"))
                     {
                         variables.push(trimmed.to_string());
                     }
-                }
             }
         }
 
@@ -314,7 +308,7 @@ impl ProjectScanner {
     fn build_dependency_graph(&mut self) {
         println!("  🔗 Building contract dependency graph...");
 
-        for (_path, info) in &self.contracts {
+        for info in self.contracts.values() {
             let mut deps = Vec::new();
 
             for import in &info.imports {
@@ -400,8 +394,8 @@ impl ProjectScanner {
             if matches!(
                 vuln.vulnerability.severity,
                 VulnerabilitySeverity::Critical | VulnerabilitySeverity::High
-            ) {
-                if !vuln.cross_file_impact.is_empty() {
+            )
+                && !vuln.cross_file_impact.is_empty() {
                     let mut path = vec![vuln.file_path.clone()];
                     path.extend(vuln.cross_file_impact.clone());
 
@@ -414,7 +408,6 @@ impl ProjectScanner {
                         ),
                     });
                 }
-            }
         }
 
         critical_paths
@@ -478,9 +471,9 @@ impl ProjectScanner {
                 * 0.1);
 
         // Normalize to 0-100 scale
-        let risk_score = (base_score * impact_multiplier).min(100.0);
+        
 
-        risk_score
+        (base_score * impact_multiplier).min(100.0)
     }
 
     pub fn print_analysis_report(&self, result: &ProjectAnalysisResult) {

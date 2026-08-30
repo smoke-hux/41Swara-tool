@@ -1,0 +1,324 @@
+{
+  "schema_version": 1,
+  "generated_by": "scripts/benchmark.sh",
+  "generated_at": "2026-08-30T10:09:27Z",
+  "scanner_version": "0.11.0",
+  "scan_options": {
+    "min_severity": "low"
+  },
+  "tolerance": {
+    "clean_total_increase": 0
+  },
+  "clean": {
+    "files": 14,
+    "total": 55,
+    "categories": {
+      "AccessControl": 3,
+      "ArbitraryExternalCall": 2,
+      "AssemblyUsage": 1,
+      "CompilerBug": 13,
+      "DoSAttacks": 1,
+      "DoubleClaiming": 2,
+      "FrontRunning": 1,
+      "InputValidationFailure": 1,
+      "IsContractPostPectra": 1,
+      "L2SequencerDowntime": 2,
+      "LogicError": 6,
+      "LowLevelCalls": 2,
+      "MissingEmergencyStop": 2,
+      "MissingEvents": 2,
+      "NamingConventions": 2,
+      "OracleManipulation": 1,
+      "ReadOnlyReentrancy": 1,
+      "Reentrancy": 3,
+      "RoleBasedAccessControl": 1,
+      "TimeManipulation": 4,
+      "UnsafeExternalCalls": 3,
+      "UnsafeTransferGas": 1
+    },
+    "severities": {
+      "Critical": 10,
+      "High": 10,
+      "Low": 4,
+      "Medium": 31
+    },
+    "per_file": {
+      "01_ownable_two_step.sol": 3,
+      "02_access_control_roles.sol": 3,
+      "03_reentrancy_guard.sol": 4,
+      "04_safe_erc20.sol": 10,
+      "05_checked_arithmetic.sol": 3,
+      "06_pull_payment.sol": 7,
+      "07_twap_oracle.sol": 6,
+      "08_transfer_2300_gas.sol": 5,
+      "09_view_pure_library.sol": 2,
+      "10_interfaces.sol": 0,
+      "11_pausable_erc20.sol": 2,
+      "12_merkle_claim.sol": 2,
+      "13_timelock.sol": 7,
+      "14_bounded_loop_registry.sol": 1
+    },
+    "per_file_categories": {
+      "01_ownable_two_step.sol": [
+        "CompilerBug",
+        "InputValidationFailure",
+        "MissingEvents"
+      ],
+      "02_access_control_roles.sol": [
+        "CompilerBug",
+        "MissingEvents",
+        "RoleBasedAccessControl"
+      ],
+      "03_reentrancy_guard.sol": [
+        "CompilerBug",
+        "MissingEmergencyStop",
+        "NamingConventions"
+      ],
+      "04_safe_erc20.sol": [
+        "ArbitraryExternalCall",
+        "AssemblyUsage",
+        "CompilerBug",
+        "IsContractPostPectra",
+        "LogicError",
+        "LowLevelCalls",
+        "ReadOnlyReentrancy",
+        "UnsafeExternalCalls"
+      ],
+      "05_checked_arithmetic.sol": [
+        "AccessControl",
+        "CompilerBug",
+        "LogicError"
+      ],
+      "06_pull_payment.sol": [
+        "AccessControl",
+        "CompilerBug",
+        "FrontRunning",
+        "MissingEmergencyStop",
+        "Reentrancy",
+        "TimeManipulation"
+      ],
+      "07_twap_oracle.sol": [
+        "CompilerBug",
+        "L2SequencerDowntime",
+        "LogicError",
+        "OracleManipulation",
+        "UnsafeExternalCalls"
+      ],
+      "08_transfer_2300_gas.sol": [
+        "CompilerBug",
+        "DoubleClaiming",
+        "Reentrancy",
+        "UnsafeTransferGas"
+      ],
+      "09_view_pure_library.sol": [
+        "CompilerBug",
+        "LogicError"
+      ],
+      "10_interfaces.sol": [],
+      "11_pausable_erc20.sol": [
+        "CompilerBug",
+        "LogicError"
+      ],
+      "12_merkle_claim.sol": [
+        "AccessControl",
+        "CompilerBug"
+      ],
+      "13_timelock.sol": [
+        "CompilerBug",
+        "DoSAttacks",
+        "LowLevelCalls",
+        "Reentrancy",
+        "TimeManipulation",
+        "UnsafeExternalCalls"
+      ],
+      "14_bounded_loop_registry.sol": [
+        "CompilerBug"
+      ]
+    }
+  },
+  "vuln": {
+    "files": 15,
+    "total": 101,
+    "categories": {
+      "AccessControl": 5,
+      "ArbitraryExternalCall": 3,
+      "ArithmeticIssues": 2,
+      "AssemblyUsage": 1,
+      "CompilerBug": 13,
+      "CrossChainReplay": 1,
+      "DelegateCalls": 2,
+      "DoSAttacks": 2,
+      "DoubleClaiming": 1,
+      "DoubleInitialization": 1,
+      "FrontRunning": 1,
+      "InputValidationFailure": 9,
+      "LRTRehypothecation": 1,
+      "LogicError": 3,
+      "LowLevelCalls": 2,
+      "MEVExploitable": 1,
+      "MissingEmergencyStop": 4,
+      "MissingEvents": 7,
+      "MissingTimelock": 3,
+      "OracleManipulation": 1,
+      "PragmaIssues": 2,
+      "RandomnessVulnerabilities": 2,
+      "ReadOnlyReentrancy": 1,
+      "Reentrancy": 6,
+      "SelfdestructDeprecation": 1,
+      "SignatureReplay": 1,
+      "SignatureVulnerabilities": 1,
+      "StorageDoSAttacks": 2,
+      "TimeManipulation": 3,
+      "TxOriginAuth": 2,
+      "UncheckedReturnValues": 2,
+      "UnsafeExternalCalls": 6,
+      "UnsafeTransferGas": 8,
+      "UnusedReturnValues": 1
+    },
+    "severities": {
+      "Critical": 19,
+      "High": 20,
+      "Low": 24,
+      "Medium": 38
+    },
+    "per_file": {
+      "01_reentrancy.sol": 3,
+      "02_access_control.sol": 8,
+      "03_tx_origin.sol": 8,
+      "04_bad_randomness.sol": 5,
+      "05_unchecked_call.sol": 9,
+      "06_delegatecall.sol": 9,
+      "07_integer_overflow_unchecked.sol": 7,
+      "08_floating_pragma.sol": 3,
+      "09_dos_unbounded_loop.sol": 6,
+      "10_timestamp_dependence.sol": 11,
+      "11_oracle_spot_price.sol": 6,
+      "12_encode_packed_collision.sol": 6,
+      "13_uninitialized_proxy.sol": 9,
+      "14_selfdestruct.sol": 5,
+      "15_front_running.sol": 6
+    },
+    "per_file_categories": {
+      "01_reentrancy.sol": [
+        "CompilerBug",
+        "MissingEmergencyStop",
+        "Reentrancy"
+      ],
+      "02_access_control.sol": [
+        "AccessControl",
+        "CompilerBug",
+        "InputValidationFailure",
+        "MissingEmergencyStop",
+        "MissingEvents",
+        "MissingTimelock",
+        "UnsafeExternalCalls"
+      ],
+      "03_tx_origin.sol": [
+        "CompilerBug",
+        "InputValidationFailure",
+        "MissingEvents",
+        "MissingTimelock",
+        "TxOriginAuth",
+        "UnsafeExternalCalls",
+        "UnsafeTransferGas"
+      ],
+      "04_bad_randomness.sol": [
+        "CompilerBug",
+        "RandomnessVulnerabilities",
+        "StorageDoSAttacks",
+        "UnsafeExternalCalls",
+        "UnsafeTransferGas"
+      ],
+      "05_unchecked_call.sol": [
+        "ArbitraryExternalCall",
+        "CompilerBug",
+        "InputValidationFailure",
+        "LowLevelCalls",
+        "UncheckedReturnValues",
+        "UnsafeExternalCalls",
+        "UnusedReturnValues"
+      ],
+      "06_delegatecall.sol": [
+        "AccessControl",
+        "ArbitraryExternalCall",
+        "CompilerBug",
+        "DelegateCalls",
+        "InputValidationFailure",
+        "LowLevelCalls",
+        "MissingEvents",
+        "Reentrancy"
+      ],
+      "07_integer_overflow_unchecked.sol": [
+        "ArithmeticIssues",
+        "LRTRehypothecation",
+        "MissingEmergencyStop",
+        "PragmaIssues",
+        "Reentrancy",
+        "UnsafeTransferGas"
+      ],
+      "08_floating_pragma.sol": [
+        "AccessControl",
+        "MissingEvents",
+        "PragmaIssues"
+      ],
+      "09_dos_unbounded_loop.sol": [
+        "CompilerBug",
+        "DoSAttacks",
+        "LogicError",
+        "Reentrancy",
+        "StorageDoSAttacks",
+        "UnsafeTransferGas"
+      ],
+      "10_timestamp_dependence.sol": [
+        "AccessControl",
+        "CompilerBug",
+        "DoubleClaiming",
+        "MissingEvents",
+        "RandomnessVulnerabilities",
+        "Reentrancy",
+        "TimeManipulation",
+        "UnsafeTransferGas"
+      ],
+      "11_oracle_spot_price.sol": [
+        "CompilerBug",
+        "LogicError",
+        "MissingEmergencyStop",
+        "OracleManipulation",
+        "ReadOnlyReentrancy",
+        "UnsafeTransferGas"
+      ],
+      "12_encode_packed_collision.sol": [
+        "CompilerBug",
+        "CrossChainReplay",
+        "InputValidationFailure",
+        "SignatureReplay",
+        "SignatureVulnerabilities",
+        "UnsafeExternalCalls"
+      ],
+      "13_uninitialized_proxy.sol": [
+        "AssemblyUsage",
+        "CompilerBug",
+        "DoubleInitialization",
+        "InputValidationFailure",
+        "LogicError",
+        "MissingEvents",
+        "MissingTimelock"
+      ],
+      "14_selfdestruct.sol": [
+        "AccessControl",
+        "CompilerBug",
+        "DoSAttacks",
+        "SelfdestructDeprecation",
+        "UnsafeExternalCalls"
+      ],
+      "15_front_running.sol": [
+        "CompilerBug",
+        "FrontRunning",
+        "InputValidationFailure",
+        "MEVExploitable",
+        "Reentrancy",
+        "UnsafeTransferGas"
+      ]
+    }
+  }
+}

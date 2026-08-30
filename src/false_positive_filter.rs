@@ -26,7 +26,6 @@
 //! Together the three layers achieve 90%+ false-positive reduction while maintaining high
 //! detection accuracy.
 
-#![allow(dead_code)]
 
 use crate::vulnerabilities::{Vulnerability, VulnerabilityCategory, VulnerabilitySeverity};
 use once_cell::sync::Lazy;
@@ -106,12 +105,18 @@ pub struct ContractContext {
     pub uses_safe_erc20: bool,
     /// `true` if the file contains only `interface` declarations and no `contract`.
     pub is_interface_only: bool,
+    /// The source with all comments stripped, computed once per file. Whole-file
+    /// "safe pattern" regexes match against this rather than the raw source so that
+    /// prose in a comment cannot suppress a real finding.
+    pub code_only: String,
     /// `true` if the file declares a `library` (not a contract).
     pub is_library: bool,
     /// `true` if the file is a Foundry/Hardhat test contract.
     pub is_test_contract: bool,
     /// `true` if the contract name or content indicates a mock.
-    pub is_mock_contract: bool,
+    /// Line ranges (1-based, inclusive) of contracts that are themselves mocks or test
+    /// helpers. Findings are checked against these per-line; see `mock_contract_spans`.
+    pub mock_spans: Vec<(usize, usize)>,
     /// `true` if any access-control pattern (Ownable, AccessControl, etc.) is detected.
     pub has_access_control: bool,
     /// Names of all `modifier` declarations found in the contract.
@@ -120,30 +125,8 @@ pub struct ContractContext {
     pub inherited_contracts: Vec<String>,
     /// Paths of all `import` statements.
     pub imported_files: Vec<String>,
-    /// Parsed function signatures with visibility, modifiers, and access-control flags.
-    pub defined_functions: Vec<FunctionInfo>,
     /// Any `@audit`, `@security`, `// SAFE:`, or `// AUDITED` annotations found.
     pub audit_annotations: Vec<String>,
-}
-
-/// Metadata for a single function definition parsed from the contract source.
-/// Used by category-specific filters to determine if a finding's enclosing
-/// function already has mitigating modifiers or restricted visibility.
-#[derive(Debug, Clone)]
-pub struct FunctionInfo {
-    /// Function name (e.g., "withdraw", "transfer").
-    pub name: String,
-    /// Visibility keyword: "external", "public", "internal", or "private".
-    pub visibility: String,
-    /// Non-standard modifiers on the function (excludes visibility, view/pure,
-    /// payable, virtual, override). Typically custom access-control modifiers.
-    pub modifiers: Vec<String>,
-    /// `true` if the function is declared `view` or `pure` (read-only).
-    pub is_view_pure: bool,
-    /// 1-based line number where the function declaration appears.
-    pub line_number: usize,
-    /// `true` if any modifier starts with "only" or matches known auth patterns.
-    pub has_access_control: bool,
 }
 
 /// The main false-positive filtering engine. It holds a `FilterConfig` and a
@@ -170,8 +153,55 @@ struct SafePattern {
     /// `&'static Regex` because patterns come from the per-call-site `re!` cache —
     /// each is compiled exactly once at first use and lives for the process lifetime.
     pattern: &'static Regex,
-    /// Human-readable description logged when this pattern triggers.
-    description: String,
+}
+
+
+/// Pull the backticked identifier out of a finding title, e.g.
+/// ``Unchecked Arithmetic on State Variable `totalFees` `` -> `totalFees`.
+///
+/// Used by deduplication to avoid merging findings that are about different
+/// variables. Titles without a backticked subject return `None`, which leaves the
+/// existing merge behaviour untouched.
+fn subject_identifier(title: &str) -> Option<&str> {
+    let start = title.find('`')? + 1;
+    let rest = &title[start..];
+    let end = rest.find('`')?;
+    let ident = &rest[..end];
+    if ident.is_empty() {
+        None
+    } else {
+        Some(ident)
+    }
+}
+
+
+/// The declaration line of the function containing `line` (1-based).
+///
+/// Scans backwards to the nearest `function`/`constructor` declaration. Returns
+/// `None` at contract level, where there is no enclosing function.
+fn enclosing_function_signature(content: &str, line: usize) -> Option<String> {
+    let lines: Vec<&str> = content.lines().collect();
+    if line == 0 || line > lines.len() {
+        return None;
+    }
+    let decl = re!(r"^\s*(function\s+\w+|constructor\s*\()");
+    lines[..line]
+        .iter()
+        .rev()
+        .find(|l| decl.is_match(l))
+        .map(|l| format!(" {} ", l.trim()))
+}
+
+impl ContractContext {
+    /// Does `line` fall inside a contract that is itself a mock or test helper?
+    ///
+    /// Per-line rather than per-file so that a mock declared alongside production code
+    /// suppresses findings only within its own body.
+    pub fn is_in_mock_contract(&self, line: usize) -> bool {
+        self.mock_spans
+            .iter()
+            .any(|&(start, end)| line >= start && line <= end)
+    }
 }
 
 impl FalsePositiveFilter {
@@ -186,37 +216,10 @@ impl FalsePositiveFilter {
     }
 
     fn strip_comment_lines(content: &str) -> String {
-        let mut stripped = String::with_capacity(content.len());
-        let mut in_block_comment = false;
-
-        for line in content.lines() {
-            let trimmed = line.trim_start();
-            if in_block_comment {
-                if let Some(end_idx) = line.find("*/") {
-                    in_block_comment = false;
-                    stripped.push_str(&line[(end_idx + 2)..]);
-                }
-                stripped.push('\n');
-                continue;
-            }
-
-            if trimmed.starts_with("/*") && !trimmed.contains("*/") {
-                in_block_comment = true;
-                stripped.push('\n');
-                continue;
-            }
-
-            if trimmed.starts_with("//") || trimmed.starts_with("/*") || trimmed.starts_with('*') {
-                stripped.push('\n');
-                continue;
-            }
-
-            let code_only = line.split("//").next().unwrap_or("");
-            stripped.push_str(code_only);
-            stripped.push('\n');
-        }
-
-        stripped
+        // Delegates to the shared, string-aware stripper. The local copy this replaced
+        // used `line.split("//").next()`, which truncated any line holding a URL in a
+        // string literal (`"https://..."` became `"https:`) before the regexes ran.
+        crate::parser::strip_comments(content)
     }
 
     /// Build the list of safe-pattern regexes. Each entry maps a vulnerability
@@ -230,60 +233,51 @@ impl FalsePositiveFilter {
             SafePattern {
                 category: VulnerabilityCategory::Reentrancy,
                 pattern: re!(r"(?i)(ReentrancyGuard|nonReentrant|_reentrancyGuard|locked\s*=\s*true)"),
-                description: "ReentrancyGuard detected".to_string(),
             },
             // Reentrancy: suppress if a CEI pattern annotation exists in comments
             SafePattern {
                 category: VulnerabilityCategory::Reentrancy,
                 pattern: re!(r"CEI\s*pattern|checks-effects-interactions"),
-                description: "CEI pattern annotation detected".to_string(),
             },
 
             // Arithmetic: suppress if SafeMath is imported (pre-0.8 protection)
             SafePattern {
                 category: VulnerabilityCategory::ArithmeticIssues,
                 pattern: re!(r"using\s+SafeMath\s+for|SafeMath\."),
-                description: "SafeMath library in use".to_string(),
             },
             // Arithmetic: suppress if Solidity 0.8+ (compiler-level overflow protection)
             SafePattern {
                 category: VulnerabilityCategory::ArithmeticIssues,
                 pattern: re!(r"pragma\s+solidity\s*[\^>=<]*\s*0\.[89]"),
-                description: "Solidity 0.8+ has built-in overflow protection".to_string(),
             },
 
             // Access control: suppress if common owner/role modifier keywords found
             SafePattern {
                 category: VulnerabilityCategory::AccessControl,
                 pattern: re!(r"(?i)(onlyOwner|onlyAdmin|onlyRole|onlyMinter|onlyGovernance|requiresAuth|auth\(\))"),
-                description: "Access control modifier present".to_string(),
             },
             // Access control: suppress if inline require checks msg.sender
             SafePattern {
                 category: VulnerabilityCategory::AccessControl,
                 pattern: re!(r"require\s*\(\s*msg\.sender\s*==|require\s*\(\s*_msgSender\s*\(\s*\)\s*=="),
-                description: "Sender verification in function".to_string(),
             },
 
             // Unchecked returns: suppress if SafeERC20 wrappers are used
             SafePattern {
                 category: VulnerabilityCategory::UncheckedReturnValues,
                 pattern: re!(r"using\s+SafeERC20\s+for|\.safeTransfer\(|\.safeTransferFrom\("),
-                description: "SafeERC20 library in use".to_string(),
             },
 
             // Proxy upgrade: suppress if _authorizeUpgrade is protected by onlyOwner
             SafePattern {
                 category: VulnerabilityCategory::UnprotectedProxyUpgrade,
                 pattern: re!(r"_authorizeUpgrade\s*\([^)]*\)\s*internal\s*(virtual\s*)?(override\s*)?onlyOwner"),
-                description: "Protected upgrade function".to_string(),
             },
 
             // Signature: suppress if using OZ ECDSA or SignatureChecker (handles malleability)
             SafePattern {
                 category: VulnerabilityCategory::SignatureVulnerabilities,
                 pattern: re!(r"ECDSA\.recover|ECDSA\.tryRecover|SignatureChecker"),
-                description: "Safe signature verification library".to_string(),
             },
         ]
     }
@@ -293,7 +287,10 @@ impl FalsePositiveFilter {
     /// `ContractContext` struct containing compiler version, library usage,
     /// inheritance, modifiers, and more.
     pub fn extract_context(&self, content: &str) -> ContractContext {
-        let mut ctx = ContractContext::default();
+        let mut ctx = ContractContext {
+            code_only: Self::strip_comment_lines(content),
+            ..Default::default()
+        };
 
         // Detect Solidity version from the pragma directive
         let version_pattern =
@@ -301,9 +298,12 @@ impl FalsePositiveFilter {
         if let Some(caps) = version_pattern.captures(content) {
             ctx.solidity_version = caps.get(2).map(|m| m.as_str().to_string());
             if let Some(ref version) = ctx.solidity_version {
-                ctx.is_solidity_0_8_plus = version.starts_with("0.8")
-                    || version.starts_with("0.9")
-                    || version.chars().next().map_or(false, |c| c > '0');
+                // Gated on `version_aware_filtering`: withholding it means not crediting
+                // the compiler's built-in checks, which is exactly what the knob promises.
+                ctx.is_solidity_0_8_plus = self.config.version_aware_filtering
+                    && (version.starts_with("0.8")
+                        || version.starts_with("0.9")
+                        || version.chars().next().is_some_and(|c| c > '0'));
             }
         }
 
@@ -315,16 +315,24 @@ impl FalsePositiveFilter {
             || content.contains("nonReentrant")
             || content.contains("_reentrancyGuard");
 
-        // Detect OpenZeppelin imports or references
-        ctx.uses_openzeppelin = content.contains("@openzeppelin")
-            || content.contains("openzeppelin-contracts")
-            || content.contains("OpenZeppelin");
+        // Detect OpenZeppelin imports or references.
+        //
+        // The `trust_*` flags are honoured here rather than at each use site: "trusting" a
+        // library means crediting its guarantees when deciding whether a finding is a false
+        // positive, so withholding trust is exactly equivalent to not detecting it. Gating
+        // once keeps every downstream consumer of `ctx.uses_*` consistent by construction.
+        ctx.uses_openzeppelin = self.config.trust_openzeppelin
+            && (content.contains("@openzeppelin")
+                || content.contains("openzeppelin-contracts")
+                || content.contains("OpenZeppelin"));
 
         // Detect Solmate
-        ctx.uses_solmate = content.contains("solmate") || content.contains("Solmate");
+        ctx.uses_solmate =
+            self.config.trust_solmate && (content.contains("solmate") || content.contains("Solmate"));
 
         // Detect Solady
-        ctx.uses_solady = content.contains("solady") || content.contains("Solady");
+        ctx.uses_solady =
+            self.config.trust_solady && (content.contains("solady") || content.contains("Solady"));
 
         // Detect SafeERC20 (wraps ERC20 calls with revert-on-failure)
         ctx.uses_safe_erc20 = content.contains("using SafeERC20 for")
@@ -349,10 +357,15 @@ impl FalsePositiveFilter {
             || content.contains("is Test")
             || content.contains("is DSTest");
 
-        // Detect mock contracts by name or keyword
-        ctx.is_mock_contract = content.contains("contract Mock")
-            || content.contains("Contract Mock")
-            || content.to_lowercase().contains("mock");
+        // Mock/test contracts, as LINE SPANS rather than a whole-file flag.
+        //
+        // This used to be `content.to_lowercase().contains("mock")` — the bare substring
+        // anywhere in the file, including inside a comment. Combined with `strict_mode`
+        // (on by default) dropping every finding in a "mock" file, appending
+        // `contract MockToken {}` to a vulnerable contract silently suppressed the entire
+        // report. Scoping to the declaring contract's own line range means a mock or test
+        // helper sitting beside production code no longer hides bugs in its neighbour.
+        ctx.mock_spans = Self::mock_contract_spans(content);
 
         // Detect broad access-control patterns (Ownable, RBAC, modifier keywords)
         ctx.has_access_control = content.contains("Ownable")
@@ -374,7 +387,7 @@ impl FalsePositiveFilter {
         if let Some(caps) = inherit_pattern.captures(content) {
             if let Some(inherited) = caps.get(2) {
                 for part in inherited.as_str().split(',') {
-                    let name = part.trim().split_whitespace().next().unwrap_or("");
+                    let name = part.split_whitespace().next().unwrap_or("");
                     if !name.is_empty() {
                         ctx.inherited_contracts.push(name.to_string());
                     }
@@ -403,72 +416,8 @@ impl FalsePositiveFilter {
         }
 
         // Parse all function declarations into structured FunctionInfo records
-        ctx.defined_functions = self.extract_functions(content);
 
         ctx
-    }
-
-    /// Parse every `function` declaration in the source into a `FunctionInfo`
-    /// struct. Extracts name, visibility, custom modifiers, view/pure status,
-    /// line number, and whether the function has an access-control modifier.
-    fn extract_functions(&self, content: &str) -> Vec<FunctionInfo> {
-        let mut functions = Vec::new();
-        // Matches: function <name>(<params>) <modifiers...>
-        let func_pattern = re!(r"function\s+(\w+)\s*\([^)]*\)\s*((?:external|public|internal|private|view|pure|payable|virtual|override|\w+\s*)*)");
-
-        let lines: Vec<&str> = content.lines().collect();
-
-        for (line_idx, line) in lines.iter().enumerate() {
-            if let Some(caps) = func_pattern.captures(line) {
-                let name = caps.get(1).map_or("", |m| m.as_str()).to_string();
-                let modifiers_str = caps.get(2).map_or("", |m| m.as_str());
-
-                // Determine visibility; default to "public" if none specified
-                let visibility = if modifiers_str.contains("external") {
-                    "external"
-                } else if modifiers_str.contains("public") {
-                    "public"
-                } else if modifiers_str.contains("internal") {
-                    "internal"
-                } else if modifiers_str.contains("private") {
-                    "private"
-                } else {
-                    "public"
-                }
-                .to_string();
-
-                let is_view_pure = modifiers_str.contains("view") || modifiers_str.contains("pure");
-
-                // Collect non-standard modifiers (i.e., custom ones like onlyOwner)
-                let modifiers: Vec<String> = modifiers_str
-                    .split_whitespace()
-                    .filter(|m| {
-                        ![
-                            "external", "public", "internal", "private", "view", "pure", "payable",
-                            "virtual", "override",
-                        ]
-                        .contains(m)
-                    })
-                    .map(|s| s.to_string())
-                    .collect();
-
-                // Heuristic: any modifier starting with "only" or matching auth keywords
-                let has_access_control = modifiers.iter().any(|m| {
-                    m.starts_with("only") || m == "auth" || m == "authorized" || m == "requiresAuth"
-                });
-
-                functions.push(FunctionInfo {
-                    name,
-                    visibility,
-                    modifiers,
-                    is_view_pure,
-                    line_number: line_idx + 1,
-                    has_access_control,
-                });
-            }
-        }
-
-        functions
     }
 
     /// Run the full false-positive filtering pipeline on a list of findings.
@@ -529,6 +478,10 @@ impl FalsePositiveFilter {
         let idx = line_number.saturating_sub(1);
         let start = idx.saturating_sub(before);
         let end = (idx + after + 1).min(lines.len());
+        // A finding whose line number exceeds the file length would make `start > end`
+        // and panic on the slice. Nothing should produce such a finding, but a scanner
+        // must not be one bad base_line offset away from crashing on user input.
+        let start = start.min(end);
         lines[start..end].join("\n")
     }
 
@@ -671,10 +624,43 @@ impl FalsePositiveFilter {
             || content_lower.contains("noncebitmap")
     }
 
+    /// Line spans of contracts whose own name marks them as a mock or test helper.
+    ///
+    /// A span runs from the contract's declaration to the line before the next top-level
+    /// declaration (or end of file), matching the boundary logic used by `deduplicate`.
+    fn mock_contract_spans(content: &str) -> Vec<(usize, usize)> {
+        let decl = re!(r"^\s*(?:abstract\s+)?(?:contract|library|interface)\s+(\w+)");
+        let mut decls: Vec<(usize, bool)> = Vec::new();
+        for (idx, line) in content.lines().enumerate() {
+            if let Some(caps) = decl.captures(line) {
+                let name = caps.get(1).map_or("", |m| m.as_str());
+                let lower = name.to_lowercase();
+                // Only genuine mock naming. A contract called `TestVulnerable` is
+                // usually the fixture UNDER test, not a helper, so treating a `test`
+                // prefix as a mock would suppress findings in exactly the contracts a
+                // corpus exists to exercise. Real test harnesses are recognised
+                // file-level instead, by their forge-std/ds-test imports.
+                let is_mock = lower.contains("mock");
+                decls.push((idx + 1, is_mock));
+            }
+        }
+        let total = content.lines().count();
+        let mut spans = Vec::new();
+        for (i, &(start, is_mock)) in decls.iter().enumerate() {
+            if is_mock {
+                let end = decls.get(i + 1).map_or(total, |&(n, _)| n.saturating_sub(1));
+                spans.push((start, end));
+            }
+        }
+        spans
+    }
+
     /// Determine if a vulnerability should be kept
     fn should_keep(&self, vuln: &Vulnerability, content: &str, ctx: &ContractContext) -> bool {
         // Skip all findings in test/mock contracts if strict mode
-        if self.config.strict_mode && (ctx.is_test_contract || ctx.is_mock_contract) {
+        if self.config.strict_mode
+            && (ctx.is_test_contract || ctx.is_in_mock_contract(vuln.line_number))
+        {
             return false;
         }
 
@@ -704,10 +690,34 @@ impl FalsePositiveFilter {
             }
         }
 
-        // Check for safe patterns
-        for safe in &self.safe_patterns {
-            if safe.category == vuln.category && safe.pattern.is_match(content) {
-                return false;
+        // "Unused" internal helpers in abstract contracts, libraries, and interfaces are
+        // the extension points those types exist to provide -- OpenZeppelin's
+        // `_requireOwned`, `_domainSeparatorV4`, `_reentrancyGuardEntered` and friends
+        // are all called by inheritors, not by the base file. Only report dead code in
+        // files that declare a concrete, deployable contract.
+        if matches!(vuln.category, VulnerabilityCategory::UnusedCode)
+            && vuln.title.contains("Unused Function")
+            && !re!(r"(?m)^\s*contract\s+\w+").is_match(content)
+        {
+            return false;
+        }
+
+        // Check for safe patterns.
+        //
+        // These are broad, case-insensitive, whole-file regexes that suppress an entire
+        // category when the contract appears to mitigate it. They must be matched against
+        // CODE ONLY. Previously they ran on the raw source, so prose in a comment was
+        // enough to silence a real finding: adding `// This contract follows
+        // checks-effects-interactions` removed a genuine "State Change After External
+        // Call" reentrancy finding, and `// no ReentrancyGuard here` did the same. A
+        // comment is a claim, not a mitigation.
+        // Gated on `semantic_analysis`: these whole-file patterns are the "semantic
+        // analysis of code patterns (CEI ordering, modifier presence)" the knob documents.
+        if self.config.semantic_analysis {
+            for safe in &self.safe_patterns {
+                if safe.category == vuln.category && safe.pattern.is_match(&ctx.code_only) {
+                    return false;
+                }
             }
         }
 
@@ -763,17 +773,15 @@ impl FalsePositiveFilter {
             VulnerabilityCategory::UnprotectedProxyUpgrade
             | VulnerabilityCategory::ProxyAdminVulnerability => {
                 // FP-7: Suppress transferOwnership findings with Ownable2Step
-                if content.contains("Ownable2Step")
+                if (content.contains("Ownable2Step")
                     || content.contains("acceptOwnership")
-                    || content.contains("pendingOwner")
-                {
-                    if vuln.code_snippet.contains("transferOwnership")
+                    || content.contains("pendingOwner"))
+                    && (vuln.code_snippet.contains("transferOwnership")
                         || vuln.title.contains("transferOwnership")
-                        || vuln.description.contains("transferOwnership")
+                        || vuln.description.contains("transferOwnership"))
                     {
                         return false;
                     }
-                }
                 self.filter_proxy_upgrade(vuln, content, ctx)
             }
             VulnerabilityCategory::SignatureVulnerabilities
@@ -849,12 +857,22 @@ impl FalsePositiveFilter {
                     .iter()
                     .any(|pattern| context.contains(pattern));
 
+                // Visibility and mutability are properties of the *enclosing* function,
+                // so they must be read from its declaration rather than from a window of
+                // surrounding lines. The window version suppressed a finding whenever any
+                // nearby function happened to be `internal view` -- in Puppy Raffle, a
+                // missing zero-address check in `changeFeeAddress` was hidden by the
+                // unrelated `_isActivePlayer() internal view` five lines below it.
+                let enclosing = enclosing_function_signature(content, vuln.line_number)
+                    .unwrap_or_default()
+                    .to_lowercase();
+
                 // Don't report for view/pure functions
                 if !contract_check_auth_like
                     && (snippet.contains(" view ")
                         || snippet.contains(" pure ")
-                        || context.contains(" view ")
-                        || context.contains(" pure "))
+                        || enclosing.contains(" view ")
+                        || enclosing.contains(" pure "))
                 {
                     return false;
                 }
@@ -862,29 +880,26 @@ impl FalsePositiveFilter {
                 // Don't report for internal/private functions
                 if snippet.contains(" internal ")
                     || snippet.contains(" private ")
-                    || context.contains(" internal ")
-                    || context.contains(" private ")
+                    || enclosing.contains(" internal ")
+                    || enclosing.contains(" private ")
                 {
                     return false;
                 }
 
-                if title.contains("array parameter") || title.contains("array length validation") {
-                    if self.has_array_length_validation(&context) {
+                if (title.contains("array parameter") || title.contains("array length validation"))
+                    && self.has_array_length_validation(&context) {
                         return false;
                     }
-                }
 
-                if title.contains("unchecked raw calldata") {
-                    if self.has_raw_bytes_validation(&context) {
+                if title.contains("unchecked raw calldata")
+                    && self.has_raw_bytes_validation(&context) {
                         return false;
                     }
-                }
 
-                if title.contains("fee-on-transfer") {
-                    if self.has_fee_on_transfer_accounting(&context) {
+                if title.contains("fee-on-transfer")
+                    && self.has_fee_on_transfer_accounting(&context) {
                         return false;
                     }
-                }
 
                 if title.contains("contract check bypassable") {
                     let helper_context = context.contains("function iscontract")
@@ -904,11 +919,10 @@ impl FalsePositiveFilter {
                     }
                 }
 
-                if title.contains("layerzero missing payload validation") {
-                    if self.has_raw_bytes_validation(&context) {
+                if title.contains("layerzero missing payload validation")
+                    && self.has_raw_bytes_validation(&context) {
                         return false;
                     }
-                }
 
                 true
             }
@@ -961,7 +975,7 @@ impl FalsePositiveFilter {
             }
             VulnerabilityCategory::SelfdestructDeprecation => {
                 // Don't report in test/mock contracts
-                if ctx.is_test_contract || ctx.is_mock_contract {
+                if ctx.is_test_contract || ctx.is_in_mock_contract(vuln.line_number) {
                     return false;
                 }
                 true
@@ -1182,10 +1196,10 @@ impl FalsePositiveFilter {
             let full_sig = {
                 let start = vuln.line_number.saturating_sub(1);
                 let mut sig = String::new();
-                for line_idx in start..lines.len().min(start + 10) {
-                    sig.push_str(lines[line_idx]);
+                for &sig_line in lines.iter().skip(start).take(10) {
+                    sig.push_str(sig_line);
                     sig.push(' ');
-                    if lines[line_idx].contains('{') {
+                    if sig_line.contains('{') {
                         break;
                     }
                 }
@@ -1242,8 +1256,7 @@ impl FalsePositiveFilter {
             // Check for inline access control (look at function body)
             let start = vuln.line_number;
             let end_idx = (start + 15).min(lines.len());
-            for i in start..end_idx {
-                let check_line = lines[i];
+            for &check_line in &lines[start..end_idx] {
                 if check_line.contains("require(msg.sender")
                     || check_line.contains("require(_msgSender()")
                     || check_line.contains("if (msg.sender !=")
@@ -1378,15 +1391,13 @@ impl FalsePositiveFilter {
         if ctx.uses_openzeppelin && content.contains("@openzeppelin") && content.contains("ECDSA") {
             return false;
         }
-        if title.contains("deadline") || title.contains("permit") {
-            if self.has_deadline_guard(&context) {
+        if (title.contains("deadline") || title.contains("permit"))
+            && self.has_deadline_guard(&context) {
                 return false;
             }
-        }
         if (title.contains("replay") || title.contains("signature"))
             && self.has_signature_verification(content, &context)
-        {
-            if self.has_nonce_management(content, &context)
+            && self.has_nonce_management(content, &context)
                 && (self.has_deadline_guard(&context)
                     || context.contains("domain_separator")
                     || context.contains("block.chainid")
@@ -1394,7 +1405,6 @@ impl FalsePositiveFilter {
             {
                 return false;
             }
-        }
         true
     }
 
@@ -1452,14 +1462,13 @@ impl FalsePositiveFilter {
             }
         }
 
-        if title.contains("mutable trusted forwarder") || title.contains("trusted forwarder") {
-            if self.has_access_control_guard(&context)
+        if (title.contains("mutable trusted forwarder") || title.contains("trusted forwarder"))
+            && (self.has_access_control_guard(&context)
                 || context.contains("immutable")
-                || context.contains("constructor(")
+                || context.contains("constructor("))
             {
                 return false;
             }
-        }
 
         if self.has_signature_verification(content, &context)
             && self.has_nonce_management(content, &context)
@@ -1524,7 +1533,7 @@ impl FalsePositiveFilter {
             || content
                 .lines()
                 .nth(vuln.line_number.saturating_sub(1))
-                .map_or(false, |l| l.contains("emit"))
+                .is_some_and(|l| l.contains("emit"))
         {
             return false;
         }
@@ -1562,7 +1571,7 @@ impl FalsePositiveFilter {
     /// Adjust vulnerability confidence based on context
     fn adjust_confidence(&self, vuln: &mut Vulnerability, ctx: &ContractContext) {
         // Reduce confidence for test/mock contracts
-        if ctx.is_test_contract || ctx.is_mock_contract {
+        if ctx.is_test_contract || ctx.is_in_mock_contract(vuln.line_number) {
             vuln.confidence_percent = vuln.confidence_percent.saturating_sub(30);
         }
 
@@ -1604,10 +1613,22 @@ impl FalsePositiveFilter {
     /// 2. Related-category merge within the same function (or 5-line fallback)
     /// 3. Threat model suppression when specific detections exist
     fn deduplicate(&self, vulnerabilities: &mut Vec<Vulnerability>, content: &str) {
-        // Pass 1: exact (line, category) dedup
-        let mut seen: HashSet<(usize, String)> = HashSet::new();
+        // Pass 1: exact (line, category, title) dedup.
+        //
+        // The title is part of the key on purpose. Keying on (line, category) alone
+        // treated two DIFFERENT rules that happen to share a category and a line as
+        // duplicates and dropped one at random — e.g. on a bridge `claim(bytes proof)`
+        // line, "Bridge Proof Verification" and "Bridge Claim Replay Attack" are distinct
+        // vulnerabilities, and whichever arrived second was silently discarded. Because
+        // rule order is not stable under parallel scanning, which one survived also
+        // varied between runs of the same binary on the same input.
+        //
+        // The same rule firing twice on one line is still collapsed, which is what this
+        // pass is for. Findings that are genuinely redundant rather than merely co-located
+        // are handled by the scope-merge pass below.
+        let mut seen: HashSet<(usize, String, String)> = HashSet::new();
         vulnerabilities.retain(|v| {
-            let key = (v.line_number, format!("{:?}", v.category));
+            let key = (v.line_number, format!("{:?}", v.category), v.title.clone());
             if seen.contains(&key) {
                 false
             } else {
@@ -1700,8 +1721,15 @@ impl FalsePositiveFilter {
                 | VulnerabilityCategory::PrecisionLoss
                 | VulnerabilityCategory::UncheckedMathOperation
                 | VulnerabilityCategory::InconsistentRounding
-                | VulnerabilityCategory::CLMMMathOverflow
-                | VulnerabilityCategory::UnsafeDowncast => 6,
+                | VulnerabilityCategory::CLMMMathOverflow => 6,
+
+                // Group 12: Truncating downcast. Deliberately NOT grouped with the
+                // math group: a downcast that truncates and an addition that wraps are
+                // different bugs with different fixes (widen the type vs. use checked
+                // math), and they routinely sit on the same line -- Puppy Raffle's
+                // `totalFees = totalFees + uint64(fee)` is both at once. Merging them
+                // drops one real finding.
+                VulnerabilityCategory::UnsafeDowncast => 12,
 
                 // Group 7: ERC-4626 vault inflation / donation
                 VulnerabilityCategory::ERC4626Inflation
@@ -1809,6 +1837,17 @@ impl FalsePositiveFilter {
                     vulnerabilities[j].line_number,
                 ) {
                     continue;
+                }
+                // Findings that name different state variables are different bugs,
+                // even inside one merge window: two unchecked accumulators in the same
+                // function each need their own fix.
+                if let (Some(a), Some(b)) = (
+                    subject_identifier(&vulnerabilities[i].title),
+                    subject_identifier(&vulnerabilities[j].title),
+                ) {
+                    if a != b {
+                        continue;
+                    }
                 }
                 let line_diff = (vulnerabilities[i].line_number as isize
                     - vulnerabilities[j].line_number as isize)

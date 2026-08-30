@@ -11,29 +11,14 @@
 //! - Access control: ERC-173 (Ownable)
 //! - And many more...
 
-#![allow(dead_code)]
 
 use crate::vulnerabilities::{SwcId, Vulnerability, VulnerabilityCategory, VulnerabilitySeverity};
 use regex::Regex;
 
-/// Represents a detected EIP in the contract
+/// An EIP/ERC standard detected in the contract under analysis.
 #[derive(Debug, Clone)]
 pub struct DetectedEIP {
     pub eip_number: u32,
-    pub name: String,
-    pub detection_line: usize,
-    pub detection_method: EIPDetectionMethod,
-    pub confidence: u8,
-}
-
-#[derive(Debug, Clone)]
-pub enum EIPDetectionMethod {
-    InterfaceImplementation,
-    ImportStatement,
-    FunctionSignature,
-    EventSignature,
-    CommentAnnotation,
-    InheritancePattern,
 }
 
 /// Known EIP vulnerability patterns
@@ -59,9 +44,7 @@ pub struct EIPAnalyzer {
 #[derive(Debug, Clone)]
 struct EIPPattern {
     eip_number: u32,
-    name: String,
     detection_patterns: Vec<Regex>,
-    interface_signatures: Vec<String>,
 }
 
 impl EIPAnalyzer {
@@ -79,101 +62,65 @@ impl EIPAnalyzer {
             // ERC-20: Fungible Token Standard
             EIPPattern {
                 eip_number: 20,
-                name: "ERC-20 Fungible Token".to_string(),
                 detection_patterns: vec![
                     Regex::new(r"(?i)(IERC20|ERC20|is\s+ERC20)").unwrap(),
                     Regex::new(r"function\s+transfer\s*\(\s*address[^,]*,\s*uint").unwrap(),
                     Regex::new(r"function\s+approve\s*\(\s*address[^,]*,\s*uint").unwrap(),
                     Regex::new(r"function\s+transferFrom\s*\(").unwrap(),
                 ],
-                interface_signatures: vec![
-                    "transfer(address,uint256)".to_string(),
-                    "approve(address,uint256)".to_string(),
-                    "transferFrom(address,address,uint256)".to_string(),
-                    "balanceOf(address)".to_string(),
-                    "allowance(address,address)".to_string(),
-                ],
             },
             // ERC-721: Non-Fungible Token Standard
             EIPPattern {
                 eip_number: 721,
-                name: "ERC-721 NFT".to_string(),
                 detection_patterns: vec![
                     Regex::new(r"(?i)(IERC721|ERC721|is\s+ERC721)").unwrap(),
                     Regex::new(r"function\s+safeTransferFrom\s*\(").unwrap(),
                     Regex::new(r"function\s+ownerOf\s*\(\s*uint").unwrap(),
                     Regex::new(r"onERC721Received").unwrap(),
                 ],
-                interface_signatures: vec![
-                    "safeTransferFrom(address,address,uint256)".to_string(),
-                    "ownerOf(uint256)".to_string(),
-                    "approve(address,uint256)".to_string(),
-                    "setApprovalForAll(address,bool)".to_string(),
-                ],
             },
             // ERC-777: Advanced Token Standard
             EIPPattern {
                 eip_number: 777,
-                name: "ERC-777 Token".to_string(),
                 detection_patterns: vec![
                     Regex::new(r"(?i)(IERC777|ERC777|is\s+ERC777)").unwrap(),
                     Regex::new(r"tokensReceived").unwrap(),
                     Regex::new(r"tokensToSend").unwrap(),
                     Regex::new(r"function\s+send\s*\(\s*address[^,]*,\s*uint").unwrap(),
                 ],
-                interface_signatures: vec![
-                    "send(address,uint256,bytes)".to_string(),
-                    "tokensReceived(address,address,address,uint256,bytes,bytes)".to_string(),
-                ],
             },
             // ERC-1155: Multi Token Standard
             EIPPattern {
                 eip_number: 1155,
-                name: "ERC-1155 Multi Token".to_string(),
                 detection_patterns: vec![
                     Regex::new(r"(?i)(IERC1155|ERC1155|is\s+ERC1155)").unwrap(),
                     Regex::new(r"function\s+safeTransferFrom\s*\([^)]*uint256\s+id").unwrap(),
                     Regex::new(r"function\s+safeBatchTransferFrom").unwrap(),
                     Regex::new(r"onERC1155Received").unwrap(),
                 ],
-                interface_signatures: vec![
-                    "safeTransferFrom(address,address,uint256,uint256,bytes)".to_string(),
-                    "safeBatchTransferFrom(address,address,uint256[],uint256[],bytes)".to_string(),
-                ],
             },
             // ERC-2612: Permit Extension for ERC-20
             EIPPattern {
                 eip_number: 2612,
-                name: "ERC-2612 Permit".to_string(),
                 detection_patterns: vec![
                     Regex::new(r"(?i)(IERC2612|ERC20Permit|is\s+ERC20Permit)").unwrap(),
                     Regex::new(r"function\s+permit\s*\(").unwrap(),
                     Regex::new(r"DOMAIN_SEPARATOR").unwrap(),
                     Regex::new(r"nonces\s*\(").unwrap(),
                 ],
-                interface_signatures: vec![
-                    "permit(address,address,uint256,uint256,uint8,bytes32,bytes32)".to_string(),
-                    "nonces(address)".to_string(),
-                    "DOMAIN_SEPARATOR()".to_string(),
-                ],
             },
             // ERC-2771: Meta Transactions
             EIPPattern {
                 eip_number: 2771,
-                name: "ERC-2771 Meta Transactions".to_string(),
                 detection_patterns: vec![
                     Regex::new(r"(?i)(ERC2771|is\s+ERC2771Context|trustedForwarder)").unwrap(),
                     Regex::new(r"_msgSender\s*\(\s*\)").unwrap(),
                     Regex::new(r"isTrustedForwarder").unwrap(),
                 ],
-                interface_signatures: vec![
-                    "isTrustedForwarder(address)".to_string(),
-                ],
             },
             // ERC-4626: Tokenized Vault Standard
             EIPPattern {
                 eip_number: 4626,
-                name: "ERC-4626 Tokenized Vault".to_string(),
                 detection_patterns: vec![
                     Regex::new(r"(?i)(IERC4626|ERC4626|is\s+ERC4626)").unwrap(),
                     Regex::new(r"function\s+deposit\s*\(\s*uint256[^,]*,\s*address").unwrap(),
@@ -181,133 +128,88 @@ impl EIPAnalyzer {
                     Regex::new(r"function\s+convertToShares").unwrap(),
                     Regex::new(r"function\s+convertToAssets").unwrap(),
                 ],
-                interface_signatures: vec![
-                    "deposit(uint256,address)".to_string(),
-                    "withdraw(uint256,address,address)".to_string(),
-                    "redeem(uint256,address,address)".to_string(),
-                    "convertToShares(uint256)".to_string(),
-                    "convertToAssets(uint256)".to_string(),
-                ],
             },
             // ERC-4337: Account Abstraction
             EIPPattern {
                 eip_number: 4337,
-                name: "ERC-4337 Account Abstraction".to_string(),
                 detection_patterns: vec![
                     Regex::new(r"(?i)(IAccount|UserOperation|EntryPoint|is\s+BaseAccount)").unwrap(),
                     Regex::new(r"validateUserOp").unwrap(),
                     Regex::new(r"function\s+execute\s*\(\s*address[^,]*,\s*uint256[^,]*,\s*bytes").unwrap(),
                 ],
-                interface_signatures: vec![
-                    "validateUserOp((address,uint256,bytes,bytes,uint256,uint256,uint256,uint256,uint256,bytes,bytes),bytes32,uint256)".to_string(),
-                ],
             },
             // ERC-1967: Proxy Storage Slots
             EIPPattern {
                 eip_number: 1967,
-                name: "ERC-1967 Proxy Storage".to_string(),
                 detection_patterns: vec![
                     Regex::new(r"(?i)(ERC1967|_IMPLEMENTATION_SLOT|_ADMIN_SLOT|_BEACON_SLOT)").unwrap(),
                     Regex::new(r"0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc").unwrap(),
                 ],
-                interface_signatures: vec![],
             },
             // ERC-1822: UUPS Proxy
             EIPPattern {
                 eip_number: 1822,
-                name: "ERC-1822 UUPS Proxy".to_string(),
                 detection_patterns: vec![
                     Regex::new(r"(?i)(UUPSUpgradeable|proxiableUUID|_authorizeUpgrade)").unwrap(),
-                ],
-                interface_signatures: vec![
-                    "proxiableUUID()".to_string(),
-                    "upgradeTo(address)".to_string(),
-                    "upgradeToAndCall(address,bytes)".to_string(),
                 ],
             },
             // ERC-173: Contract Ownership
             EIPPattern {
                 eip_number: 173,
-                name: "ERC-173 Ownership".to_string(),
                 detection_patterns: vec![
                     Regex::new(r"(?i)(Ownable|is\s+Ownable|owner\s*\(\s*\))").unwrap(),
                     Regex::new(r"onlyOwner").unwrap(),
                     Regex::new(r"transferOwnership").unwrap(),
                 ],
-                interface_signatures: vec![
-                    "owner()".to_string(),
-                    "transferOwnership(address)".to_string(),
-                ],
             },
             // EIP-1153: Transient Storage
             EIPPattern {
                 eip_number: 1153,
-                name: "EIP-1153 Transient Storage".to_string(),
                 detection_patterns: vec![
                     Regex::new(r"(?i)(tstore|tload|transient)").unwrap(),
                     Regex::new(r"assembly\s*\{[^}]*tstore").unwrap(),
                     Regex::new(r"assembly\s*\{[^}]*tload").unwrap(),
                 ],
-                interface_signatures: vec![],
             },
             // EIP-4844: Blob Transactions
             EIPPattern {
                 eip_number: 4844,
-                name: "EIP-4844 Blob Data".to_string(),
                 detection_patterns: vec![
                     Regex::new(r"(?i)(blobhash|BLOBBASEFEE|blob)").unwrap(),
                     Regex::new(r"blobhash\s*\(").unwrap(),
                 ],
-                interface_signatures: vec![],
             },
             // EIP-712: Typed Structured Data Hashing
             EIPPattern {
                 eip_number: 712,
-                name: "EIP-712 Typed Data".to_string(),
                 detection_patterns: vec![
                     Regex::new(r"(?i)(EIP712|DOMAIN_SEPARATOR|_hashTypedDataV4)").unwrap(),
                     Regex::new(r"keccak256\s*\(\s*abi\.encode\s*\(").unwrap(),
-                ],
-                interface_signatures: vec![
-                    "DOMAIN_SEPARATOR()".to_string(),
                 ],
             },
             // EIP-165: Interface Detection
             EIPPattern {
                 eip_number: 165,
-                name: "EIP-165 Interface Detection".to_string(),
                 detection_patterns: vec![
                     Regex::new(r"(?i)(IERC165|ERC165|supportsInterface)").unwrap(),
                     Regex::new(r"function\s+supportsInterface\s*\(\s*bytes4").unwrap(),
-                ],
-                interface_signatures: vec![
-                    "supportsInterface(bytes4)".to_string(),
                 ],
             },
             // EIP-2981: NFT Royalty Standard
             EIPPattern {
                 eip_number: 2981,
-                name: "EIP-2981 NFT Royalty".to_string(),
                 detection_patterns: vec![
                     Regex::new(r"(?i)(IERC2981|ERC2981|royaltyInfo)").unwrap(),
                     Regex::new(r"function\s+royaltyInfo\s*\(").unwrap(),
-                ],
-                interface_signatures: vec![
-                    "royaltyInfo(uint256,uint256)".to_string(),
                 ],
             },
             // EIP-3156: Flash Loans
             EIPPattern {
                 eip_number: 3156,
-                name: "EIP-3156 Flash Loans".to_string(),
                 detection_patterns: vec![
                     Regex::new(r"(?i)(IERC3156|flashLoan|flashBorrow|FlashLender|FlashBorrower)").unwrap(),
                     Regex::new(r"function\s+flashLoan\s*\(").unwrap(),
                     Regex::new(r"onFlashLoan").unwrap(),
-                ],
-                interface_signatures: vec![
-                    "flashLoan(address,address,uint256,bytes)".to_string(),
-                    "onFlashLoan(address,address,uint256,uint256,bytes)".to_string(),
                 ],
             },
         ]
@@ -618,7 +520,7 @@ impl EIPAnalyzer {
         let lines: Vec<&str> = content.lines().collect();
 
         for eip_pattern in &self.eip_patterns {
-            for (line_idx, line) in lines.iter().enumerate() {
+            for line in &lines {
                 for pattern in &eip_pattern.detection_patterns {
                     if pattern.is_match(line) {
                         // Check for duplicates
@@ -626,26 +528,8 @@ impl EIPAnalyzer {
                             .iter()
                             .any(|d: &DetectedEIP| d.eip_number == eip_pattern.eip_number)
                         {
-                            let method = if line.contains("import") {
-                                EIPDetectionMethod::ImportStatement
-                            } else if line.contains("interface") || line.contains(" is ") {
-                                EIPDetectionMethod::InterfaceImplementation
-                            } else if line.contains("function") {
-                                EIPDetectionMethod::FunctionSignature
-                            } else if line.contains("event") {
-                                EIPDetectionMethod::EventSignature
-                            } else if line.contains("//") || line.contains("/*") {
-                                EIPDetectionMethod::CommentAnnotation
-                            } else {
-                                EIPDetectionMethod::InheritancePattern
-                            };
-
                             detected.push(DetectedEIP {
                                 eip_number: eip_pattern.eip_number,
-                                name: eip_pattern.name.clone(),
-                                detection_line: line_idx + 1,
-                                detection_method: method,
-                                confidence: 85,
                             });
                             break;
                         }
@@ -656,8 +540,7 @@ impl EIPAnalyzer {
 
         if self.verbose && !detected.is_empty() {
             println!(
-                "  {} Detected EIPs: {}",
-                "📋".to_string(),
+                "  📋 Detected EIPs: {}",
                 detected
                     .iter()
                     .map(|e| format!("EIP-{}", e.eip_number))
@@ -681,8 +564,7 @@ impl EIPAnalyzer {
 
         if self.verbose {
             println!(
-                "  {} Scanning for EIP-specific vulnerabilities...",
-                "🔒".to_string()
+                "  🔒 Scanning for EIP-specific vulnerabilities..."
             );
         }
 
@@ -715,20 +597,18 @@ impl EIPAnalyzer {
                         }
 
                         // Suppress ERC-4626 inflation findings if mitigation exists
-                        if vuln.title.contains("First Depositor")
-                            || vuln.title.contains("Inflation")
-                        {
-                            if content.contains("MIN_SHARES")
+                        if (vuln.title.contains("First Depositor")
+                            || vuln.title.contains("Inflation"))
+                            && (content.contains("MIN_SHARES")
                                 || content.contains("MIN_ASSETS")
                                 || content.contains("MIN_DEPOSIT")
                                 || content.contains("INITIAL_DEPOSIT")
                                 || content.contains("_decimalsOffset")
                                 || content.contains("VIRTUAL_OFFSET")
-                                || content.contains("INITIAL_SHARES")
+                                || content.contains("INITIAL_SHARES"))
                             {
                                 continue;
                             }
-                        }
 
                         // Suppress ecrecover validation findings if address(0) check exists nearby
                         if vuln.title.contains("ecrecover") || vuln.vulnerability_id.contains("712")
@@ -792,8 +672,7 @@ impl EIPAnalyzer {
 
         if self.verbose && !vulnerabilities.is_empty() {
             println!(
-                "  {} Found {} EIP-specific vulnerabilities",
-                "⚠️".to_string(),
+                "  ⚠️ Found {} EIP-specific vulnerabilities",
                 vulnerabilities.len()
             );
         }
@@ -824,20 +703,4 @@ impl EIPAnalyzer {
         }
     }
 
-    /// Get summary of detected EIPs for reporting
-    pub fn get_eip_summary(&self, content: &str) -> String {
-        let detected = self.detect_eips(content);
-        if detected.is_empty() {
-            return "No EIP implementations detected.".to_string();
-        }
-
-        let mut summary = String::from("Detected EIP implementations:\n");
-        for eip in detected {
-            summary.push_str(&format!(
-                "  - EIP-{}: {} (line {}, confidence: {}%)\n",
-                eip.eip_number, eip.name, eip.detection_line, eip.confidence
-            ));
-        }
-        summary
-    }
 }

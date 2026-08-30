@@ -16,9 +16,8 @@
 //! The analysis is conservative: contract-level declarations (state variables, pragmas,
 //! imports) outside any function body are always considered reachable.
 
-#![allow(dead_code)]
 
-use crate::vulnerabilities::Vulnerability;
+use crate::vulnerabilities::{Vulnerability, VulnerabilityCategory};
 use once_cell::sync::Lazy;
 use regex::Regex;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -33,7 +32,6 @@ static CONSTRUCTOR_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"constructor\s*\("
 static FALLBACK_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"fallback\s*\(\s*\)").unwrap());
 static RECEIVE_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"receive\s*\(\s*\)\s*external\s*payable").unwrap());
-static INHERIT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"contract\s+\w+\s+is\s+([^{]+)").unwrap());
 static CALL_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\b([a-z_]\w*)\s*\(").unwrap());
 static MODIFIER_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"\b(only\w+|nonReentrant|whenNotPaused|whenPaused|initializer)\b").unwrap()
@@ -44,13 +42,10 @@ static EXTERNAL_CALL_RE: Lazy<Regex> = Lazy::new(|| {
 
 /// Represents a single function (or special function) as a node in the call graph.
 ///
-/// Each node stores metadata about the function's visibility, the functions it calls,
-/// any access-control modifiers applied to it, and flags for special function types
-/// (constructor, fallback, receive).
+/// Each node stores the function's visibility, the functions it calls, any
+/// access-control modifiers applied to it, and its source span.
 #[derive(Debug, Clone)]
 pub struct CallGraphNode {
-    /// The name of the function (e.g., "transfer", "constructor", "fallback").
-    pub name: String,
     /// The Solidity visibility specifier (external, public, internal, private).
     pub visibility: Visibility,
     /// Names of other functions called within this function's body.
@@ -64,12 +59,6 @@ pub struct CallGraphNode {
     /// Whether this function's own body contains an external call
     /// (`.call{`, `.delegatecall(`, `.staticcall(`, `.transfer(`, `.send(`).
     pub makes_external_call: bool,
-    /// Whether this is the contract constructor.
-    pub is_constructor: bool,
-    /// Whether this is the fallback function (invoked on calls with no matching selector).
-    pub is_fallback: bool,
-    /// Whether this is the receive function (invoked on plain Ether transfers).
-    pub is_receive: bool,
 }
 
 /// Solidity function visibility specifier.
@@ -92,8 +81,7 @@ pub enum Visibility {
 /// The complete call graph for a single contract.
 ///
 /// Maps function names to their `CallGraphNode` representations and tracks which
-/// functions serve as external entry points. Also records the inheritance chain
-/// for context (though cross-contract resolution is not yet implemented).
+/// functions serve as external entry points.
 #[derive(Debug)]
 pub struct CallGraph {
     /// All functions in the contract, keyed by function name.
@@ -101,15 +89,12 @@ pub struct CallGraph {
     /// Names of functions that are externally callable entry points
     /// (public, external, constructor, fallback, receive).
     pub entry_points: Vec<String>,
-    /// Parent contracts in the inheritance chain (e.g., `["Ownable", "ReentrancyGuard"]`).
-    pub inheritance_chain: Vec<String>,
 }
 
 /// The result of a reachability query for a specific line or vulnerability.
 ///
-/// Contains whether the target is reachable, the call paths that reach it,
-/// which entry points lead to it, and a confidence adjustment value that
-/// modifies the vulnerability's confidence score.
+/// Contains whether the target is reachable, the call paths that reach it, and a
+/// confidence adjustment value that modifies the vulnerability's confidence score.
 #[derive(Debug, Clone)]
 pub struct ReachabilityResult {
     /// Whether the target line/function is reachable from any entry point.
@@ -117,8 +102,6 @@ pub struct ReachabilityResult {
     /// All discovered call paths from entry points to the target function.
     /// Each path is a list of function names (e.g., `["deposit", "internal_transfer", "target"]`).
     pub call_paths: Vec<Vec<String>>,
-    /// The distinct entry point function names that can reach the target.
-    pub entry_points: Vec<String>,
     /// Confidence adjustment applied to vulnerabilities at this location.
     /// Range: -30 (likely unreachable, reduce confidence) to +30 (highly reachable, boost confidence).
     pub confidence_adjustment: i8,
@@ -161,7 +144,6 @@ impl ReachabilityAnalyzer {
     pub fn build_call_graph(&self, content: &str) -> CallGraph {
         let mut nodes = HashMap::new();
         let mut entry_points = Vec::new();
-        let inheritance_chain = self.extract_inheritance(content);
 
         let lines: Vec<&str> = content.lines().collect();
 
@@ -174,16 +156,12 @@ impl ReachabilityAnalyzer {
                 nodes.insert(
                     "constructor".to_string(),
                     CallGraphNode {
-                        name: "constructor".to_string(),
                         visibility: Visibility::Public,
                         calls,
                         modifiers: vec![],
                         line: idx + 1, // Convert 0-indexed to 1-indexed line number
                         end_line,
                         makes_external_call,
-                        is_constructor: true,
-                        is_fallback: false,
-                        is_receive: false,
                     },
                 );
                 entry_points.push("constructor".to_string());
@@ -197,16 +175,12 @@ impl ReachabilityAnalyzer {
                 nodes.insert(
                     "fallback".to_string(),
                     CallGraphNode {
-                        name: "fallback".to_string(),
                         visibility: Visibility::External,
                         calls,
                         modifiers: vec![],
                         line: idx + 1,
                         end_line,
                         makes_external_call,
-                        is_constructor: false,
-                        is_fallback: true,
-                        is_receive: false,
                     },
                 );
                 entry_points.push("fallback".to_string());
@@ -220,16 +194,12 @@ impl ReachabilityAnalyzer {
                 nodes.insert(
                     "receive".to_string(),
                     CallGraphNode {
-                        name: "receive".to_string(),
                         visibility: Visibility::External,
                         calls,
                         modifiers: vec![],
                         line: idx + 1,
                         end_line,
                         makes_external_call,
-                        is_constructor: false,
-                        is_fallback: false,
-                        is_receive: true,
                     },
                 );
                 entry_points.push("receive".to_string());
@@ -270,18 +240,14 @@ impl ReachabilityAnalyzer {
                 let end_line = Self::body_end(&lines, idx);
                 let makes_external_call = Self::body_has_external_call(&lines, idx, end_line);
                 nodes.insert(
-                    name.clone(),
+                    name,
                     CallGraphNode {
-                        name,
                         visibility,
                         calls,
                         modifiers,
                         line: idx + 1,
                         end_line,
                         makes_external_call,
-                        is_constructor: false,
-                        is_fallback: false,
-                        is_receive: false,
                     },
                 );
             }
@@ -290,7 +256,6 @@ impl ReachabilityAnalyzer {
         CallGraph {
             nodes,
             entry_points,
-            inheritance_chain,
         }
     }
 
@@ -325,24 +290,6 @@ impl ReachabilityAnalyzer {
             .take(end_line)
             .skip(start_idx)
             .any(|line| EXTERNAL_CALL_RE.is_match(line))
-    }
-
-    /// Extract the inheritance chain from a contract declaration.
-    ///
-    /// Parses `contract Foo is Bar, Baz(arg)` and returns `["Bar", "Baz"]`.
-    /// Constructor arguments in the `is` clause are stripped.
-    fn extract_inheritance(&self, content: &str) -> Vec<String> {
-        if let Some(caps) = INHERIT_RE.captures(content) {
-            let parents = caps.get(1).map_or("", |m| m.as_str());
-            // Split by comma, strip constructor args (everything after '('), and trim whitespace
-            return parents
-                .split(',')
-                .map(|p| p.trim().split('(').next().unwrap_or("").trim().to_string())
-                .filter(|p| !p.is_empty())
-                .collect();
-        }
-
-        vec![]
     }
 
     /// Extract function calls from a function body starting at `start_idx`.
@@ -418,44 +365,6 @@ impl ReachabilityAnalyzer {
             .collect()
     }
 
-    /// Check if a specific source line is reachable from any external entry point.
-    ///
-    /// This is the primary query method for reachability analysis. It:
-    /// 1. Identifies which function contains the target line.
-    /// 2. If the line is outside any function (contract-level declaration), returns reachable.
-    /// 3. If the containing function is itself an entry point, returns reachable with high confidence.
-    /// 4. Otherwise, performs BFS from all entry points to find call paths to the function.
-    ///
-    /// # Arguments
-    /// * `call_graph` - A pre-built call graph for the contract.
-    /// * `target_line` - The 1-indexed source line to check.
-    /// * `content` - The full contract source (used to find function boundaries).
-    ///
-    /// # Returns
-    /// A `ReachabilityResult` with reachability status, paths, and confidence adjustment.
-    pub fn is_line_reachable(
-        &self,
-        call_graph: &CallGraph,
-        target_line: usize,
-        _content: &str,
-    ) -> ReachabilityResult {
-        // Determine which function (if any) contains the target line
-        let target_function = self.find_function_at_line(call_graph, target_line);
-
-        match target_function {
-            None => ReachabilityResult {
-                // Lines outside functions (pragma, state variables, imports, etc.) are
-                // always reachable — they're contract-level declarations, not dead code.
-                is_reachable: true,
-                call_paths: vec![],
-                entry_points: vec![],
-                confidence_adjustment: 0,
-                reason: "Contract-level declaration (outside function scope)".to_string(),
-            },
-            Some(target_func) => self.function_reachability(call_graph, &target_func),
-        }
-    }
-
     /// Compute the reachability result for a named function. This is the
     /// per-function core of `is_line_reachable`; callers that process many
     /// findings memoize it per function name (see `apply_reachability`).
@@ -465,7 +374,6 @@ impl ReachabilityAnalyzer {
             return ReachabilityResult {
                 is_reachable: true,
                 call_paths: vec![vec![target_func.to_string()]],
-                entry_points: vec![target_func.to_string()],
                 confidence_adjustment: 20, // Boost confidence — directly callable
                 reason: "Directly callable external/public function".to_string(),
             };
@@ -479,7 +387,6 @@ impl ReachabilityAnalyzer {
             return ReachabilityResult {
                 is_reachable: false,
                 call_paths: vec![],
-                entry_points: vec![],
                 confidence_adjustment: -25, // Reduce confidence — likely a false positive
                 reason: format!(
                     "Function '{}' is not reachable from any entry point",
@@ -500,7 +407,6 @@ impl ReachabilityAnalyzer {
         ReachabilityResult {
             is_reachable: true,
             call_paths: paths.clone(),
-            entry_points: entry_points.clone(),
             confidence_adjustment: if paths.len() > 3 { 15 } else { 10 },
             reason: format!(
                 "Reachable via {} path(s) from {} entry point(s)",
@@ -602,29 +508,6 @@ impl ReachabilityAnalyzer {
         paths
     }
 
-    /// Filter out vulnerabilities that are in unreachable code.
-    ///
-    /// Builds a call graph from the contract source and removes any vulnerability
-    /// whose line number falls within a function that cannot be reached from any
-    /// external entry point. This is one of the three filtering layers in the
-    /// scanner pipeline.
-    ///
-    /// # Arguments
-    /// * `vulnerabilities` - The list of detected vulnerabilities to filter.
-    /// * `content` - The full Solidity source code of the contract.
-    ///
-    /// # Returns
-    /// A filtered list containing only vulnerabilities in reachable code.
-    pub fn filter_unreachable_vulnerabilities(
-        &self,
-        vulnerabilities: Vec<Vulnerability>,
-        content: &str,
-    ) -> Vec<Vulnerability> {
-        let call_graph = self.build_call_graph(content);
-        let mut cache: HashMap<String, ReachabilityResult> = HashMap::new();
-        self.filter_with_graph(vulnerabilities, &call_graph, &mut cache)
-    }
-
     /// One-pass reachability processing: builds the call graph a single time and
     /// runs all three analyses against it (unreachable filtering, confidence
     /// adjustment, and external call chain detection). This is what the scanner
@@ -667,6 +550,13 @@ impl ReachabilityAnalyzer {
         vulnerabilities
             .into_iter()
             .filter(|vuln| {
+                // Dead-code findings are *about* unreachability. Filtering them by
+                // reachability deletes exactly the findings that are correct: an unused
+                // internal function is unreachable by definition, so this filter used to
+                // silently drop every "unused function" report it produced.
+                if matches!(vuln.category, VulnerabilityCategory::UnusedCode) {
+                    return true;
+                }
                 let reachable = match self.cached_line_reachability(call_graph, cache, vuln.line_number) {
                     None => true, // contract-level declaration
                     Some(result) => {
@@ -685,28 +575,6 @@ impl ReachabilityAnalyzer {
             .collect()
     }
 
-    /// Adjust the confidence scores of vulnerabilities based on reachability.
-    ///
-    /// For each vulnerability, determines how reachable the affected code is and
-    /// applies a confidence adjustment:
-    /// - Directly callable entry points: +20
-    /// - Reachable via many paths (>3): +15
-    /// - Reachable via few paths: +10
-    /// - Not reachable: -25
-    /// - Contract-level (outside functions): no change
-    ///
-    /// Also appends the shortest call path to the vulnerability description in
-    /// verbose mode for debugging purposes.
-    ///
-    /// # Arguments
-    /// * `vulnerabilities` - Mutable slice of vulnerabilities to adjust in place.
-    /// * `content` - The full Solidity source code of the contract.
-    pub fn adjust_confidence(&self, vulnerabilities: &mut [Vulnerability], content: &str) {
-        let call_graph = self.build_call_graph(content);
-        let mut cache: HashMap<String, ReachabilityResult> = HashMap::new();
-        self.adjust_with_graph(vulnerabilities, &call_graph, &mut cache);
-    }
-
     fn adjust_with_graph(
         &self,
         vulnerabilities: &mut [Vulnerability],
@@ -723,8 +591,7 @@ impl ReachabilityAnalyzer {
             // Clamp the adjusted confidence to the valid 0-100 range
             let new_confidence = (vuln.confidence_percent as i16
                 + result.confidence_adjustment as i16)
-                .max(0)
-                .min(100) as u8;
+                .clamp(0, 100) as u8;
 
             vuln.confidence_percent = new_confidence;
             vuln.confidence =
@@ -742,27 +609,6 @@ impl ReachabilityAnalyzer {
                 }
             }
         }
-    }
-
-    /// Analyze external call chains for potential reentrancy vulnerabilities.
-    ///
-    /// Detects a specific pattern: a public/external function that makes an external
-    /// call (`.call{`, `.delegatecall()`, etc.) and also calls an internal function
-    /// that itself (transitively) makes external calls. This "nested external call"
-    /// pattern can create reentrancy vectors, especially if the `nonReentrant` modifier
-    /// is not applied.
-    ///
-    /// Only checks the caller function's own body for external calls (not the whole
-    /// contract), avoiding false positives from unrelated external calls elsewhere.
-    ///
-    /// # Arguments
-    /// * `content` - The full Solidity source code of the contract.
-    ///
-    /// # Returns
-    /// A list of newly generated vulnerabilities for detected nested external call chains.
-    pub fn analyze_external_call_chains(&self, content: &str) -> Vec<Vulnerability> {
-        let call_graph = self.build_call_graph(content);
-        self.external_call_chains(&call_graph)
     }
 
     /// Core of `analyze_external_call_chains`, operating on a pre-built graph.

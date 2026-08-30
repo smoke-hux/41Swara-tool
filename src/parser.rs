@@ -8,6 +8,14 @@ use std::path::Path;
 static VERSION_TRIPLE_RE: Lazy<regex::Regex> =
     Lazy::new(|| regex::Regex::new(r"(\d+)\.(\d+)\.(\d+)").unwrap());
 
+/// Exclusive upper bound of a range pragma, e.g. the `<0.9.0` in `>=0.4.22 <0.9.0`.
+static PRAGMA_UPPER_BOUND_RE: Lazy<regex::Regex> =
+    Lazy::new(|| regex::Regex::new(r"<\s*(\d+)\.(\d+)(?:\.\d+)?").unwrap());
+
+/// Any `major.minor` pair appearing in a pragma.
+static PRAGMA_VERSION_PAIR_RE: Lazy<regex::Regex> =
+    Lazy::new(|| regex::Regex::new(r"(\d+)\.(\d+)(?:\.\d+)?").unwrap());
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum CompilerVersion {
     V04, // 0.4.x - Very old, many issues
@@ -139,6 +147,12 @@ pub struct CompilerInfo {
 
 pub struct SolidityParser;
 
+impl Default for SolidityParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SolidityParser {
     pub fn new() -> Self {
         Self
@@ -146,86 +160,6 @@ impl SolidityParser {
 
     pub fn read_file<P: AsRef<Path>>(&self, path: P) -> Result<String> {
         fs::read_to_string(path)
-    }
-
-    pub fn parse_lines(&self, content: &str) -> Vec<(usize, String)> {
-        content
-            .lines()
-            .enumerate()
-            .map(|(idx, line)| (idx + 1, line.to_string()))
-            .collect()
-    }
-
-    #[allow(dead_code)]
-    pub fn extract_functions(&self, content: &str) -> Vec<(usize, String)> {
-        let mut functions = Vec::new();
-        let lines = self.parse_lines(content);
-
-        for (line_num, line) in lines {
-            let trimmed = line.trim();
-            if trimmed.starts_with("function ") {
-                functions.push((line_num, line));
-            }
-        }
-
-        functions
-    }
-
-    #[allow(dead_code)]
-    pub fn extract_modifiers(&self, content: &str) -> Vec<(usize, String)> {
-        let mut modifiers = Vec::new();
-        let lines = self.parse_lines(content);
-
-        for (line_num, line) in lines {
-            let trimmed = line.trim();
-            if trimmed.starts_with("modifier ") {
-                modifiers.push((line_num, line));
-            }
-        }
-
-        modifiers
-    }
-
-    #[allow(dead_code)]
-    pub fn extract_state_variables(&self, content: &str) -> Vec<(usize, String)> {
-        let mut variables = Vec::new();
-        let lines = self.parse_lines(content);
-
-        for (line_num, line) in lines {
-            let trimmed = line.trim();
-            // Basic detection of state variables
-            if (trimmed.contains("uint")
-                || trimmed.contains("int")
-                || trimmed.contains("bool")
-                || trimmed.contains("address")
-                || trimmed.contains("string")
-                || trimmed.contains("bytes"))
-                && !trimmed.starts_with("//")
-                && !trimmed.starts_with("function")
-                && !trimmed.starts_with("event")
-                && !trimmed.starts_with("modifier")
-            {
-                variables.push((line_num, line));
-            }
-        }
-
-        variables
-    }
-
-    #[allow(dead_code)]
-    pub fn get_contract_name(&self, content: &str) -> Option<String> {
-        for line in content.lines() {
-            let trimmed = line.trim();
-            if trimmed.starts_with("contract ") {
-                if let Some(name) = trimmed
-                    .strip_prefix("contract ")
-                    .and_then(|s| s.split_whitespace().next())
-                {
-                    return Some(name.to_string());
-                }
-            }
-        }
-        None
     }
 
     pub fn get_pragma_version(&self, content: &str) -> Option<String> {
@@ -238,21 +172,59 @@ impl SolidityParser {
         None
     }
 
+    /// Determine which compiler generation's rule set applies to this source.
+    ///
+    /// The version selected is the HIGHEST the pragma permits, because that is what the
+    /// project will actually be compiled with. This matters for range pragmas: the old
+    /// implementation was an ordered chain of `pragma.contains("0.4.")` tests against the
+    /// whole pragma string, so the ubiquitous `pragma solidity >=0.4.22 <0.9.0;` matched
+    /// the first arm and was treated as Solidity 0.4 — running the entire legacy 0.4 rule
+    /// set, including pre-0.8 unchecked-arithmetic findings, against code that in practice
+    /// compiles under 0.8 and has built-in overflow checks.
     pub fn get_compiler_version(&self, content: &str) -> Option<CompilerVersion> {
-        if let Some(pragma) = self.get_pragma_version(content) {
-            if pragma.contains("0.4.") {
-                return Some(CompilerVersion::V04);
-            } else if pragma.contains("0.5.") {
-                return Some(CompilerVersion::V05);
-            } else if pragma.contains("0.6.") {
-                return Some(CompilerVersion::V06);
-            } else if pragma.contains("0.7.") {
-                return Some(CompilerVersion::V07);
-            } else if pragma.contains("0.8.") {
-                return Some(CompilerVersion::V08);
+        let pragma = self.get_pragma_version(content)?;
+
+        // An exclusive upper bound (`<0.9.0`) caps the range: the highest usable minor is
+        // one below it. This dominates any lower bound present in the same pragma.
+        if let Some(caps) = PRAGMA_UPPER_BOUND_RE.captures(&pragma) {
+            if let (Some(major), Some(minor)) = (caps.get(1), caps.get(2)) {
+                let major: u32 = major.as_str().parse().ok()?;
+                let minor: u32 = minor.as_str().parse().ok()?;
+                // `<0.9.0` permits 0.8.x; `<0.8.0` permits 0.7.x.
+                let effective_minor = minor.saturating_sub(1);
+                return Self::minor_to_compiler_version(major, effective_minor);
             }
         }
-        None
+
+        // Otherwise take the highest minor version mentioned anywhere in the pragma,
+        // which covers both a bare pin (`0.8.20`) and a floor (`^0.8.0`, `>=0.6.2`).
+        let mut best: Option<(u32, u32)> = None;
+        for caps in PRAGMA_VERSION_PAIR_RE.captures_iter(&pragma) {
+            let major: u32 = caps.get(1)?.as_str().parse().ok()?;
+            let minor: u32 = caps.get(2)?.as_str().parse().ok()?;
+            if best.is_none_or(|(bmaj, bmin)| (major, minor) > (bmaj, bmin)) {
+                best = Some((major, minor));
+            }
+        }
+        let (major, minor) = best?;
+        Self::minor_to_compiler_version(major, minor)
+    }
+
+    /// Map a `major.minor` pair onto the coarse rule-set generation.
+    ///
+    /// Anything at or above 0.8 uses the 0.8 rule set; that is the newest generation the
+    /// scanner models, and later releases keep 0.8's checked-arithmetic semantics.
+    fn minor_to_compiler_version(major: u32, minor: u32) -> Option<CompilerVersion> {
+        if major > 0 || minor >= 8 {
+            return Some(CompilerVersion::V08);
+        }
+        match minor {
+            7 => Some(CompilerVersion::V07),
+            6 => Some(CompilerVersion::V06),
+            5 => Some(CompilerVersion::V05),
+            0..=4 => Some(CompilerVersion::V04),
+            _ => None,
+        }
     }
 
     pub fn get_detailed_version(&self, content: &str) -> Option<DetailedVersion> {
@@ -300,7 +272,7 @@ impl SolidityParser {
             } else if after_solidity
                 .chars()
                 .next()
-                .map_or(false, |c| c.is_ascii_digit())
+                .is_some_and(|c| c.is_ascii_digit())
             {
                 PragmaConstraint::Exact
             } else {
@@ -540,59 +512,89 @@ impl SolidityParser {
         vulnerabilities
     }
 
-    #[allow(dead_code)]
-    pub fn remove_comments(&self, content: &str) -> String {
-        let mut result = String::new();
-        let mut in_multiline_comment = false;
+}
 
-        for line in content.lines() {
-            let mut cleaned_line = String::new();
-            let mut chars = line.chars().peekable();
-            let mut in_string = false;
-            let mut string_char = ' ';
-
-            while let Some(ch) = chars.next() {
-                if in_multiline_comment {
-                    if ch == '*' && chars.peek() == Some(&'/') {
-                        chars.next();
-                        in_multiline_comment = false;
-                    }
-                } else if in_string {
-                    cleaned_line.push(ch);
-                    if ch == '\\' {
-                        // Escaped character: consume next without checking
-                        if let Some(escaped) = chars.next() {
-                            cleaned_line.push(escaped);
-                        }
-                    } else if ch == string_char {
-                        in_string = false;
-                    }
+/// Strip Solidity comments, preserving line count and column positions.
+///
+/// Every comment character is replaced by a space and every newline is kept, so a
+/// stripped line has the same index and length as the raw line it came from. This is a
+/// real state machine: it understands string literals, so `"https://example.com"` and
+/// `revert("/* not a comment */")` survive intact.
+///
+/// This is the single source of truth for comment stripping. Three near-identical
+/// copies previously existed; two of them used `line.split("//").next()`, which
+/// truncated any line containing a URL in a string literal, and treated a continuation
+/// line beginning with `*` as a comment.
+///
+/// Note: non-ASCII characters inside comments each become one ASCII space, so *byte*
+/// offsets are not preserved for such files — line and character indices are.
+pub fn strip_comments(content: &str) -> String {
+    #[derive(PartialEq)]
+    enum State {
+        Code,
+        LineComment,
+        BlockComment,
+        DoubleQuote,
+        SingleQuote,
+    }
+    let mut out = String::with_capacity(content.len());
+    let mut state = State::Code;
+    let mut chars = content.chars().peekable();
+    while let Some(c) = chars.next() {
+        match state {
+            State::Code => match c {
+                '/' if chars.peek() == Some(&'/') => {
+                    state = State::LineComment;
+                    out.push(' ');
+                }
+                '/' if chars.peek() == Some(&'*') => {
+                    state = State::BlockComment;
+                    out.push(' ');
+                }
+                '"' => {
+                    state = State::DoubleQuote;
+                    out.push(c);
+                }
+                '\'' => {
+                    state = State::SingleQuote;
+                    out.push(c);
+                }
+                _ => out.push(c),
+            },
+            State::LineComment => {
+                if c == '\n' {
+                    state = State::Code;
+                    out.push('\n');
                 } else {
-                    match ch {
-                        '"' | '\'' => {
-                            in_string = true;
-                            string_char = ch;
-                            cleaned_line.push(ch);
-                        }
-                        '/' => match chars.peek() {
-                            Some('/') => break,
-                            Some('*') => {
-                                chars.next();
-                                in_multiline_comment = true;
-                            }
-                            _ => cleaned_line.push(ch),
-                        },
-                        _ => cleaned_line.push(ch),
-                    }
+                    out.push(' ');
                 }
             }
-
-            if !in_multiline_comment || !cleaned_line.trim().is_empty() {
-                result.push_str(&cleaned_line);
-                result.push('\n');
+            State::BlockComment => {
+                if c == '*' && chars.peek() == Some(&'/') {
+                    chars.next();
+                    out.push_str("  ");
+                    state = State::Code;
+                } else if c == '\n' {
+                    out.push('\n');
+                } else {
+                    out.push(' ');
+                }
+            }
+            State::DoubleQuote | State::SingleQuote => {
+                let quote = if state == State::DoubleQuote { '"' } else { '\'' };
+                if c == '\\' {
+                    out.push(c);
+                    if let Some(next) = chars.next() {
+                        out.push(next);
+                    }
+                } else {
+                    if c == quote || c == '\n' {
+                        state = State::Code;
+                    }
+                    out.push(c);
+                }
             }
         }
-
-        result
     }
+    out
 }

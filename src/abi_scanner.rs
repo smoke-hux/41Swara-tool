@@ -444,8 +444,7 @@ impl ABIScanner {
             if critical_admin
                 .iter()
                 .any(|p| name.to_lowercase().contains(&p.to_lowercase()))
-            {
-                if func.state_mutability != "view" && func.state_mutability != "pure" {
+                && func.state_mutability != "view" && func.state_mutability != "pure" {
                     vulns.push(self.vuln(
                         VulnerabilitySeverity::Critical,
                         VulnerabilityCategory::ABIAccessControl,
@@ -455,7 +454,6 @@ impl ABIScanner {
                         "Implement onlyOwner, onlyRole, or multi-sig protection.".into(),
                     ));
                 }
-            }
 
             // Payable without clear purpose
             if func.state_mutability == "payable"
@@ -477,8 +475,7 @@ impl ABIScanner {
             if ["execute", "call", "delegatecall", "multicall"]
                 .iter()
                 .any(|p| name.to_lowercase().contains(p))
-            {
-                if func
+                && func
                     .inputs
                     .iter()
                     .any(|p| p.param_type == "bytes" || p.param_type == "bytes[]")
@@ -492,7 +489,6 @@ impl ABIScanner {
                         "Whitelist targets and function selectors. Add strict access control.".into(),
                     ));
                 }
-            }
 
             // Self-destruct
             if ["destroy", "kill", "selfdestruct"].contains(&name) {
@@ -645,8 +641,8 @@ impl ABIScanner {
         }
 
         // Governance flash loan risk
-        if analysis.contract_type == ContractType::Governor {
-            if names.contains("getVotes") && !names.contains("getPastVotes") {
+        if analysis.contract_type == ContractType::Governor
+            && names.contains("getVotes") && !names.contains("getPastVotes") {
                 vulns.push(self.vuln(
                     VulnerabilitySeverity::Critical,
                     VulnerabilityCategory::ABIGovernanceRisk,
@@ -656,7 +652,6 @@ impl ABIScanner {
                     "Use getPastVotes with snapshot at proposal creation block.".into(),
                 ));
             }
-        }
 
         // Bridge risks
         if analysis

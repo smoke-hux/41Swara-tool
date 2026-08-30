@@ -199,13 +199,11 @@ fn generate_attack_path(vuln: &Vulnerability, content: &str) -> Option<String> {
              4. Wallet returns valid because there is no per-hash consumed flag\n\
              5. Attacker triggers the signed action twice (or on the wrong domain)"
         )),
-        VulnerabilityCategory::Permit2UnlimitedApproval => Some(format!(
-            "1. User signs a Permit2 approval with type(uint).max amount and no expiration\n\
+        VulnerabilityCategory::Permit2UnlimitedApproval => Some("1. User signs a Permit2 approval with type(uint).max amount and no expiration\n\
              2. Spender contract is later compromised or upgraded with malicious logic\n\
              3. Attacker calls transferFrom via Permit2 against the user's wallet\n\
              4. Permit2 honors the unlimited allowance — no per-call signature needed\n\
-             5. Attacker drains the user's full balance of the approved token"
-        )),
+             5. Attacker drains the user's full balance of the approved token".to_string()),
         VulnerabilityCategory::LRTRehypothecation => Some(format!(
             "1. User deposits collateral into {contract_name} restaking vault\n\
              2. Vault delegates the same collateral to multiple AVS operators in {fn_name}()\n\
@@ -268,6 +266,27 @@ fn generate_attack_path(vuln: &Vulnerability, content: &str) -> Option<String> {
              3. The shared Yul clearing helper collides; one emits the wrong opcode (sstore<->tstore)\n\
              4. A transient reentrancy lock persists, or persistent state is silently zeroed\n\
              5. Attacker exploits the corrupted guard/state that the developer believed was cleared"
+        )),
+        VulnerabilityCategory::ERC7579UnprotectedModule => Some(format!(
+            "1. Attacker calls {contract_name}.{fn_name}() with a malicious module address\n\
+             2. No onlyEntryPointOrSelf / self check rejects the caller\n\
+             3. Attacker installs a validator module that approves any signature (or an executor)\n\
+             4. Attacker now signs valid UserOps for the account, or dispatches calls directly\n\
+             5. The account's entire balance and approvals are drained - full takeover"
+        )),
+        VulnerabilityCategory::ERC7821UnprotectedExecute => Some(format!(
+            "1. Attacker calls {contract_name}.{fn_name}(mode, executionData) directly\n\
+             2. The caller is not restricted to the EntryPoint or the account itself\n\
+             3. executionData encodes arbitrary (target, value, calldata) tuples\n\
+             4. The batch runs from the account's context - transfers, approvals, selfdestruct\n\
+             5. Attacker sweeps the account's assets in a single transaction"
+        )),
+        VulnerabilityCategory::ERC7579UnrestrictedExecutor => Some(format!(
+            "1. Attacker calls {contract_name}.{fn_name}() without being an installed module\n\
+             2. No isModuleInstalled(TYPE_EXECUTOR, msg.sender) gate rejects the call\n\
+             3. Attacker supplies arbitrary execution calldata\n\
+             4. The account executes the calls as itself\n\
+             5. Attacker drains the account or grants itself persistent privileges"
         )),
 
         _ => None,

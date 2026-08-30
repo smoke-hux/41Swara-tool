@@ -3,8 +3,6 @@
 //! Detects MEV-related vulnerabilities including sandwich attacks,
 //! frontrunning, backrunning, and commit-reveal pattern validation.
 
-#![allow(dead_code)]
-#![allow(unused_variables)]
 
 use once_cell::sync::Lazy;
 use crate::vulnerabilities::{Vulnerability, VulnerabilityCategory, VulnerabilitySeverity};
@@ -396,10 +394,15 @@ impl MEVAnalyzer {
                         || func_body.contains("Merkle")
                         || func_body.contains("proof");
 
-                    // Check for reveal pattern (for metadata)
-                    let has_reveal = content.contains("reveal") || content.contains("Reveal");
+                    // A commit-reveal mint is an accepted alternative to a whitelist for
+                    // fair launches, so it suppresses this finding. Require BOTH halves of
+                    // the scheme: a bare "reveal" is usually NFT *metadata* reveal, which
+                    // is unrelated to mint front-running and must not suppress.
+                    let has_commit_reveal = (content.contains("commit")
+                        || content.contains("Commit"))
+                        && (content.contains("reveal") || content.contains("Reveal"));
 
-                    if !has_whitelist {
+                    if !has_whitelist && !has_commit_reveal {
                         vulnerabilities.push(Vulnerability::new(
                             VulnerabilitySeverity::Medium,
                             VulnerabilityCategory::FrontRunning,
@@ -412,8 +415,8 @@ impl MEVAnalyzer {
                     }
 
                     // Check for batch mint without limit
-                    if func_body.contains("amount") || func_body.contains("quantity") {
-                        if !func_body.contains("maxMint")
+                    if (func_body.contains("amount") || func_body.contains("quantity"))
+                        && !func_body.contains("maxMint")
                             && !func_body.contains("MAX_")
                             && !func_body.contains("limit")
                         {
@@ -428,7 +431,6 @@ impl MEVAnalyzer {
                                 "Add per-transaction and per-wallet mint limits".to_string(),
                             ));
                         }
-                    }
 
                     // Check for block.timestamp randomness
                     if func_body.contains("block.timestamp") && func_body.contains("random") {
@@ -549,8 +551,8 @@ impl MEVAnalyzer {
             }
 
             // Check for block.number usage
-            if line.contains("block.number") {
-                if line.contains("== block.number") || line.contains("block.number ==") {
+            if line.contains("block.number")
+                && (line.contains("== block.number") || line.contains("block.number ==")) {
                     vulnerabilities.push(Vulnerability::new(
                         VulnerabilitySeverity::Medium,
                         VulnerabilityCategory::FrontRunning,
@@ -561,7 +563,6 @@ impl MEVAnalyzer {
                         "Use block number ranges or commit-reveal instead".to_string(),
                     ));
                 }
-            }
         }
 
         vulnerabilities

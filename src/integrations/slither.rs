@@ -4,22 +4,24 @@
 //! - Parse Slither JSON output
 //! - Correlate findings (both found = high confidence)
 //! - Merge unique findings from each tool
-//! - Unified report generation
+//! - Unify severity and confidence across both tools ([`CorrelatedFinding`])
 
-#![allow(dead_code)]
-#![allow(unused_imports)]
 
 use serde::Deserialize;
 use std::collections::HashSet;
-use std::fs::File;
-use std::io::BufReader;
 use std::path::Path;
 
 use crate::vulnerabilities::{
     Vulnerability, VulnerabilityCategory, VulnerabilityConfidence, VulnerabilitySeverity,
 };
 
-/// Slither JSON output structure
+/// Slither JSON output structure.
+///
+/// These structs are a *partial* mirror of Slither's `--json` schema: they declare
+/// only the fields this integration reads. Serde ignores everything else in the
+/// document (no `deny_unknown_fields` anywhere), so unlisted keys such as
+/// `printers`, `id`, `type_specific_fields` or the absolute source paths parse fine
+/// and are simply dropped. See the Slither docs for the full schema.
 #[derive(Debug, Deserialize)]
 pub struct SlitherOutput {
     pub success: bool,
@@ -30,7 +32,6 @@ pub struct SlitherOutput {
 #[derive(Debug, Deserialize)]
 pub struct SlitherResults {
     pub detectors: Vec<SlitherFinding>,
-    pub printers: Option<Vec<serde_json::Value>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -40,25 +41,16 @@ pub struct SlitherFinding {
     pub confidence: String,
     pub description: String,
     pub elements: Vec<SlitherElement>,
-    pub first_markdown_element: Option<String>,
-    pub id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct SlitherElement {
-    #[serde(rename = "type")]
-    pub element_type: String,
     pub name: String,
     pub source_mapping: Option<SourceMapping>,
-    pub type_specific_fields: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct SourceMapping {
-    pub start: usize,
-    pub length: usize,
-    pub filename_relative: Option<String>,
-    pub filename_absolute: Option<String>,
     pub lines: Option<Vec<usize>>,
 }
 
@@ -68,7 +60,24 @@ pub struct CorrelatedFinding {
     pub swara_finding: Option<Vulnerability>,
     pub slither_finding: Option<SlitherFinding>,
     pub correlation: CorrelationType,
+    /// Confidence for this finding after cross-tool correlation, in `[0.0, 1.0]`.
+    ///
+    /// This is the authoritative confidence and callers should use it instead of
+    /// ad-hoc adjustments. It is computed by [`SlitherIntegration::correlate`]:
+    /// - `BothFound` / `Similar`: the mean of the two tools' confidences plus a
+    ///   `+0.15` corroboration boost (capped at `1.0`) — see
+    ///   [`SlitherIntegration::calculate_combined_confidence`].
+    /// - `SwaraOnly`: the 41Swara finding's own confidence, unchanged.
+    /// - `SlitherOnly`: Slither's reported confidence mapped to a score.
+    ///
+    /// To apply it to a `Vulnerability`, use `(adjusted_confidence * 100.0)` as the
+    /// percentage (round to `u8`), which reflects corroboration rather than a fixed
+    /// bump.
     pub adjusted_confidence: f64,
+    /// Severity after unifying both tools' opinions: the **more severe** of the
+    /// 41Swara severity and the mapped Slither impact (see
+    /// [`SlitherIntegration::get_unified_severity`]). For `SlitherOnly` findings it
+    /// is the mapped Slither impact; for `SwaraOnly` it is the 41Swara severity.
     pub unified_severity: VulnerabilitySeverity,
 }
 
@@ -116,24 +125,14 @@ impl SlitherIntegration {
         }
     }
 
-    /// Load Slither findings from JSON file
+    /// Load Slither findings from a JSON file. Returns the number of findings loaded.
     pub fn load_from_file(&mut self, path: &Path) -> Result<usize, String> {
-        let file = File::open(path).map_err(|e| format!("Failed to open Slither JSON: {}", e))?;
-        let reader = BufReader::new(file);
-
-        let output: SlitherOutput = serde_json::from_reader(reader)
-            .map_err(|e| format!("Failed to parse Slither JSON: {}", e))?;
-
-        if !output.success {
-            return Err(format!("Slither analysis failed: {:?}", output.error));
-        }
-
-        self.slither_findings = output.results.map(|r| r.detectors).unwrap_or_default();
-
-        Ok(self.slither_findings.len())
+        let json = std::fs::read_to_string(path)
+            .map_err(|e| format!("Failed to open Slither JSON: {}", e))?;
+        self.load_from_string(&json)
     }
 
-    /// Load findings from JSON string
+    /// Load findings from a JSON string. Returns the number of findings loaded.
     pub fn load_from_string(&mut self, json: &str) -> Result<usize, String> {
         let output: SlitherOutput = serde_json::from_str(json)
             .map_err(|e| format!("Failed to parse Slither JSON: {}", e))?;
@@ -162,11 +161,10 @@ impl SlitherIntegration {
                 }
 
                 let similarity = self.calculate_similarity(swara, slither);
-                if similarity > 0.7 {
-                    if best_match.is_none() || similarity > best_match.unwrap().1 {
+                if similarity > 0.7
+                    && (best_match.is_none() || similarity > best_match.unwrap().1) {
                         best_match = Some((idx, similarity));
                     }
-                }
             }
 
             if let Some((idx, similarity)) = best_match {
@@ -368,129 +366,6 @@ impl SlitherIntegration {
         }
     }
 
-    /// Generate unified report from correlated findings
-    pub fn generate_unified_report(&self, correlations: &[CorrelatedFinding]) -> String {
-        let mut report = String::new();
-
-        report.push_str("# Unified Security Analysis Report\n\n");
-        report.push_str("## Tools Used\n");
-        report.push_str("- 41Swara Smart Contract Scanner\n");
-        report.push_str("- Trail of Bits Slither\n\n");
-
-        // Statistics
-        let both_found = correlations
-            .iter()
-            .filter(|c| c.correlation == CorrelationType::BothFound)
-            .count();
-        let similar = correlations
-            .iter()
-            .filter(|c| c.correlation == CorrelationType::Similar)
-            .count();
-        let swara_only = correlations
-            .iter()
-            .filter(|c| c.correlation == CorrelationType::SwaraOnly)
-            .count();
-        let slither_only = correlations
-            .iter()
-            .filter(|c| c.correlation == CorrelationType::SlitherOnly)
-            .count();
-
-        report.push_str("## Correlation Statistics\n\n");
-        report.push_str("| Category | Count |\n");
-        report.push_str("|----------|-------|\n");
-        report.push_str(&format!(
-            "| Both Tools Found (High Confidence) | {} |\n",
-            both_found
-        ));
-        report.push_str(&format!("| Similar Findings | {} |\n", similar));
-        report.push_str(&format!("| 41Swara Only | {} |\n", swara_only));
-        report.push_str(&format!("| Slither Only | {} |\n", slither_only));
-        report.push_str(&format!(
-            "| **Total Unique** | **{}** |\n\n",
-            correlations.len()
-        ));
-
-        // High confidence findings (both found)
-        if both_found > 0 || similar > 0 {
-            report.push_str("## High Confidence Findings (Corroborated)\n\n");
-            report.push_str("These issues were detected by both tools:\n\n");
-
-            for (idx, corr) in correlations
-                .iter()
-                .filter(|c| {
-                    c.correlation == CorrelationType::BothFound
-                        || c.correlation == CorrelationType::Similar
-                })
-                .enumerate()
-            {
-                report.push_str(&format!("### HCF-{:02}: ", idx + 1));
-
-                if let Some(swara) = &corr.swara_finding {
-                    report.push_str(&format!("{}\n\n", swara.title));
-                    report.push_str(&format!("**Severity:** {:?}\n", corr.unified_severity));
-                    report.push_str(&format!(
-                        "**Confidence:** {:.0}% (corroborated)\n",
-                        corr.adjusted_confidence * 100.0
-                    ));
-                    report.push_str(&format!("**41Swara:** {}\n", swara.description));
-                }
-
-                if let Some(slither) = &corr.slither_finding {
-                    report.push_str(&format!(
-                        "**Slither ({}):** {}\n\n",
-                        slither.check, slither.description
-                    ));
-                }
-
-                report.push_str("---\n\n");
-            }
-        }
-
-        // Swara-only findings
-        if swara_only > 0 {
-            report.push_str("## 41Swara-Only Findings\n\n");
-            report.push_str("These issues were found by 41Swara's advanced analysis:\n\n");
-
-            for (idx, corr) in correlations
-                .iter()
-                .filter(|c| c.correlation == CorrelationType::SwaraOnly)
-                .enumerate()
-            {
-                if let Some(swara) = &corr.swara_finding {
-                    report.push_str(&format!("### S-{:02}: {}\n\n", idx + 1, swara.title));
-                    report.push_str(&format!("**Severity:** {:?}\n", swara.severity));
-                    report.push_str(&format!("**Confidence:** {:?}\n", swara.confidence));
-                    report.push_str(&format!("**Description:** {}\n", swara.description));
-                    report.push_str(&format!("**Line:** {}\n\n", swara.line_number));
-                }
-            }
-        }
-
-        // Slither-only findings
-        if slither_only > 0 {
-            report.push_str("## Slither-Only Findings\n\n");
-            report.push_str("These issues were found by Slither:\n\n");
-
-            for (idx, corr) in correlations
-                .iter()
-                .filter(|c| c.correlation == CorrelationType::SlitherOnly)
-                .enumerate()
-            {
-                if let Some(slither) = &corr.slither_finding {
-                    report.push_str(&format!(
-                        "### L-{:02}: {} ({})\n\n",
-                        idx + 1,
-                        slither.check,
-                        slither.impact
-                    ));
-                    report.push_str(&format!("**Description:** {}\n\n", slither.description));
-                }
-            }
-        }
-
-        report
-    }
-
     /// Convert Slither finding to 41Swara Vulnerability format
     pub fn convert_to_vulnerability(&self, slither: &SlitherFinding) -> Vulnerability {
         let severity = self.slither_impact_to_severity(&slither.impact);
@@ -565,14 +440,88 @@ impl SlitherIntegration {
         }
     }
 
-    /// Get number of loaded Slither findings
-    pub fn finding_count(&self) -> usize {
-        self.slither_findings.len()
-    }
 }
 
 impl Default for SlitherIntegration {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::vulnerabilities::{VulnerabilityConfidence, VulnerabilitySeverity};
+
+    fn swara_reentrancy(line: usize) -> Vulnerability {
+        Vulnerability {
+            severity: VulnerabilitySeverity::High,
+            category: VulnerabilityCategory::Reentrancy,
+            title: "Reentrancy in withdraw".to_string(),
+            description: "external call before state update allows reentrancy withdraw".to_string(),
+            line_number: line,
+            end_line_number: None,
+            code_snippet: "msg.sender.call{value: bal}(\"\")".to_string(),
+            context_before: None,
+            context_after: None,
+            recommendation: "checks-effects-interactions".to_string(),
+            confidence: VulnerabilityConfidence::Medium,
+            confidence_percent: 70,
+            swc_id: None,
+            fix_suggestion: None,
+            cvss_score: None,
+            cvss_vector: None,
+            exploit_references: Vec::new(),
+            attack_path: None,
+        }
+    }
+
+    const SLITHER_JSON: &str = r#"{
+      "success": true,
+      "error": null,
+      "results": {
+        "detectors": [
+          {
+            "check": "reentrancy-eth",
+            "impact": "High",
+            "confidence": "High",
+            "description": "Reentrancy in withdraw allows external call before state update",
+            "elements": [
+              {"type": "function", "name": "withdraw",
+               "source_mapping": {"start": 10, "length": 5, "lines": [42]}}
+            ]
+          }
+        ]
+      }
+    }"#;
+
+    #[test]
+    fn correlate_populates_adjusted_confidence_and_unified_severity() {
+        let mut integ = SlitherIntegration::new();
+        let n = integ.load_from_string(SLITHER_JSON).expect("parse");
+        assert_eq!(n, 1);
+
+        let findings = vec![swara_reentrancy(42)];
+        let correlated = integ.correlate(&findings);
+        // The single Swara finding matches the single Slither finding.
+        let both = correlated
+            .iter()
+            .find(|c| matches!(c.correlation, CorrelationType::BothFound | CorrelationType::Similar))
+            .expect("should correlate");
+
+        // adjusted_confidence: mean(0.7, 0.9) + 0.15 boost = 0.95.
+        assert!((both.adjusted_confidence - 0.95).abs() < 1e-9, "got {}", both.adjusted_confidence);
+        // unified_severity: max(High, High) = High.
+        assert_eq!(both.unified_severity, VulnerabilitySeverity::High);
+        // It is higher than the raw Swara confidence (0.7), proving corroboration.
+        assert!(both.adjusted_confidence > 0.7);
+    }
+
+    #[test]
+    fn unified_severity_takes_more_severe_of_the_two() {
+        let integ = SlitherIntegration::new();
+        // Swara Low + Slither High -> High.
+        let sev = integ.get_unified_severity(VulnerabilitySeverity::Low, "High");
+        assert_eq!(sev, VulnerabilitySeverity::High);
     }
 }

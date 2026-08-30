@@ -2,20 +2,265 @@ name: CI
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [main, develop]
   pull_request:
-    branches: [ main ]
+    branches: [main, develop]
+  workflow_dispatch:
+
+# Redundant runs on the same ref are pointless and just queue behind each other.
+# In-progress runs are cancelled, except on the default branch where we want the
+# full history of results.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+# Least privilege by default. Individual jobs widen this where they must.
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: 1
+
+# NOTE ON ACTION PINNING
+# Actions below are pinned to explicit major-version tags. Pinning to a full
+# commit SHA is stronger (a tag can be re-pointed) and is the recommended
+# hardening step, but SHAs must be resolved against the live upstream repos and
+# then kept current by Dependabot -- do not hand-transcribe them.
 
 jobs:
-  build:
+  # ---------------------------------------------------------------------------
+  # The previous workflow ran neither the tests nor `cargo fmt`. This job is the
+  # one that actually protects behaviour: 41 integration tests that invoke the
+  # built binary and parse its JSON output.
+  # ---------------------------------------------------------------------------
+  test:
+    name: Test
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
+
       - uses: dtolnay/rust-toolchain@stable
-      - name: Build
-        run: cargo build --release
-      - name: Run clippy
-        run: cargo clippy -- -D warnings
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: test
+
+      # The integration tests shell out to the built binary, so build first and
+      # let a compile failure surface as a build failure rather than 41 opaque
+      # test failures.
+      - name: Build test binaries
+        run: cargo build --locked --all-targets
+
+      - name: Run tests
+        run: cargo test --locked --all
+
+  # ---------------------------------------------------------------------------
+  # Formatting and lints. `--all-targets` is deliberate: the previous workflow's
+  # bare `cargo clippy` skipped the test targets entirely.
+  # ---------------------------------------------------------------------------
+  lint:
+    name: Lint (fmt + clippy)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: lint
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      # Warnings are errors. If a lint genuinely does not apply, silence it with
+      # a targeted `#[allow]` at the smallest possible scope and a comment saying
+      # why -- not with a crate-wide allow block, which hides future regressions.
+      - name: Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+  # ---------------------------------------------------------------------------
+  # Release build, plus proof that both shipped binaries actually start. A crate
+  # with two `[[bin]]` targets can compile while one of them is broken at
+  # runtime; `--version` is the cheapest smoke test that catches it.
+  # ---------------------------------------------------------------------------
+  build:
+    name: Release build
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release
+
+      - name: Build release
+        run: cargo build --locked --release
+
+      - name: Smoke-test both binaries
+        run: |
+          set -euo pipefail
+          expected="$(cargo metadata --no-deps --format-version 1 \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')"
+          echo "expected version: ${expected}"
+
+          for bin in 41swara 41; do
+            path="target/release/${bin}"
+            test -x "${path}" || { echo "::error::${path} was not produced"; exit 1; }
+            out="$("${path}" --version)"
+            echo "${bin} --version -> ${out}"
+            case "${out}" in
+              *"${expected}"*) ;;
+              *) echo "::error::${bin} reported '${out}', expected it to contain ${expected}"; exit 1 ;;
+            esac
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binaries-linux-x86_64
+          path: |
+            target/release/41swara
+            target/release/41
+          if-no-files-found: error
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # Minimum supported Rust version.
+  #
+  # !! THE README'S "Rust 1.70+" BADGE IS UNVERIFIED AND ALMOST CERTAINLY WRONG !!
+  #
+  # 1.70 was NOT tested and is not believed to be achievable with the committed
+  # Cargo.lock. Reading `rust-version` out of every crate in the locked graph
+  # gives a hard floor well above it:
+  #
+  #     constant_time_eq 0.4.2   rust-version = 1.85     (via blake3)
+  #     zeroize          1.9.0   rust-version = 1.85     (via ureq/rustls)
+  #     icu_* 2.1.x              rust-version = 1.83     (via idna -> url -> ureq)
+  #     rayon            1.11.0  rust-version = 1.80
+  #     clap_builder     4.5.60  rust-version = 1.74
+  #
+  # Cargo.lock is also lockfile `version = 4`, which needs Cargo 1.78+ to read.
+  # So 1.85.0 is the lowest version that can plausibly build this lockfile, and
+  # that is what this job pins.
+  #
+  # STATUS: 1.85.0 is DERIVED FROM THE LOCKFILE, NOT YET CONFIRMED BY A GREEN
+  # RUN. The first CI run on this workflow is the confirmation. If it passes,
+  # update the README badge from 1.70+ to 1.85+; if it fails, raise the pin here
+  # to whatever actually builds. Either way the README badge must not be left
+  # claiming 1.70.
+  #
+  # `--locked` is essential: without it Cargo may resolve *newer* dependencies
+  # with even higher MSRVs and the number measured here becomes meaningless.
+  # ---------------------------------------------------------------------------
+  msrv:
+    name: MSRV (1.85.0, unverified — see comment)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@1.85.0
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: msrv-1.85.0
+
+      - name: Build on the minimum supported Rust version
+        run: cargo build --locked --all-targets
+
+  # ---------------------------------------------------------------------------
+  # Dependency advisory scan.
+  #
+  # continue-on-error: true — DELIBERATE. This job reports advisories in the
+  # transitive graph (git2/libgit2, ureq's TLS stack, chrono/time, ...). Those
+  # land on upstream's schedule, not ours, and an unrelated RUSTSEC advisory
+  # published overnight would otherwise turn every PR red with nothing the PR
+  # author can do about it. The job is a visible signal, not a gate. Promote it
+  # to blocking once the advisory backlog is at zero and someone owns triage.
+  # ---------------------------------------------------------------------------
+  security:
+    name: Security audit (advisory, non-blocking)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    continue-on-error: true
+    permissions:
+      contents: read
+      # rustsec/audit-check opens/updates issues for new advisories on pushes.
+      issues: write
+      checks: write
+    steps:
+      - uses: actions/checkout@v5
+
+      # Reads GITHUB_TOKEN from the Actions secrets context only. No credential
+      # is ever written into the workflow or echoed into the log.
+      - uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  # ---------------------------------------------------------------------------
+  # Accuracy regression harness.
+  #
+  # This is the job that catches the scanner's dominant failure mode: a new or
+  # loosened rule that quietly multiplies findings on known-good code. It scans
+  # the vendored corpora in tests/corpus/ and fails when clean-corpus findings
+  # grow past tolerance or a planted vulnerability stops being detected.
+  #
+  # It runs the DEFAULT path only. `--with-upstream` clones pinned third-party
+  # repositories and is never enabled here: CI must not depend on the
+  # availability of someone else's GitHub repo.
+  # ---------------------------------------------------------------------------
+  benchmark:
+    name: Accuracy regression
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: benchmark
+
+      - name: Run accuracy benchmark
+        run: bash scripts/benchmark.sh --json > benchmark-result.json
+
+      # Runs even on failure: the JSON result is exactly what a reviewer needs
+      # in order to see WHICH category drifted.
+      - name: Upload benchmark result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: accuracy-benchmark
+          path: benchmark-result.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  # Single required status check for branch protection: protect `ci` and every
+  # gating job above is covered, including ones added later.
+  # ---------------------------------------------------------------------------
+  ci:
+    name: CI
+    if: always()
+    needs: [test, lint, build, msrv, benchmark]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify gating jobs succeeded
+        run: |
+          set -euo pipefail
+          results='${{ join(needs.*.result, ",") }}'
+          echo "gating job results: ${results}"
+          case "${results}" in
+            *failure*|*cancelled*) echo "::error::a required job did not succeed"; exit 1 ;;
+          esac
+          echo "all gating jobs succeeded"

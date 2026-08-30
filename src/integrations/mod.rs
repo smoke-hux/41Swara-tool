@@ -5,7 +5,6 @@
 //! - Foundry for PoC generation and test correlation
 //! - Slither for finding correlation and merging
 
-#![allow(dead_code)]
 
 pub mod dynamic;
 pub mod foundry;

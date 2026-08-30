@@ -39,3 +39,50 @@ contract SafeSettler {
 interface IERC20 {
     function transfer(address, uint256) external returns (bool);
 }
+
+// Safe: ERC-7579 account gating module lifecycle + executor dispatch.
+// 41S-090 and 41S-092 must NOT fire.
+contract SafeModularAccount {
+    mapping(uint256 => mapping(address => bool)) public modules;
+
+    modifier onlyEntryPointOrSelf() {
+        require(msg.sender == address(this), "not authorized");
+        _;
+    }
+
+    function installModule(uint256 moduleTypeId, address module, bytes calldata)
+        external
+        onlyEntryPointOrSelf
+    {
+        modules[moduleTypeId][module] = true;
+    }
+
+    function uninstallModule(uint256 moduleTypeId, address module, bytes calldata)
+        external
+        onlyEntryPointOrSelf
+    {
+        modules[moduleTypeId][module] = false;
+    }
+
+    function executeFromExecutor(bytes32, bytes calldata) external returns (bytes[] memory) {
+        require(isModuleInstalled(2, msg.sender), "not an executor");
+        return new bytes[](0);
+    }
+
+    function isModuleInstalled(uint256 t, address m) public view returns (bool) {
+        return modules[t][m];
+    }
+}
+
+// Safe: ERC-7821 executor restricted to the EntryPoint or the account itself.
+// 41S-091 must NOT fire.
+contract SafeBatchExecutor {
+    address public entryPoint;
+
+    function execute(bytes32, bytes calldata) external payable {
+        require(
+            msg.sender == entryPoint || msg.sender == address(this),
+            "only entryPoint or self"
+        );
+    }
+}

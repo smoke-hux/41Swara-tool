@@ -1,6 +1,6 @@
 [package]
 name = "solidity_scanner"
-version = "0.10.0"
+version = "0.11.0"
 edition = "2021"
 default-run = "41swara"
 description = "High-performance smart contract vulnerability scanner for Ethereum Foundation and blockchain security researchers"
@@ -41,23 +41,24 @@ git2 = "0.18"                 # Git diff mode for incremental scanning
 # File watching
 notify = "6.1"                # Watch mode for continuous scanning
 
-# AST-based analysis (Phase 1)
-tree-sitter = "0.20"          # Incremental parsing framework
-petgraph = "0.6"              # Graph data structures for CFG
+# AST/CFG analysis
+petgraph = "0.6"              # Graph data structures for the CFG builder
 
 # Performance & caching (Phase 4)
 blake3 = "1.5"                # Fast hashing for file cache
 dashmap = "5.5"               # Concurrent hashmap for parallel scanning
 indicatif = "0.17"            # Progress bars for large scans
 
-# UUID generation for findings
-uuid = { version = "1.6", features = ["v4"] }
-
 # Glob pattern matching for file exclusion
 glob = "0.3"
 
 # TOML configuration for custom rules
 toml = "0.8"
+
+# Optional network-backed features (AI review, on-chain source fetch).
+# Offline remains the default at runtime: nothing here is contacted unless the user
+# explicitly passes --ai or --fetch. Blocking client, to match the sync scan pipeline.
+ureq = { version = "2.10", default-features = false, features = ["tls", "json", "gzip"] }
 
 [profile.release]
 lto = true                    # Link-time optimization
