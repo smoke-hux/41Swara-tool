@@ -73,7 +73,10 @@ pub enum OnchainError {
     /// Address is not a 0x-prefixed 40-hex-char value.
     BadAddress(String),
     /// The contract is not verified on the chosen provider.
-    Unverified { address: String, provider: &'static str },
+    Unverified {
+        address: String,
+        provider: &'static str,
+    },
     /// Provider rate-limited the request.
     RateLimited(&'static str),
     /// The Etherscan API key env var is missing.
@@ -94,16 +97,26 @@ pub enum OnchainError {
 impl std::fmt::Display for OnchainError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            OnchainError::UnknownChain(c) => write!(f, "unknown chain '{c}' (try: ethereum, base, arbitrum, optimism, polygon)"),
-            OnchainError::BadAddress(a) => write!(f, "invalid contract address '{a}' (expected 0x + 40 hex chars)"),
+            OnchainError::UnknownChain(c) => write!(
+                f,
+                "unknown chain '{c}' (try: ethereum, base, arbitrum, optimism, polygon)"
+            ),
+            OnchainError::BadAddress(a) => write!(
+                f,
+                "invalid contract address '{a}' (expected 0x + 40 hex chars)"
+            ),
             OnchainError::Unverified { address, provider } => {
                 write!(f, "contract {address} is not verified on {provider}")
             }
             OnchainError::RateLimited(p) => write!(f, "{p} rate-limited the request; retry later"),
-            OnchainError::MissingApiKey(var) => write!(f, "missing API key: set the {var} environment variable"),
+            OnchainError::MissingApiKey(var) => {
+                write!(f, "missing API key: set the {var} environment variable")
+            }
             OnchainError::NetworkUnreachable(e) => write!(f, "network error: {e}"),
             OnchainError::MalformedResponse(e) => write!(f, "malformed provider response: {e}"),
-            OnchainError::UnsafePath(p) => write!(f, "refused unsafe source path from remote response: '{p}'"),
+            OnchainError::UnsafePath(p) => {
+                write!(f, "refused unsafe source path from remote response: '{p}'")
+            }
             OnchainError::TooLarge(e) => write!(f, "verified-source bundle too large: {e}"),
             OnchainError::Io(e) => write!(f, "filesystem error: {e}"),
         }
@@ -209,10 +222,15 @@ pub fn sanitize_relative_path(base: &Path, untrusted: &str) -> Result<PathBuf, O
 ///
 /// Paths inside the payload are returned verbatim here; they are sanitised at write time
 /// by [`sanitize_relative_path`].
-pub fn parse_verified_sources(raw: &str, default_name: &str) -> Result<Vec<SourceFile>, OnchainError> {
+pub fn parse_verified_sources(
+    raw: &str,
+    default_name: &str,
+) -> Result<Vec<SourceFile>, OnchainError> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
-        return Err(OnchainError::MalformedResponse("empty source payload".to_string()));
+        return Err(OnchainError::MalformedResponse(
+            "empty source payload".to_string(),
+        ));
     }
 
     // Etherscan wraps standard-json-input in an extra pair of braces: "{{ ... }}".
@@ -237,7 +255,10 @@ pub fn parse_verified_sources(raw: &str, default_name: &str) -> Result<Vec<Sourc
         Some(o) => o,
         // Valid JSON but not an object (e.g. a JSON string literal) -> treat as flat.
         None => {
-            let content = value.as_str().map(|s| s.to_string()).unwrap_or_else(|| raw.to_string());
+            let content = value
+                .as_str()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| raw.to_string());
             return Ok(vec![SourceFile {
                 path: default_name.to_string(),
                 content,
@@ -338,7 +359,8 @@ impl SourceFetcher {
             if let Some(parent) = dest.parent() {
                 std::fs::create_dir_all(parent).map_err(|e| OnchainError::Io(e.to_string()))?;
             }
-            std::fs::write(&dest, content.as_bytes()).map_err(|e| OnchainError::Io(e.to_string()))?;
+            std::fs::write(&dest, content.as_bytes())
+                .map_err(|e| OnchainError::Io(e.to_string()))?;
             written.push(dest);
         }
         Ok(written)
@@ -399,9 +421,7 @@ impl SourceFetcher {
             address
         );
 
-        let agent = ureq::AgentBuilder::new()
-            .timeout(self.timeout)
-            .build();
+        let agent = ureq::AgentBuilder::new().timeout(self.timeout).build();
 
         let resp = match agent.get(&url).call() {
             Ok(r) => r,
@@ -413,7 +433,9 @@ impl SourceFetcher {
             }
             Err(ureq::Error::Status(429, _)) => return Err(OnchainError::RateLimited("sourcify")),
             Err(ureq::Error::Status(code, _)) => {
-                return Err(OnchainError::MalformedResponse(format!("sourcify HTTP {code}")))
+                return Err(OnchainError::MalformedResponse(format!(
+                    "sourcify HTTP {code}"
+                )))
             }
             Err(ureq::Error::Transport(t)) => {
                 return Err(OnchainError::NetworkUnreachable(t.to_string()))
@@ -427,7 +449,11 @@ impl SourceFetcher {
     }
 
     /// Parse Sourcify's `{"status":..,"files":[{"name","path","content"}]}` body.
-    fn parse_sourcify_body(&self, body: &str, address: &str) -> Result<Vec<SourceFile>, OnchainError> {
+    fn parse_sourcify_body(
+        &self,
+        body: &str,
+        address: &str,
+    ) -> Result<Vec<SourceFile>, OnchainError> {
         let value: serde_json::Value = serde_json::from_str(body)
             .map_err(|e| OnchainError::MalformedResponse(e.to_string()))?;
 
@@ -469,7 +495,11 @@ impl SourceFetcher {
     }
 
     /// Fetch from the Etherscan-family V2 multichain API. Key from `ETHERSCAN_API_KEY`.
-    fn fetch_etherscan(&self, chain: Chain, address: &str) -> Result<Vec<SourceFile>, OnchainError> {
+    fn fetch_etherscan(
+        &self,
+        chain: Chain,
+        address: &str,
+    ) -> Result<Vec<SourceFile>, OnchainError> {
         let key = std::env::var("ETHERSCAN_API_KEY")
             .map_err(|_| OnchainError::MissingApiKey("ETHERSCAN_API_KEY"))?;
         if key.trim().is_empty() {
@@ -489,7 +519,9 @@ impl SourceFetcher {
             Ok(r) => r,
             Err(ureq::Error::Status(429, _)) => return Err(OnchainError::RateLimited("etherscan")),
             Err(ureq::Error::Status(code, _)) => {
-                return Err(OnchainError::MalformedResponse(format!("etherscan HTTP {code}")))
+                return Err(OnchainError::MalformedResponse(format!(
+                    "etherscan HTTP {code}"
+                )))
             }
             Err(ureq::Error::Transport(t)) => {
                 return Err(OnchainError::NetworkUnreachable(t.to_string()))
@@ -503,7 +535,11 @@ impl SourceFetcher {
     }
 
     /// Parse an Etherscan `getsourcecode` response body.
-    fn parse_etherscan_body(&self, body: &str, address: &str) -> Result<Vec<SourceFile>, OnchainError> {
+    fn parse_etherscan_body(
+        &self,
+        body: &str,
+        address: &str,
+    ) -> Result<Vec<SourceFile>, OnchainError> {
         let value: serde_json::Value = serde_json::from_str(body)
             .map_err(|e| OnchainError::MalformedResponse(e.to_string()))?;
 
@@ -570,15 +606,24 @@ mod tests {
         assert_eq!(Chain::parse("ARBITRUM").unwrap(), Chain::Arbitrum);
         assert_eq!(Chain::parse("optimism").unwrap().chain_id(), 10);
         assert_eq!(Chain::parse("137").unwrap(), Chain::Polygon);
-        assert!(matches!(Chain::parse("dogechain"), Err(OnchainError::UnknownChain(_))));
+        assert!(matches!(
+            Chain::parse("dogechain"),
+            Err(OnchainError::UnknownChain(_))
+        ));
     }
 
     #[test]
     fn address_validation() {
         let ok = validate_address("0xAbC0000000000000000000000000000000000001").unwrap();
         assert_eq!(ok, "0xabc0000000000000000000000000000000000001");
-        assert!(matches!(validate_address("0x1234"), Err(OnchainError::BadAddress(_))));
-        assert!(matches!(validate_address("nope"), Err(OnchainError::BadAddress(_))));
+        assert!(matches!(
+            validate_address("0x1234"),
+            Err(OnchainError::BadAddress(_))
+        ));
+        assert!(matches!(
+            validate_address("nope"),
+            Err(OnchainError::BadAddress(_))
+        ));
         assert!(matches!(
             validate_address("0xZZZ0000000000000000000000000000000000001"),
             Err(OnchainError::BadAddress(_))
@@ -773,7 +818,8 @@ mod tests {
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].path, "A.sol");
 
-        let unverified = r#"{"status":"1","message":"OK","result":[{"SourceCode":"","ContractName":""}]}"#;
+        let unverified =
+            r#"{"status":"1","message":"OK","result":[{"SourceCode":"","ContractName":""}]}"#;
         assert!(matches!(
             fetcher.parse_etherscan_body(unverified, "0xabc"),
             Err(OnchainError::Unverified { .. })

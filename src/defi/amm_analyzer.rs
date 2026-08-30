@@ -3,7 +3,6 @@
 //! Detects vulnerabilities specific to Automated Market Makers and
 //! Decentralized Exchanges including Uniswap, Curve, and Balancer patterns.
 
-
 use crate::vulnerabilities::{Vulnerability, VulnerabilityCategory, VulnerabilitySeverity};
 use regex::Regex;
 
@@ -178,17 +177,20 @@ impl AMMAnalyzer {
 
             // Check for Curve exchange without reentrancy guard
             if self.curve_reentrancy.is_match(line)
-                && !content.contains("nonReentrant") && !content.contains("ReentrancyGuard") {
-                    vulnerabilities.push(Vulnerability::new(
-                        VulnerabilitySeverity::High,
-                        VulnerabilityCategory::Reentrancy,
-                        "Curve Interaction Without Reentrancy Guard".to_string(),
-                        "Curve pool interaction can trigger callbacks via token transfers".to_string(),
-                        idx + 1,
-                        line.to_string(),
-                        "Add ReentrancyGuard - Curve pools can call back during ETH/token transfers".to_string(),
-                    ));
-                }
+                && !content.contains("nonReentrant")
+                && !content.contains("ReentrancyGuard")
+            {
+                vulnerabilities.push(Vulnerability::new(
+                    VulnerabilitySeverity::High,
+                    VulnerabilityCategory::Reentrancy,
+                    "Curve Interaction Without Reentrancy Guard".to_string(),
+                    "Curve pool interaction can trigger callbacks via token transfers".to_string(),
+                    idx + 1,
+                    line.to_string(),
+                    "Add ReentrancyGuard - Curve pools can call back during ETH/token transfers"
+                        .to_string(),
+                ));
+            }
         }
 
         vulnerabilities
@@ -314,20 +316,21 @@ impl AMMAnalyzer {
                         || func_body.contains("amount")
                         || func_body.contains("value"))
                         && !content.contains("TWAP")
-                            && !content.contains("timeWeightedAverage")
-                            && !content.contains("Chainlink")
-                            && !content.contains("oracle")
-                        {
-                            vulnerabilities.push(Vulnerability::high_confidence(
-                                VulnerabilitySeverity::Critical,
-                                VulnerabilityCategory::OracleManipulation,
-                                "Spot Reserve Pricing Vulnerable to Flash Loans".to_string(),
-                                "Using getReserves() for pricing without TWAP - trivially manipulable".to_string(),
-                                idx + 1,
-                                line.to_string(),
-                                "Use Uniswap V2 TWAP oracle or Chainlink price feeds".to_string(),
-                            ));
-                        }
+                        && !content.contains("timeWeightedAverage")
+                        && !content.contains("Chainlink")
+                        && !content.contains("oracle")
+                    {
+                        vulnerabilities.push(Vulnerability::high_confidence(
+                            VulnerabilitySeverity::Critical,
+                            VulnerabilityCategory::OracleManipulation,
+                            "Spot Reserve Pricing Vulnerable to Flash Loans".to_string(),
+                            "Using getReserves() for pricing without TWAP - trivially manipulable"
+                                .to_string(),
+                            idx + 1,
+                            line.to_string(),
+                            "Use Uniswap V2 TWAP oracle or Chainlink price feeds".to_string(),
+                        ));
+                    }
                 }
             }
         }

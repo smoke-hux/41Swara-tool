@@ -120,9 +120,21 @@ pub fn redact(input: &str) -> Redacted {
     let mut count = 0usize;
 
     let rules: [(&Regex, &str, SecretKind); 4] = [
-        (&MNEMONIC, SecretKind::Mnemonic.placeholder(), SecretKind::Mnemonic),
-        (&API_KEY, SecretKind::ApiKey.placeholder(), SecretKind::ApiKey),
-        (&ASSIGNMENT, "${1}\"<REDACTED_SECRET>\"", SecretKind::Assignment),
+        (
+            &MNEMONIC,
+            SecretKind::Mnemonic.placeholder(),
+            SecretKind::Mnemonic,
+        ),
+        (
+            &API_KEY,
+            SecretKind::ApiKey.placeholder(),
+            SecretKind::ApiKey,
+        ),
+        (
+            &ASSIGNMENT,
+            "${1}\"<REDACTED_SECRET>\"",
+            SecretKind::Assignment,
+        ),
         (&HEX64, SecretKind::Hex64.placeholder(), SecretKind::Hex64),
     ];
     for (re, replacement, kind) in rules {
@@ -189,6 +201,8 @@ mod tests {
         let src = "address owner = 0x5B38Da6a701c568545dCfcB03FcB875f56beddC4;";
         let out = redact(src);
         assert_eq!(out.count, 0);
-        assert!(out.text.contains("0x5B38Da6a701c568545dCfcB03FcB875f56beddC4"));
+        assert!(out
+            .text
+            .contains("0x5B38Da6a701c568545dCfcB03FcB875f56beddC4"));
     }
 }

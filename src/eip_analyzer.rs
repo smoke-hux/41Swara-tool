@@ -11,7 +11,6 @@
 //! - Access control: ERC-173 (Ownable)
 //! - And many more...
 
-
 use crate::vulnerabilities::{SwcId, Vulnerability, VulnerabilityCategory, VulnerabilitySeverity};
 use regex::Regex;
 
@@ -124,7 +123,10 @@ impl EIPAnalyzer {
                 detection_patterns: vec![
                     Regex::new(r"(?i)(IERC4626|ERC4626|is\s+ERC4626)").unwrap(),
                     Regex::new(r"function\s+deposit\s*\(\s*uint256[^,]*,\s*address").unwrap(),
-                    Regex::new(r"function\s+withdraw\s*\(\s*uint256[^,]*,\s*address[^,]*,\s*address").unwrap(),
+                    Regex::new(
+                        r"function\s+withdraw\s*\(\s*uint256[^,]*,\s*address[^,]*,\s*address",
+                    )
+                    .unwrap(),
                     Regex::new(r"function\s+convertToShares").unwrap(),
                     Regex::new(r"function\s+convertToAssets").unwrap(),
                 ],
@@ -133,25 +135,32 @@ impl EIPAnalyzer {
             EIPPattern {
                 eip_number: 4337,
                 detection_patterns: vec![
-                    Regex::new(r"(?i)(IAccount|UserOperation|EntryPoint|is\s+BaseAccount)").unwrap(),
+                    Regex::new(r"(?i)(IAccount|UserOperation|EntryPoint|is\s+BaseAccount)")
+                        .unwrap(),
                     Regex::new(r"validateUserOp").unwrap(),
-                    Regex::new(r"function\s+execute\s*\(\s*address[^,]*,\s*uint256[^,]*,\s*bytes").unwrap(),
+                    Regex::new(r"function\s+execute\s*\(\s*address[^,]*,\s*uint256[^,]*,\s*bytes")
+                        .unwrap(),
                 ],
             },
             // ERC-1967: Proxy Storage Slots
             EIPPattern {
                 eip_number: 1967,
                 detection_patterns: vec![
-                    Regex::new(r"(?i)(ERC1967|_IMPLEMENTATION_SLOT|_ADMIN_SLOT|_BEACON_SLOT)").unwrap(),
-                    Regex::new(r"0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc").unwrap(),
+                    Regex::new(r"(?i)(ERC1967|_IMPLEMENTATION_SLOT|_ADMIN_SLOT|_BEACON_SLOT)")
+                        .unwrap(),
+                    Regex::new(
+                        r"0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc",
+                    )
+                    .unwrap(),
                 ],
             },
             // ERC-1822: UUPS Proxy
             EIPPattern {
                 eip_number: 1822,
-                detection_patterns: vec![
-                    Regex::new(r"(?i)(UUPSUpgradeable|proxiableUUID|_authorizeUpgrade)").unwrap(),
-                ],
+                detection_patterns: vec![Regex::new(
+                    r"(?i)(UUPSUpgradeable|proxiableUUID|_authorizeUpgrade)",
+                )
+                .unwrap()],
             },
             // ERC-173: Contract Ownership
             EIPPattern {
@@ -207,7 +216,8 @@ impl EIPAnalyzer {
             EIPPattern {
                 eip_number: 3156,
                 detection_patterns: vec![
-                    Regex::new(r"(?i)(IERC3156|flashLoan|flashBorrow|FlashLender|FlashBorrower)").unwrap(),
+                    Regex::new(r"(?i)(IERC3156|flashLoan|flashBorrow|FlashLender|FlashBorrower)")
+                        .unwrap(),
                     Regex::new(r"function\s+flashLoan\s*\(").unwrap(),
                     Regex::new(r"onFlashLoan").unwrap(),
                 ],
@@ -563,9 +573,7 @@ impl EIPAnalyzer {
         }
 
         if self.verbose {
-            println!(
-                "  🔒 Scanning for EIP-specific vulnerabilities..."
-            );
+            println!("  🔒 Scanning for EIP-specific vulnerabilities...");
         }
 
         // Check each detected EIP for known vulnerabilities
@@ -606,9 +614,9 @@ impl EIPAnalyzer {
                                 || content.contains("_decimalsOffset")
                                 || content.contains("VIRTUAL_OFFSET")
                                 || content.contains("INITIAL_SHARES"))
-                            {
-                                continue;
-                            }
+                        {
+                            continue;
+                        }
 
                         // Suppress ecrecover validation findings if address(0) check exists nearby
                         if vuln.title.contains("ecrecover") || vuln.vulnerability_id.contains("712")
@@ -702,5 +710,4 @@ impl EIPAnalyzer {
             _ => VulnerabilityCategory::LogicError,
         }
     }
-
 }

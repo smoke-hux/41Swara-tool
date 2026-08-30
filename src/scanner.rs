@@ -19,13 +19,13 @@ use crate::eip_analyzer::EIPAnalyzer;
 use crate::false_positive_filter::{FalsePositiveFilter, FilterConfig};
 use crate::inheritance::{ProjectIndex, ResolvedFile};
 use crate::logic_analyzer::LogicAnalyzer;
+use crate::parser::CompilerVersion;
 use crate::parser::{CompilerInfo, SolidityParser};
 use crate::reachability_analyzer::ReachabilityAnalyzer;
 use crate::threat_model::ThreatModelGenerator;
 use crate::vulnerabilities::{
     create_version_specific_rules, create_vulnerability_rules, Vulnerability, VulnerabilityRule,
 };
-use crate::parser::CompilerVersion;
 use once_cell::sync::Lazy;
 use regex::Regex;
 use std::collections::HashMap;
@@ -127,9 +127,8 @@ static RE_NAMED_RETURN: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"returns\s*\([^)]*\b\w+\s+\w+[^)]*\)").expect("invalid named return regex")
 });
 
-static RE_BOUNDED_SHIFT: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"(<<|>>)\s*uint8\s*\(").expect("invalid bounded shift regex")
-});
+static RE_BOUNDED_SHIFT: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(<<|>>)\s*uint8\s*\(").expect("invalid bounded shift regex"));
 
 static RE_DOWNCAST_ARG: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"\b(?:uint|int)(?:8|16|24|32|48|64|96|128|160|192|224)\s*\(\s*(\w+)\s*\)")
@@ -266,9 +265,7 @@ impl ContractScanner {
     /// contracts, so files that also declare a contract are NOT treated as libraries.
     fn is_library(&self, content: &str) -> bool {
         let has_library = content.lines().any(|line| RE_LIBRARY.is_match(line));
-        let has_contract = content
-            .lines()
-            .any(|line| RE_CONTRACT_ONLY.is_match(line));
+        let has_contract = content.lines().any(|line| RE_CONTRACT_ONLY.is_match(line));
         has_library && !has_contract
     }
 
@@ -847,34 +844,29 @@ impl ContractScanner {
         for (i, left) in storage_bearing.iter().enumerate() {
             for right in storage_bearing.iter().skip(i + 1) {
                 for collision in left.storage.collisions_with(&right.storage) {
-                    findings.push(
-                        Vulnerability::new(
-                            VulnerabilitySeverity::High,
-                            VulnerabilityCategory::ProxyAdminVulnerability,
-                            format!(
-                                "Storage Slot Collision: {} vs {}",
-                                left.name, right.name
-                            ),
-                            format!(
-                                "Slot {} (offset {}) holds `{}` in {} but `{}` in {}. {} \
+                    findings.push(Vulnerability::new(
+                        VulnerabilitySeverity::High,
+                        VulnerabilityCategory::ProxyAdminVulnerability,
+                        format!("Storage Slot Collision: {} vs {}", left.name, right.name),
+                        format!(
+                            "Slot {} (offset {}) holds `{}` in {} but `{}` in {}. {} \
                                  If one contract delegatecalls into the other, a write through \
                                  one layout is read back as a different type through the other, \
                                  silently corrupting state.",
-                                collision.slot,
-                                collision.offset,
-                                collision.left,
-                                left.name,
-                                collision.right,
-                                right.name,
-                                collision.reason,
-                            ),
-                            1,
-                            format!("slot {}", collision.slot),
-                            "Align the storage layouts, or move to ERC-7201 namespaced \
+                            collision.slot,
+                            collision.offset,
+                            collision.left,
+                            left.name,
+                            collision.right,
+                            right.name,
+                            collision.reason,
+                        ),
+                        1,
+                        format!("slot {}", collision.slot),
+                        "Align the storage layouts, or move to ERC-7201 namespaced \
                              storage so the two contracts cannot share slots."
-                                .to_string(),
-                        )
-                    );
+                            .to_string(),
+                    ));
                 }
             }
         }
@@ -886,11 +878,7 @@ impl ContractScanner {
         self.scan_content_with(content, None)
     }
 
-    fn scan_content_with(
-        &self,
-        content: &str,
-        inherited: Option<Arc<ResolvedFile>>,
-    ) -> ScanResult {
+    fn scan_content_with(&self, content: &str, inherited: Option<Arc<ResolvedFile>>) -> ScanResult {
         // Set SCAN_PROFILE=1 to print per-phase timings to stderr (perf diagnostics).
         let profile = std::env::var_os("SCAN_PROFILE").is_some();
         let mut phase_times: Vec<(&str, std::time::Duration)> = Vec::new();
@@ -953,81 +941,155 @@ impl ContractScanner {
 
         // Run advanced analysis (skip some for libraries/tests)
         if !is_library {
-            timed!("analyze_control_flow", vulnerabilities.extend(self.advanced_analyzer.analyze_control_flow(stripped)));
+            timed!(
+                "analyze_control_flow",
+                vulnerabilities.extend(self.advanced_analyzer.analyze_control_flow(stripped))
+            );
         }
 
         // Availability and input-validation patterns. All three reason about a
         // contract's own state, so they are skipped for libraries (stateless) and
         // test contracts (deliberately unsafe by construction).
         if !is_test && !is_library {
-            timed!("push_payment_dos", vulnerabilities.extend(self.advanced_analyzer.detect_push_payment_dos(stripped)));
-            timed!("zero_address_check", vulnerabilities.extend(self.advanced_analyzer.detect_missing_zero_address_check(stripped)));
-            timed!("sentinel_index", vulnerabilities.extend(self.advanced_analyzer.detect_ambiguous_sentinel_index(stripped)));
+            timed!(
+                "push_payment_dos",
+                vulnerabilities.extend(self.advanced_analyzer.detect_push_payment_dos(stripped))
+            );
+            timed!(
+                "zero_address_check",
+                vulnerabilities.extend(
+                    self.advanced_analyzer
+                        .detect_missing_zero_address_check(stripped)
+                )
+            );
+            timed!(
+                "sentinel_index",
+                vulnerabilities.extend(
+                    self.advanced_analyzer
+                        .detect_ambiguous_sentinel_index(stripped)
+                )
+            );
         }
-        timed!("analyze_complexity", vulnerabilities.extend(self.advanced_analyzer.analyze_complexity(stripped)));
+        timed!(
+            "analyze_complexity",
+            vulnerabilities.extend(self.advanced_analyzer.analyze_complexity(stripped))
+        );
 
         if !is_test && !is_library {
-            timed!("analyze_access_control", vulnerabilities.extend(self.advanced_analyzer.analyze_access_control(stripped)));
+            timed!(
+                "analyze_access_control",
+                vulnerabilities.extend(self.advanced_analyzer.analyze_access_control(stripped))
+            );
         }
-        timed!("analyze_storage_layout", vulnerabilities.extend(self.advanced_analyzer.analyze_storage_layout(content)));
-        timed!("analyze_gas_optimization", vulnerabilities.extend(self.advanced_analyzer.analyze_gas_optimization(content)));
+        timed!(
+            "analyze_storage_layout",
+            vulnerabilities.extend(self.advanced_analyzer.analyze_storage_layout(content))
+        );
+        timed!(
+            "analyze_gas_optimization",
+            vulnerabilities.extend(self.advanced_analyzer.analyze_gas_optimization(content))
+        );
 
         // Run DeFi-specific analysis (skip for test contracts)
         if self.config.enable_defi_analysis && !is_test {
-            timed!("analyze_defi_vulnerabilities", vulnerabilities.extend(self.advanced_analyzer.analyze_defi_vulnerabilities(stripped)));
+            timed!(
+                "analyze_defi_vulnerabilities",
+                vulnerabilities.extend(
+                    self.advanced_analyzer
+                        .analyze_defi_vulnerabilities(stripped)
+                )
+            );
         }
 
         // Run NFT-specific analysis
         if !is_test {
-            timed!("analyze_nft_vulnerabilities", vulnerabilities.extend(self.advanced_analyzer.analyze_nft_vulnerabilities(stripped)));
+            timed!(
+                "analyze_nft_vulnerabilities",
+                vulnerabilities
+                    .extend(self.advanced_analyzer.analyze_nft_vulnerabilities(stripped))
+            );
         }
 
         // Run known exploit pattern detection
-        timed!("detect_known_exploits", vulnerabilities.extend(self.advanced_analyzer.detect_known_exploits(stripped)));
+        timed!(
+            "detect_known_exploits",
+            vulnerabilities.extend(self.advanced_analyzer.detect_known_exploits(stripped))
+        );
 
         // Run REKT.NEWS real-world exploit pattern detection (HIGH PRIORITY)
         // Based on $3.1B+ in actual losses from 2024-2025
         if !is_test {
-            timed!("analyze_rekt_news_patterns", vulnerabilities.extend(self.advanced_analyzer.analyze_rekt_news_patterns(stripped)));
+            timed!(
+                "analyze_rekt_news_patterns",
+                vulnerabilities.extend(self.advanced_analyzer.analyze_rekt_news_patterns(stripped))
+            );
         }
 
         // Run 2025 OWASP Smart Contract Top 10 analysis
         // Based on $1.42B in losses documented in 2024 incidents
         if !is_test {
-            timed!("analyze_owasp_2025_patterns", vulnerabilities.extend(self.advanced_analyzer.analyze_owasp_2025_patterns(stripped)));
+            timed!(
+                "analyze_owasp_2025_patterns",
+                vulnerabilities
+                    .extend(self.advanced_analyzer.analyze_owasp_2025_patterns(stripped))
+            );
         }
 
         // Run Phase 6 modern detector suite (ERC4626, Permit2, LayerZero, EIP-4337, Merkle, etc.)
         if self.config.enable_phase6_analysis && !is_test {
-            timed!("analyze_phase6_patterns", vulnerabilities.extend(self.advanced_analyzer.analyze_phase6_patterns(stripped)));
+            timed!(
+                "analyze_phase6_patterns",
+                vulnerabilities.extend(self.advanced_analyzer.analyze_phase6_patterns(stripped))
+            );
         }
 
         // Run DeFi security research paper analysis (arXiv:2205.09524v1)
         // Covers dForce ($24M), Grim Finance ($30M), Popsicle Finance ($25M), Wormhole ($326M) patterns
         if !is_test {
-            timed!("analyze_defi_paper_vulnerabilities", vulnerabilities.extend(self.advanced_analyzer.analyze_defi_paper_vulnerabilities(stripped)));
+            timed!(
+                "analyze_defi_paper_vulnerabilities",
+                vulnerabilities.extend(
+                    self.advanced_analyzer
+                        .analyze_defi_paper_vulnerabilities(stripped)
+                )
+            );
         }
 
         // Run L2/chain-specific analysis (PUSH0 compatibility, sequencer, etc.)
         if !is_test {
-            timed!("analyze_l2_patterns", vulnerabilities.extend(self.advanced_analyzer.analyze_l2_patterns(content)));
+            timed!(
+                "analyze_l2_patterns",
+                vulnerabilities.extend(self.advanced_analyzer.analyze_l2_patterns(content))
+            );
         }
 
         // Run security hardening analysis (storage gaps, timelocks, downcasts, etc.)
         if !is_test {
-            timed!("analyze_security_hardening", vulnerabilities.extend(self.advanced_analyzer.analyze_security_hardening(content)));
+            timed!(
+                "analyze_security_hardening",
+                vulnerabilities.extend(self.advanced_analyzer.analyze_security_hardening(content))
+            );
         }
 
         // Run 2025-2026 exploit pattern analysis (v0.7.0)
         // Covers $400M+ real-world exploits: Abracadabra, Yearn, Cetus, Balancer, GMX, Atlas, etc.
         if !is_test {
-            timed!("analyze_2025_exploit_patterns", vulnerabilities.extend(self.advanced_analyzer.analyze_2025_exploit_patterns(stripped)));
+            timed!(
+                "analyze_2025_exploit_patterns",
+                vulnerabilities.extend(
+                    self.advanced_analyzer
+                        .analyze_2025_exploit_patterns(stripped)
+                )
+            );
         }
 
         // Run classic SWC-registry pattern analysis (tx.origin auth, push-payment DoS,
         // unlimited approvals). Timeless bugs that complement the modern detectors.
         if !is_test {
-            timed!("analyze_classic_patterns", vulnerabilities.extend(self.advanced_analyzer.analyze_classic_patterns(stripped)));
+            timed!(
+                "analyze_classic_patterns",
+                vulnerabilities.extend(self.advanced_analyzer.analyze_classic_patterns(stripped))
+            );
         }
 
         // Run DeFi-specific protocol analysis (AMM, Lending, Oracle, MEV)
@@ -1138,7 +1200,13 @@ impl ContractScanner {
         let t_rules = std::time::Instant::now();
         for rule in &self.rules {
             if rule.multiline {
-                vulnerabilities.extend(self.scan_multiline_pattern(&stripped_content, content, &lines, &scan_context, rule));
+                vulnerabilities.extend(self.scan_multiline_pattern(
+                    &stripped_content,
+                    content,
+                    &lines,
+                    &scan_context,
+                    rule,
+                ));
             } else {
                 vulnerabilities.extend(self.scan_line_patterns(
                     content,
@@ -1165,10 +1233,15 @@ impl ContractScanner {
             // local declarations; storage accumulators need statement-level analysis.
             if matches!(
                 version,
-                CompilerVersion::V04 | CompilerVersion::V05 | CompilerVersion::V06 | CompilerVersion::V07
+                CompilerVersion::V04
+                    | CompilerVersion::V05
+                    | CompilerVersion::V06
+                    | CompilerVersion::V07
             ) {
-                vulnerabilities
-                    .extend(self.advanced_analyzer.detect_legacy_unchecked_arithmetic(stripped));
+                vulnerabilities.extend(
+                    self.advanced_analyzer
+                        .detect_legacy_unchecked_arithmetic(stripped),
+                );
             }
             let version_rules = self.version_rules(&version);
             for rule in version_rules.iter() {
@@ -1206,7 +1279,10 @@ impl ContractScanner {
             if self.verbose {
                 println!("  🧠 Running logic vulnerability analysis...");
             }
-            timed!("logic_analyzer", vulnerabilities.extend(self.logic_analyzer.analyze(stripped)));
+            timed!(
+                "logic_analyzer",
+                vulnerabilities.extend(self.logic_analyzer.analyze(stripped))
+            );
         }
 
         // Run dependency/import analysis
@@ -1214,7 +1290,10 @@ impl ContractScanner {
             if self.verbose {
                 println!("  📦 Running dependency analysis...");
             }
-            timed!("dependency_analyzer", vulnerabilities.extend(self.dependency_analyzer.analyze(content)));
+            timed!(
+                "dependency_analyzer",
+                vulnerabilities.extend(self.dependency_analyzer.analyze(content))
+            );
         }
 
         // Generate threat model vulnerabilities
@@ -1259,7 +1338,10 @@ impl ContractScanner {
             if self.verbose {
                 println!("  📋 Running EIP vulnerability analysis...");
             }
-            timed!("eip_analyzer", vulnerabilities.extend(self.eip_analyzer.analyze(content)));
+            timed!(
+                "eip_analyzer",
+                vulnerabilities.extend(self.eip_analyzer.analyze(content))
+            );
         }
 
         // Apply enhanced false positive filtering
@@ -1496,7 +1578,11 @@ impl ContractScanner {
                 if line.contains("function") {
                     // Use multi-line signature to catch modifiers on continuation lines
                     let full_sig = self.get_full_function_signature(lines, line_idx);
-                    if self.has_access_control_modifier(&full_sig, &scan_context.known_modifiers, scan_context.inherited.as_deref()) {
+                    if self.has_access_control_modifier(
+                        &full_sig,
+                        &scan_context.known_modifiers,
+                        scan_context.inherited.as_deref(),
+                    ) {
                         return false;
                     }
                     // Check if there's an inline access control check within the function
@@ -1565,7 +1651,11 @@ impl ContractScanner {
                     return false;
                 }
                 // Don't report reentrancy inside onlyOwner functions (only owner can trigger)
-                if self.has_access_control_modifier(&full_sig, &scan_context.known_modifiers, scan_context.inherited.as_deref()) {
+                if self.has_access_control_modifier(
+                    &full_sig,
+                    &scan_context.known_modifiers,
+                    scan_context.inherited.as_deref(),
+                ) {
                     return false;
                 }
                 // Don't report for view/pure functions
@@ -1712,8 +1802,18 @@ impl ContractScanner {
                 // addresses (uint160(target)), packed validation words, selectors etc.
                 // is deliberate bit manipulation, not a truncation-of-funds risk.
                 let financial = [
-                    "amount", "balance", "share", "price", "fee", "supply", "debt", "reward",
-                    "liquidity", "total", "wei", "assets",
+                    "amount",
+                    "balance",
+                    "share",
+                    "price",
+                    "fee",
+                    "supply",
+                    "debt",
+                    "reward",
+                    "liquidity",
+                    "total",
+                    "wei",
+                    "assets",
                 ];
                 if let Some(caps) = RE_DOWNCAST_ARG.captures(line) {
                     let var = caps.get(1).map_or("", |m| m.as_str()).to_lowercase();
@@ -1811,7 +1911,11 @@ impl ContractScanner {
                 // Don't report if function has access control
                 if line.contains("function") {
                     let modifiers = self.extract_modifiers(full_content);
-                    if self.has_access_control_modifier(line, &modifiers, scan_context.inherited.as_deref()) {
+                    if self.has_access_control_modifier(
+                        line,
+                        &modifiers,
+                        scan_context.inherited.as_deref(),
+                    ) {
                         return false;
                     }
                 }

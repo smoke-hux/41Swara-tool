@@ -3,9 +3,8 @@
 //! Analyzes imported contracts and dependencies for known vulnerabilities,
 //! version mismatches, and supply chain security issues.
 
-
-use once_cell::sync::Lazy;
 use crate::vulnerabilities::{Vulnerability, VulnerabilityCategory, VulnerabilitySeverity};
+use once_cell::sync::Lazy;
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
 
@@ -21,7 +20,6 @@ macro_rules! re {
         &*RE
     }};
 }
-
 
 /// Represents an imported dependency
 #[derive(Debug, Clone)]
@@ -380,9 +378,13 @@ impl DependencyAnalyzer {
 
         for import in imports {
             // Check for wildcard imports (all symbols)
-            if import.symbols.is_empty() && import.alias.is_none() && !import.path.ends_with(".sol")
-                && !import.path.contains("interface") && !import.path.contains("Interface") {
-                    vulnerabilities.push(Vulnerability::new(
+            if import.symbols.is_empty()
+                && import.alias.is_none()
+                && !import.path.ends_with(".sol")
+                && !import.path.contains("interface")
+                && !import.path.contains("Interface")
+            {
+                vulnerabilities.push(Vulnerability::new(
                         VulnerabilitySeverity::Low,
                         VulnerabilityCategory::CompilerBug,
                         "Wildcard Import".to_string(),
@@ -391,7 +393,7 @@ impl DependencyAnalyzer {
                         format!("import \"{}\"", import.path),
                         "Use specific imports: import {Contract} from \"path\"".to_string(),
                     ));
-                }
+            }
 
             // Check for git/URL imports (supply chain risk)
             if import.path.contains("github.com")
@@ -620,6 +622,4 @@ impl DependencyAnalyzer {
 
         vulnerabilities
     }
-
 }
-

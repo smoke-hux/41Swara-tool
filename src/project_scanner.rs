@@ -296,9 +296,9 @@ impl ProjectScanner {
                     && (trimmed.contains("public")
                         || trimmed.contains("private")
                         || trimmed.contains("internal"))
-                    {
-                        variables.push(trimmed.to_string());
-                    }
+                {
+                    variables.push(trimmed.to_string());
+                }
             }
         }
 
@@ -394,20 +394,20 @@ impl ProjectScanner {
             if matches!(
                 vuln.vulnerability.severity,
                 VulnerabilitySeverity::Critical | VulnerabilitySeverity::High
-            )
-                && !vuln.cross_file_impact.is_empty() {
-                    let mut path = vec![vuln.file_path.clone()];
-                    path.extend(vuln.cross_file_impact.clone());
+            ) && !vuln.cross_file_impact.is_empty()
+            {
+                let mut path = vec![vuln.file_path.clone()];
+                path.extend(vuln.cross_file_impact.clone());
 
-                    critical_paths.push(CriticalPath {
-                        path,
-                        severity: vuln.vulnerability.severity.clone(),
-                        description: format!(
-                            "{} - {}",
-                            vuln.vulnerability.title, vuln.vulnerability.description
-                        ),
-                    });
-                }
+                critical_paths.push(CriticalPath {
+                    path,
+                    severity: vuln.vulnerability.severity.clone(),
+                    description: format!(
+                        "{} - {}",
+                        vuln.vulnerability.title, vuln.vulnerability.description
+                    ),
+                });
+            }
         }
 
         critical_paths
@@ -471,7 +471,6 @@ impl ProjectScanner {
                 * 0.1);
 
         // Normalize to 0-100 scale
-        
 
         (base_score * impact_multiplier).min(100.0)
     }

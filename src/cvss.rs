@@ -144,8 +144,6 @@ impl CvssVector {
             return 0.0;
         }
 
-        
-
         if scope_changed {
             roundup((1.08 * (impact + exploitability)).min(10.0))
         } else {
@@ -439,8 +437,8 @@ pub fn severity_to_cvss(severity: &VulnerabilitySeverity) -> CvssVector {
 /// Enrich a list of vulnerabilities with CVSS scores and vector strings.
 pub fn enrich_with_cvss(vulnerabilities: &mut [Vulnerability]) {
     for vuln in vulnerabilities.iter_mut() {
-        let vector = category_to_cvss(&vuln.category)
-            .unwrap_or_else(|| severity_to_cvss(&vuln.severity));
+        let vector =
+            category_to_cvss(&vuln.category).unwrap_or_else(|| severity_to_cvss(&vuln.severity));
         vuln.cvss_score = Some(vector.calculate_base_score());
         vuln.cvss_vector = Some(vector.to_vector_string());
     }

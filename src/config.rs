@@ -6,7 +6,6 @@
 //! - Rule disabling
 //! - Scan settings (confidence threshold, exclude patterns, library trust)
 
-
 use regex::Regex;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};

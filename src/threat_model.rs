@@ -15,9 +15,8 @@
 //! `to_vulnerabilities_with_content()` for unified reporting alongside pattern-based
 //! detections.
 
-
-use once_cell::sync::Lazy;
 use crate::vulnerabilities::{Vulnerability, VulnerabilityCategory, VulnerabilitySeverity};
+use once_cell::sync::Lazy;
 use regex::Regex;
 use std::collections::HashSet;
 
@@ -33,7 +32,6 @@ macro_rules! re {
         &*RE
     }};
 }
-
 
 /// Primary classification of a smart contract based on its functionality.
 ///
@@ -356,12 +354,13 @@ impl ThreatModelGenerator {
     /// entry point functions (up to 20).
     fn analyze_attack_surface(&self, content: &str) -> AttackSurface {
         // Match functions with `public` or `external` visibility
-        let public_pattern =
-            re!(r"function\s+\w+\s*\([^)]*\)\s*(?:public|external)");
+        let public_pattern = re!(r"function\s+\w+\s*\([^)]*\)\s*(?:public|external)");
         // Match functions with the `payable` modifier (accepts ETH)
         let payable_pattern = re!(r"function\s+\w+\s*\([^)]*\)[^{]*payable");
         // Match admin-like functions by common naming prefixes
-        let admin_pattern = re!(r"function\s+(set|update|change|modify|withdraw|transfer|mint|burn|pause|upgrade)\w*");
+        let admin_pattern = re!(
+            r"function\s+(set|update|change|modify|withdraw|transfer|mint|burn|pause|upgrade)\w*"
+        );
 
         let payable_count = payable_pattern.captures_iter(content).count();
         let admin_count = admin_pattern.captures_iter(content).count();
@@ -380,8 +379,7 @@ impl ThreatModelGenerator {
             .count();
 
         // Count low-level external calls that bypass Solidity's safety checks
-        let external_call_pattern =
-            re!(r"\.call\{|\.delegatecall\(|\.staticcall\(");
+        let external_call_pattern = re!(r"\.call\{|\.delegatecall\(|\.staticcall\(");
         let external_calls = external_call_pattern.captures_iter(content).count();
 
         // Extract function names that serve as public entry points.
@@ -411,8 +409,7 @@ impl ThreatModelGenerator {
     /// Extract names of admin-restricted functions (those guarded by onlyOwner/onlyAdmin/onlyRole).
     /// Returns up to 10 function names.
     fn find_admin_functions(&self, content: &str) -> Vec<String> {
-        let pattern =
-            re!(r"function\s+(\w+)\s*\([^)]*\)[^{]*(onlyOwner|onlyAdmin|onlyRole)");
+        let pattern = re!(r"function\s+(\w+)\s*\([^)]*\)[^{]*(onlyOwner|onlyAdmin|onlyRole)");
         pattern
             .captures_iter(content)
             .filter_map(|c| c.get(1).map(|m| m.as_str().to_string()))

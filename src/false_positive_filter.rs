@@ -26,7 +26,6 @@
 //! Together the three layers achieve 90%+ false-positive reduction while maintaining high
 //! detection accuracy.
 
-
 use crate::vulnerabilities::{Vulnerability, VulnerabilityCategory, VulnerabilitySeverity};
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -155,7 +154,6 @@ struct SafePattern {
     pattern: &'static Regex,
 }
 
-
 /// Pull the backticked identifier out of a finding title, e.g.
 /// ``Unchecked Arithmetic on State Variable `totalFees` `` -> `totalFees`.
 ///
@@ -173,7 +171,6 @@ fn subject_identifier(title: &str) -> Option<&str> {
         Some(ident)
     }
 }
-
 
 /// The declaration line of the function containing `line` (1-based).
 ///
@@ -232,14 +229,15 @@ impl FalsePositiveFilter {
             // Reentrancy: suppress if any reentrancy guard mechanism is present
             SafePattern {
                 category: VulnerabilityCategory::Reentrancy,
-                pattern: re!(r"(?i)(ReentrancyGuard|nonReentrant|_reentrancyGuard|locked\s*=\s*true)"),
+                pattern: re!(
+                    r"(?i)(ReentrancyGuard|nonReentrant|_reentrancyGuard|locked\s*=\s*true)"
+                ),
             },
             // Reentrancy: suppress if a CEI pattern annotation exists in comments
             SafePattern {
                 category: VulnerabilityCategory::Reentrancy,
                 pattern: re!(r"CEI\s*pattern|checks-effects-interactions"),
             },
-
             // Arithmetic: suppress if SafeMath is imported (pre-0.8 protection)
             SafePattern {
                 category: VulnerabilityCategory::ArithmeticIssues,
@@ -250,30 +248,32 @@ impl FalsePositiveFilter {
                 category: VulnerabilityCategory::ArithmeticIssues,
                 pattern: re!(r"pragma\s+solidity\s*[\^>=<]*\s*0\.[89]"),
             },
-
             // Access control: suppress if common owner/role modifier keywords found
             SafePattern {
                 category: VulnerabilityCategory::AccessControl,
-                pattern: re!(r"(?i)(onlyOwner|onlyAdmin|onlyRole|onlyMinter|onlyGovernance|requiresAuth|auth\(\))"),
+                pattern: re!(
+                    r"(?i)(onlyOwner|onlyAdmin|onlyRole|onlyMinter|onlyGovernance|requiresAuth|auth\(\))"
+                ),
             },
             // Access control: suppress if inline require checks msg.sender
             SafePattern {
                 category: VulnerabilityCategory::AccessControl,
-                pattern: re!(r"require\s*\(\s*msg\.sender\s*==|require\s*\(\s*_msgSender\s*\(\s*\)\s*=="),
+                pattern: re!(
+                    r"require\s*\(\s*msg\.sender\s*==|require\s*\(\s*_msgSender\s*\(\s*\)\s*=="
+                ),
             },
-
             // Unchecked returns: suppress if SafeERC20 wrappers are used
             SafePattern {
                 category: VulnerabilityCategory::UncheckedReturnValues,
                 pattern: re!(r"using\s+SafeERC20\s+for|\.safeTransfer\(|\.safeTransferFrom\("),
             },
-
             // Proxy upgrade: suppress if _authorizeUpgrade is protected by onlyOwner
             SafePattern {
                 category: VulnerabilityCategory::UnprotectedProxyUpgrade,
-                pattern: re!(r"_authorizeUpgrade\s*\([^)]*\)\s*internal\s*(virtual\s*)?(override\s*)?onlyOwner"),
+                pattern: re!(
+                    r"_authorizeUpgrade\s*\([^)]*\)\s*internal\s*(virtual\s*)?(override\s*)?onlyOwner"
+                ),
             },
-
             // Signature: suppress if using OZ ECDSA or SignatureChecker (handles malleability)
             SafePattern {
                 category: VulnerabilityCategory::SignatureVulnerabilities,
@@ -293,8 +293,7 @@ impl FalsePositiveFilter {
         };
 
         // Detect Solidity version from the pragma directive
-        let version_pattern =
-            re!(r"pragma\s+solidity\s*([\^>=<]*)?\s*(\d+\.\d+\.\d+|\d+\.\d+)");
+        let version_pattern = re!(r"pragma\s+solidity\s*([\^>=<]*)?\s*(\d+\.\d+\.\d+|\d+\.\d+)");
         if let Some(caps) = version_pattern.captures(content) {
             ctx.solidity_version = caps.get(2).map(|m| m.as_str().to_string());
             if let Some(ref version) = ctx.solidity_version {
@@ -327,8 +326,8 @@ impl FalsePositiveFilter {
                 || content.contains("OpenZeppelin"));
 
         // Detect Solmate
-        ctx.uses_solmate =
-            self.config.trust_solmate && (content.contains("solmate") || content.contains("Solmate"));
+        ctx.uses_solmate = self.config.trust_solmate
+            && (content.contains("solmate") || content.contains("Solmate"));
 
         // Detect Solady
         ctx.uses_solady =
@@ -382,8 +381,7 @@ impl FalsePositiveFilter {
         }
 
         // Extract the inheritance list (contracts/interfaces after `is`)
-        let inherit_pattern =
-            re!(r"(contract|abstract\s+contract)\s+\w+\s+is\s+([^{]+)");
+        let inherit_pattern = re!(r"(contract|abstract\s+contract)\s+\w+\s+is\s+([^{]+)");
         if let Some(caps) = inherit_pattern.captures(content) {
             if let Some(inherited) = caps.get(2) {
                 for part in inherited.as_str().split(',') {
@@ -409,8 +407,7 @@ impl FalsePositiveFilter {
         }
 
         // Extract developer-placed audit/security annotations from comments
-        let audit_pattern =
-            re!(r"@audit|@security|@notice\s+SAFE|// SAFE:|// AUDITED");
+        let audit_pattern = re!(r"@audit|@security|@notice\s+SAFE|// SAFE:|// AUDITED");
         for mat in audit_pattern.find_iter(content) {
             ctx.audit_annotations.push(mat.as_str().to_string());
         }
@@ -648,7 +645,9 @@ impl FalsePositiveFilter {
         let mut spans = Vec::new();
         for (i, &(start, is_mock)) in decls.iter().enumerate() {
             if is_mock {
-                let end = decls.get(i + 1).map_or(total, |&(n, _)| n.saturating_sub(1));
+                let end = decls
+                    .get(i + 1)
+                    .map_or(total, |&(n, _)| n.saturating_sub(1));
                 spans.push((start, end));
             }
         }
@@ -779,9 +778,9 @@ impl FalsePositiveFilter {
                     && (vuln.code_snippet.contains("transferOwnership")
                         || vuln.title.contains("transferOwnership")
                         || vuln.description.contains("transferOwnership"))
-                    {
-                        return false;
-                    }
+                {
+                    return false;
+                }
                 self.filter_proxy_upgrade(vuln, content, ctx)
             }
             VulnerabilityCategory::SignatureVulnerabilities
@@ -887,19 +886,22 @@ impl FalsePositiveFilter {
                 }
 
                 if (title.contains("array parameter") || title.contains("array length validation"))
-                    && self.has_array_length_validation(&context) {
-                        return false;
-                    }
+                    && self.has_array_length_validation(&context)
+                {
+                    return false;
+                }
 
                 if title.contains("unchecked raw calldata")
-                    && self.has_raw_bytes_validation(&context) {
-                        return false;
-                    }
+                    && self.has_raw_bytes_validation(&context)
+                {
+                    return false;
+                }
 
                 if title.contains("fee-on-transfer")
-                    && self.has_fee_on_transfer_accounting(&context) {
-                        return false;
-                    }
+                    && self.has_fee_on_transfer_accounting(&context)
+                {
+                    return false;
+                }
 
                 if title.contains("contract check bypassable") {
                     let helper_context = context.contains("function iscontract")
@@ -920,9 +922,10 @@ impl FalsePositiveFilter {
                 }
 
                 if title.contains("layerzero missing payload validation")
-                    && self.has_raw_bytes_validation(&context) {
-                        return false;
-                    }
+                    && self.has_raw_bytes_validation(&context)
+                {
+                    return false;
+                }
 
                 true
             }
@@ -1392,19 +1395,20 @@ impl FalsePositiveFilter {
             return false;
         }
         if (title.contains("deadline") || title.contains("permit"))
-            && self.has_deadline_guard(&context) {
-                return false;
-            }
+            && self.has_deadline_guard(&context)
+        {
+            return false;
+        }
         if (title.contains("replay") || title.contains("signature"))
             && self.has_signature_verification(content, &context)
             && self.has_nonce_management(content, &context)
-                && (self.has_deadline_guard(&context)
-                    || context.contains("domain_separator")
-                    || context.contains("block.chainid")
-                    || content.to_lowercase().contains("domain_separator"))
-            {
-                return false;
-            }
+            && (self.has_deadline_guard(&context)
+                || context.contains("domain_separator")
+                || context.contains("block.chainid")
+                || content.to_lowercase().contains("domain_separator"))
+        {
+            return false;
+        }
         true
     }
 
@@ -1466,9 +1470,9 @@ impl FalsePositiveFilter {
             && (self.has_access_control_guard(&context)
                 || context.contains("immutable")
                 || context.contains("constructor("))
-            {
-                return false;
-            }
+        {
+            return false;
+        }
 
         if self.has_signature_verification(content, &context)
             && self.has_nonce_management(content, &context)
@@ -1965,7 +1969,10 @@ mod tests {
         ];
 
         let filtered = filter.filter(findings, content);
-        let titles: Vec<&str> = filtered.iter().map(|finding| finding.title.as_str()).collect();
+        let titles: Vec<&str> = filtered
+            .iter()
+            .map(|finding| finding.title.as_str())
+            .collect();
 
         assert!(titles.contains(&"ERC4626 Liability Drift After Slash"));
         assert!(titles.contains(&"[EIP-4626] ERC-4626 First Depositor Inflation Attack"));

@@ -170,9 +170,7 @@ impl DynamicTool {
             Self::Echidna | Self::FoundryFuzz | Self::Medusa | Self::Ityfuzz => {
                 DynamicToolCategory::Fuzzing
             }
-            Self::Manticore | Self::Halmos | Self::Hevm => {
-                DynamicToolCategory::SymbolicExecution
-            }
+            Self::Manticore | Self::Halmos | Self::Hevm => DynamicToolCategory::SymbolicExecution,
             Self::Certora | Self::Kevm => DynamicToolCategory::FormalVerification,
             Self::Tenderly | Self::OpenZeppelinDefender | Self::Forta | Self::Phalcon => {
                 DynamicToolCategory::RuntimeMonitoring
@@ -385,7 +383,9 @@ impl DynamicAnalysisRunner {
 
         if matches!(tool, DynamicTool::Certora) && !has_any_extension(target, &["conf", "spec"]) {
             run.status = DynamicRunStatus::RequiresConfiguration;
-            run.message = "Certora Prover needs CVL specs or a certora .conf file in the target tree.".to_string();
+            run.message =
+                "Certora Prover needs CVL specs or a certora .conf file in the target tree."
+                    .to_string();
             return run;
         }
 
@@ -400,11 +400,7 @@ impl DynamicAnalysisRunner {
 
         if self.options.dry_run {
             run.status = DynamicRunStatus::Planned;
-            run.message = format!(
-                "Dry run: would execute {} {}",
-                command,
-                args.join(" ")
-            );
+            run.message = format!("Dry run: would execute {} {}", command, args.join(" "));
             return run;
         }
 
@@ -463,11 +459,7 @@ fn target_arg(target: &Path) -> String {
     target.display().to_string()
 }
 
-fn tool_args(
-    tool: DynamicTool,
-    target: &Path,
-    options: &DynamicAnalysisOptions,
-) -> Vec<String> {
+fn tool_args(tool: DynamicTool, target: &Path, options: &DynamicAnalysisOptions) -> Vec<String> {
     match tool {
         DynamicTool::Echidna => vec![target_arg(target)],
         DynamicTool::FoundryFuzz => vec![

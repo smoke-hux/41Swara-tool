@@ -906,14 +906,7 @@ fn resolve_contract(
 ) -> ResolvedContract {
     let mut diagnostics = Vec::new();
     let mut active = Vec::new();
-    let linearization = linearize(
-        &decl.name,
-        scope,
-        memo,
-        &mut active,
-        &mut diagnostics,
-        0,
-    );
+    let linearization = linearize(&decl.name, scope, memo, &mut active, &mut diagnostics, 0);
 
     // Walk most-base-first so a derived `override` definition overwrites its base.
     let mut modifiers: HashMap<String, ModifierDef> = HashMap::new();
@@ -986,7 +979,9 @@ fn resolve_contract(
         .filter(|m| m.guard.restricts_callers())
         .map(|m| m.name.clone())
         .collect();
-    let has_reentrancy_guard = modifiers.iter().any(|m| m.guard == GuardKind::ReentrancyGuard);
+    let has_reentrancy_guard = modifiers
+        .iter()
+        .any(|m| m.guard == GuardKind::ReentrancyGuard);
 
     ResolvedContract {
         name: decl.name.clone(),
@@ -1031,9 +1026,7 @@ fn well_known_base_modifiers(name: &str) -> &'static [(&'static str, GuardKind)]
         | "AccessControlEnumerable"
         | "AccessControlDefaultAdminRules"
         | "IAccessControl" => &[("onlyRole", GuardKind::AccessControl)],
-        "AccessManaged" | "AccessManagedUpgradeable" => {
-            &[("restricted", GuardKind::AccessControl)]
-        }
+        "AccessManaged" | "AccessManagedUpgradeable" => &[("restricted", GuardKind::AccessControl)],
         "Initializable" => &[
             ("initializer", GuardKind::Initializer),
             ("reinitializer", GuardKind::Initializer),
@@ -1595,8 +1588,7 @@ fn split_items(body: &str) -> Vec<BodyItem<'_>> {
                     if let Some(he) = header_end {
                         // `S public s = S({a: 1});` — a struct literal inside a statement.
                         let next = body[i + 1..].find(|c: char| !c.is_whitespace());
-                        let is_statement =
-                            next.is_some_and(|n| body.as_bytes()[i + 1 + n] != b'}');
+                        let is_statement = next.is_some_and(|n| body.as_bytes()[i + 1 + n] != b'}');
                         if is_statement
                             && next.is_some_and(|n| {
                                 matches!(body.as_bytes()[i + 1 + n], b';' | b')' | b',')
@@ -1654,7 +1646,10 @@ fn parse_body(body: &str, base_offset: usize, lines: &LineTable, decl: &mut Cont
             continue;
         }
         let line = lines.line_of(base_offset + item.offset + leading_ws(item.header));
-        let first = header.split(|c: char| !(c.is_alphanumeric() || c == '_')).next().unwrap_or("");
+        let first = header
+            .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+            .next()
+            .unwrap_or("");
 
         match first {
             "modifier" => {
@@ -1992,9 +1987,8 @@ fn split_type_tokens(s: &str) -> Vec<String> {
                 cur.push(b as char);
                 if depth == 0 {
                     // Keep a trailing `[]`/`[N]` glued to the type it qualifies.
-                    let following_is_space = bytes
-                        .get(i + 1)
-                        .is_none_or(|c| c.is_ascii_whitespace());
+                    let following_is_space =
+                        bytes.get(i + 1).is_none_or(|c| c.is_ascii_whitespace());
                     if following_is_space && b == b')' {
                         out.push(std::mem::take(&mut cur));
                     }
@@ -2201,8 +2195,14 @@ fn load_remappings(root: &Path) -> Vec<(String, String)> {
 
     // Conventional defaults, appended so an explicit remapping always wins.
     for (prefix, target) in [
-        ("@openzeppelin/contracts-upgradeable/", "lib/openzeppelin-contracts-upgradeable/contracts/"),
-        ("@openzeppelin/contracts/", "lib/openzeppelin-contracts/contracts/"),
+        (
+            "@openzeppelin/contracts-upgradeable/",
+            "lib/openzeppelin-contracts-upgradeable/contracts/",
+        ),
+        (
+            "@openzeppelin/contracts/",
+            "lib/openzeppelin-contracts/contracts/",
+        ),
         ("@openzeppelin/", "node_modules/@openzeppelin/"),
         ("forge-std/", "lib/forge-std/src/"),
         ("solmate/", "lib/solmate/src/"),
@@ -2362,7 +2362,11 @@ mod tests {
         );
         assert!(vault.has_reentrancy_guard());
         assert!(vault.has_modifier("nonReentrant"));
-        assert!(vault.unresolved_bases.is_empty(), "{:?}", vault.unresolved_bases);
+        assert!(
+            vault.unresolved_bases.is_empty(),
+            "{:?}",
+            vault.unresolved_bases
+        );
         // File-level query used on the scanner's hot path.
         assert!(resolved.has_access_control_modifier("onlyOwner"));
         assert!(resolved.has_reentrancy_guard());
@@ -2386,7 +2390,11 @@ mod tests {
     fn full_api_surface_is_populated() {
         let (index, root) = index_for("foundry");
         let resolved = index.resolve(root.join("src/Vault.sol"));
-        assert!(resolved.diagnostics.is_empty(), "{:?}", resolved.diagnostics);
+        assert!(
+            resolved.diagnostics.is_empty(),
+            "{:?}",
+            resolved.diagnostics
+        );
         assert!(resolved.has_modifier("onlyOwner"));
         assert!(!resolved.has_modifier("definitelyNotAModifier"));
 
@@ -2419,7 +2427,11 @@ mod tests {
             .iter()
             .map(|s| s.name.as_str())
             .collect();
-        assert_eq!(laid_out, vec!["_owner", "_status", "deposits"], "{laid_out:?}");
+        assert_eq!(
+            laid_out,
+            vec!["_owner", "_status", "deposits"],
+            "{laid_out:?}"
+        );
         assert_eq!(vault.storage.total_slots, 3);
         assert_eq!(vault.storage.slots[0].size, 20);
         assert_eq!(vault.storage.slots[0].ty, "address");
@@ -2615,7 +2627,11 @@ mod tests {
     fn unbalanced_braces_do_not_panic() {
         let dir = scratch_dir("unbalanced");
         let file = dir.join("Bad.sol");
-        std::fs::write(&file, "contract A is B { function f() public { /* never closed\n").unwrap();
+        std::fs::write(
+            &file,
+            "contract A is B { function f() public { /* never closed\n",
+        )
+        .unwrap();
         let index = ProjectIndex::for_root(&dir);
         let _ = index.resolve(&file);
         std::fs::write(&file, "contract").unwrap();
@@ -2712,7 +2728,10 @@ mod tests {
             split_package("@openzeppelin/contracts/access/Ownable.sol"),
             ("@openzeppelin/contracts", Some("access/Ownable.sol"))
         );
-        assert_eq!(split_package("forge-std/Test.sol"), ("forge-std", Some("Test.sol")));
+        assert_eq!(
+            split_package("forge-std/Test.sol"),
+            ("forge-std", Some("Test.sol"))
+        );
         assert_eq!(split_package("Bare.sol"), ("Bare.sol", None));
     }
 

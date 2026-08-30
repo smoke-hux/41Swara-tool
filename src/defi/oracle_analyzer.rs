@@ -3,9 +3,8 @@
 //! Detects oracle-related vulnerabilities including Chainlink staleness,
 //! L2 sequencer checks, TWAP validation, and multi-oracle fallbacks.
 
-
-use once_cell::sync::Lazy;
 use crate::vulnerabilities::{Vulnerability, VulnerabilityCategory, VulnerabilitySeverity};
+use once_cell::sync::Lazy;
 use regex::Regex;
 
 /// Per-call-site regex cache. Each macro expansion creates its own `static Lazy<Regex>`,
@@ -20,7 +19,6 @@ macro_rules! re {
         &*RE
     }};
 }
-
 
 /// Oracle security analyzer
 pub struct OracleAnalyzer {
@@ -198,8 +196,7 @@ impl OracleAnalyzer {
                         && !func_context.contains("WINDOW")
                     {
                         // Try to find the window value
-                        let window_pattern =
-                            re!(r"(\d+)\s*(seconds?|minutes?|hours?)");
+                        let window_pattern = re!(r"(\d+)\s*(seconds?|minutes?|hours?)");
                         if let Some(caps) = window_pattern.captures(&func_context) {
                             let value: u64 = caps.get(1).unwrap().as_str().parse().unwrap_or(0);
                             let unit = caps.get(2).unwrap().as_str();
@@ -357,20 +354,20 @@ impl OracleAnalyzer {
                     || func_context.contains("/ rate")
                     || func_context.contains("/rate"))
                     && !func_context.contains("> 0")
-                        && !func_context.contains("!= 0")
-                        && !func_context.contains(">0")
-                        && !func_context.contains("!=0")
-                    {
-                        vulnerabilities.push(Vulnerability::new(
-                            VulnerabilitySeverity::High,
-                            VulnerabilityCategory::ArithmeticIssues,
-                            "Division by Price Without Zero Check".to_string(),
-                            "Price used in division without checking for zero".to_string(),
-                            idx + 1,
-                            line.to_string(),
-                            "Add: require(price > 0, 'Invalid price') before division".to_string(),
-                        ));
-                    }
+                    && !func_context.contains("!= 0")
+                    && !func_context.contains(">0")
+                    && !func_context.contains("!=0")
+                {
+                    vulnerabilities.push(Vulnerability::new(
+                        VulnerabilitySeverity::High,
+                        VulnerabilityCategory::ArithmeticIssues,
+                        "Division by Price Without Zero Check".to_string(),
+                        "Price used in division without checking for zero".to_string(),
+                        idx + 1,
+                        line.to_string(),
+                        "Add: require(price > 0, 'Invalid price') before division".to_string(),
+                    ));
+                }
             }
         }
 
@@ -411,22 +408,24 @@ impl OracleAnalyzer {
 
         // Check for Chainlink decimal handling
         if self.chainlink_pattern.is_match(content)
-            && !content.contains("decimals()") && !content.contains("PRICE_DECIMALS") {
-                for (idx, line) in content.lines().enumerate() {
-                    if self.latest_round_pattern.is_match(line) {
-                        vulnerabilities.push(Vulnerability::new(
-                            VulnerabilitySeverity::Medium,
-                            VulnerabilityCategory::DecimalPrecisionMismatch,
-                            "Chainlink Decimals Not Checked".to_string(),
-                            "Using Chainlink price without checking feed decimals".to_string(),
-                            idx + 1,
-                            line.to_string(),
-                            "Call priceFeed.decimals() and normalize price accordingly".to_string(),
-                        ));
-                        break;
-                    }
+            && !content.contains("decimals()")
+            && !content.contains("PRICE_DECIMALS")
+        {
+            for (idx, line) in content.lines().enumerate() {
+                if self.latest_round_pattern.is_match(line) {
+                    vulnerabilities.push(Vulnerability::new(
+                        VulnerabilitySeverity::Medium,
+                        VulnerabilityCategory::DecimalPrecisionMismatch,
+                        "Chainlink Decimals Not Checked".to_string(),
+                        "Using Chainlink price without checking feed decimals".to_string(),
+                        idx + 1,
+                        line.to_string(),
+                        "Call priceFeed.decimals() and normalize price accordingly".to_string(),
+                    ));
+                    break;
                 }
             }
+        }
 
         vulnerabilities
     }

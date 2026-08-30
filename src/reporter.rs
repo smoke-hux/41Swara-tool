@@ -142,7 +142,8 @@ impl VulnerabilityReporter {
             );
         }
 
-        self.results.insert(file_path.to_path_buf(), vulnerabilities);
+        self.results
+            .insert(file_path.to_path_buf(), vulnerabilities);
     }
 
     /// Add results without printing to stdout.

@@ -16,7 +16,6 @@
 //! The analysis is conservative: contract-level declarations (state variables, pragmas,
 //! imports) outside any function body are always considered reachable.
 
-
 use crate::vulnerabilities::{Vulnerability, VulnerabilityCategory};
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -368,7 +367,11 @@ impl ReachabilityAnalyzer {
     /// Compute the reachability result for a named function. This is the
     /// per-function core of `is_line_reachable`; callers that process many
     /// findings memoize it per function name (see `apply_reachability`).
-    fn function_reachability(&self, call_graph: &CallGraph, target_func: &str) -> ReachabilityResult {
+    fn function_reachability(
+        &self,
+        call_graph: &CallGraph,
+        target_func: &str,
+    ) -> ReachabilityResult {
         // If the function itself is an entry point, it's directly reachable with high confidence
         if call_graph.entry_points.iter().any(|e| e == target_func) {
             return ReachabilityResult {
@@ -513,7 +516,11 @@ impl ReachabilityAnalyzer {
     /// adjustment, and external call chain detection). This is what the scanner
     /// calls; the individual `pub` methods remain for direct use but each
     /// rebuilds the graph.
-    pub fn process(&self, vulnerabilities: Vec<Vulnerability>, content: &str) -> Vec<Vulnerability> {
+    pub fn process(
+        &self,
+        vulnerabilities: Vec<Vulnerability>,
+        content: &str,
+    ) -> Vec<Vulnerability> {
         let call_graph = self.build_call_graph(content);
         // Reachability results only depend on the containing function, so memoize
         // per function name — most contracts have far fewer functions than findings.
@@ -557,19 +564,20 @@ impl ReachabilityAnalyzer {
                 if matches!(vuln.category, VulnerabilityCategory::UnusedCode) {
                     return true;
                 }
-                let reachable = match self.cached_line_reachability(call_graph, cache, vuln.line_number) {
-                    None => true, // contract-level declaration
-                    Some(result) => {
-                        // In verbose mode, log which vulnerabilities are being filtered out
-                        if !result.is_reachable && self.verbose {
-                            println!(
-                                "  ⚠️  Filtering unreachable vulnerability at line {}: {}",
-                                vuln.line_number, result.reason
-                            );
+                let reachable =
+                    match self.cached_line_reachability(call_graph, cache, vuln.line_number) {
+                        None => true, // contract-level declaration
+                        Some(result) => {
+                            // In verbose mode, log which vulnerabilities are being filtered out
+                            if !result.is_reachable && self.verbose {
+                                println!(
+                                    "  ⚠️  Filtering unreachable vulnerability at line {}: {}",
+                                    vuln.line_number, result.reason
+                                );
+                            }
+                            result.is_reachable
                         }
-                        result.is_reachable
-                    }
-                };
+                    };
                 reachable
             })
             .collect()
@@ -582,8 +590,7 @@ impl ReachabilityAnalyzer {
         cache: &mut HashMap<String, ReachabilityResult>,
     ) {
         for vuln in vulnerabilities.iter_mut() {
-            let Some(result) =
-                self.cached_line_reachability(call_graph, cache, vuln.line_number)
+            let Some(result) = self.cached_line_reachability(call_graph, cache, vuln.line_number)
             else {
                 continue; // contract-level line: no adjustment
             };
@@ -619,8 +626,7 @@ impl ReachabilityAnalyzer {
 
         for (func_name, node) in &call_graph.nodes {
             // Check if this function or any function it transitively calls makes an external call
-            let makes_external_call =
-                self.check_transitive_external_calls(call_graph, func_name);
+            let makes_external_call = self.check_transitive_external_calls(call_graph, func_name);
 
             // Only flag if the function lacks nonReentrant protection
             if makes_external_call && !node.modifiers.iter().any(|m| m.contains("nonReentrant")) {

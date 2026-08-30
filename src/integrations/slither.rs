@@ -6,7 +6,6 @@
 //! - Merge unique findings from each tool
 //! - Unify severity and confidence across both tools ([`CorrelatedFinding`])
 
-
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::path::Path;
@@ -161,10 +160,10 @@ impl SlitherIntegration {
                 }
 
                 let similarity = self.calculate_similarity(swara, slither);
-                if similarity > 0.7
-                    && (best_match.is_none() || similarity > best_match.unwrap().1) {
-                        best_match = Some((idx, similarity));
-                    }
+                if similarity > 0.7 && (best_match.is_none() || similarity > best_match.unwrap().1)
+                {
+                    best_match = Some((idx, similarity));
+                }
             }
 
             if let Some((idx, similarity)) = best_match {
@@ -439,7 +438,6 @@ impl SlitherIntegration {
             VulnerabilityCategory::LogicError
         }
     }
-
 }
 
 impl Default for SlitherIntegration {
@@ -506,11 +504,20 @@ mod tests {
         // The single Swara finding matches the single Slither finding.
         let both = correlated
             .iter()
-            .find(|c| matches!(c.correlation, CorrelationType::BothFound | CorrelationType::Similar))
+            .find(|c| {
+                matches!(
+                    c.correlation,
+                    CorrelationType::BothFound | CorrelationType::Similar
+                )
+            })
             .expect("should correlate");
 
         // adjusted_confidence: mean(0.7, 0.9) + 0.15 boost = 0.95.
-        assert!((both.adjusted_confidence - 0.95).abs() < 1e-9, "got {}", both.adjusted_confidence);
+        assert!(
+            (both.adjusted_confidence - 0.95).abs() < 1e-9,
+            "got {}",
+            both.adjusted_confidence
+        );
         // unified_severity: max(High, High) = High.
         assert_eq!(both.unified_severity, VulnerabilitySeverity::High);
         // It is higher than the raw Swara confidence (0.7), proving corroboration.

@@ -197,19 +197,37 @@ mod tests {
         // structure does not, because line layout is part of what the model reads.
         assert_eq!(
             k,
-            verdict_key("anthropic", "claude-opus-5", "SWC-107", "  function f() {   x  =  1; }  ")
+            verdict_key(
+                "anthropic",
+                "claude-opus-5",
+                "SWC-107",
+                "  function f() {   x  =  1; }  "
+            )
         );
         assert_ne!(
             k,
-            verdict_key("anthropic", "claude-opus-5", "SWC-107", "function f() {\n  x = 1;\n}")
+            verdict_key(
+                "anthropic",
+                "claude-opus-5",
+                "SWC-107",
+                "function f() {\n  x = 1;\n}"
+            )
         );
         // Anything else changes it.
         assert_ne!(k, verdict_key("ollama", "claude-opus-5", "SWC-107", ctx));
-        assert_ne!(k, verdict_key("anthropic", "claude-sonnet-5", "SWC-107", ctx));
+        assert_ne!(
+            k,
+            verdict_key("anthropic", "claude-sonnet-5", "SWC-107", ctx)
+        );
         assert_ne!(k, verdict_key("anthropic", "claude-opus-5", "SWC-101", ctx));
         assert_ne!(
             k,
-            verdict_key("anthropic", "claude-opus-5", "SWC-107", "function f() { x = 2; }")
+            verdict_key(
+                "anthropic",
+                "claude-opus-5",
+                "SWC-107",
+                "function f() { x = 2; }"
+            )
         );
     }
 

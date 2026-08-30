@@ -3,9 +3,8 @@
 //! Detects vulnerabilities specific to lending protocols including
 //! Aave, Compound, and similar platforms.
 
-
-use once_cell::sync::Lazy;
 use crate::vulnerabilities::{Vulnerability, VulnerabilityCategory, VulnerabilitySeverity};
+use once_cell::sync::Lazy;
 use regex::Regex;
 
 /// Per-call-site regex cache. Each macro expansion creates its own `static Lazy<Regex>`,
@@ -20,7 +19,6 @@ macro_rules! re {
         &*RE
     }};
 }
-
 
 /// Lending protocol vulnerability analyzer
 pub struct LendingAnalyzer {
@@ -269,8 +267,7 @@ impl LendingAnalyzer {
         let mut vulnerabilities = Vec::new();
 
         // Check for collateral deposit functions
-        let deposit_pattern =
-            re!(r"function\s+(deposit|addCollateral|supply)\w*\s*\(");
+        let deposit_pattern = re!(r"function\s+(deposit|addCollateral|supply)\w*\s*\(");
 
         for (idx, line) in content.lines().enumerate() {
             if deposit_pattern.is_match(line) {

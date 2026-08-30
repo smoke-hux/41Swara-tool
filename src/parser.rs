@@ -511,7 +511,6 @@ impl SolidityParser {
 
         vulnerabilities
     }
-
 }
 
 /// Strip Solidity comments, preserving line count and column positions.
@@ -581,7 +580,11 @@ pub fn strip_comments(content: &str) -> String {
                 }
             }
             State::DoubleQuote | State::SingleQuote => {
-                let quote = if state == State::DoubleQuote { '"' } else { '\'' };
+                let quote = if state == State::DoubleQuote {
+                    '"'
+                } else {
+                    '\''
+                };
                 if c == '\\' {
                     out.push(c);
                     if let Some(next) = chars.next() {

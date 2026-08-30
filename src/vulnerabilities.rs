@@ -3560,17 +3560,13 @@ impl VulnerabilityCategory {
             VulnerabilityCategory::StorageLayoutCollision => "Upgradeable Storage Layout Collision",
             VulnerabilityCategory::GovernanceFlashloanVoting => "Governance Flash-Loan Voting",
             VulnerabilityCategory::SandwichResistantMissing => "Missing Sandwich Resistance",
-            VulnerabilityCategory::TransientStorageCompilerBug => {
-                "Transient Storage Compiler Bug"
-            }
+            VulnerabilityCategory::TransientStorageCompilerBug => "Transient Storage Compiler Bug",
             VulnerabilityCategory::EIP7702DelegateStorageCollision => {
                 "EIP-7702 Delegate Storage Collision"
             }
             VulnerabilityCategory::LayerZeroSingleDVN => "LayerZero Single DVN Verification",
             VulnerabilityCategory::ERC7683UnvalidatedFill => "ERC-7683 Unvalidated Fill",
-            VulnerabilityCategory::ERC6909FlashAccountingDrain => {
-                "ERC-6909 Flash Accounting Drain"
-            }
+            VulnerabilityCategory::ERC6909FlashAccountingDrain => "ERC-6909 Flash Accounting Drain",
             VulnerabilityCategory::ERC7579UnprotectedModule => {
                 "ERC-7579 Unprotected Module Installation"
             }
@@ -4181,7 +4177,8 @@ fn add_cross_version_attacks(rules: &mut Vec<VulnerabilityRule>, version: &Compi
             VulnerabilitySeverity::Medium,
             r"(keccak256|sha256)\s*\(\s*abi\.encodePacked\s*\([^)]*,\s*[^)]*\)",
             "Hash Collision Attack Risk".to_string(),
-            "abi.encodePacked with multiple dynamic types can cause hash collisions when hashed".to_string(),
+            "abi.encodePacked with multiple dynamic types can cause hash collisions when hashed"
+                .to_string(),
             "Use abi.encode() instead of abi.encodePacked() or add fixed separators".to_string(),
             false,
         )

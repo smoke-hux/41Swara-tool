@@ -3,9 +3,8 @@
 //! Detects MEV-related vulnerabilities including sandwich attacks,
 //! frontrunning, backrunning, and commit-reveal pattern validation.
 
-
-use once_cell::sync::Lazy;
 use crate::vulnerabilities::{Vulnerability, VulnerabilityCategory, VulnerabilitySeverity};
+use once_cell::sync::Lazy;
 use regex::Regex;
 
 /// Per-call-site regex cache. Each macro expansion creates its own `static Lazy<Regex>`,
@@ -20,7 +19,6 @@ macro_rules! re {
         &*RE
     }};
 }
-
 
 /// MEV vulnerability analyzer
 pub struct MEVAnalyzer {
@@ -380,8 +378,7 @@ impl MEVAnalyzer {
         let mut vulnerabilities = Vec::new();
 
         // Check for mint functions
-        let mint_pattern =
-            re!(r"function\s+mint\w*\s*\([^)]*\)\s*(external|public)");
+        let mint_pattern = re!(r"function\s+mint\w*\s*\([^)]*\)\s*(external|public)");
 
         if content.contains("ERC721") || content.contains("ERC1155") {
             for (idx, line) in content.lines().enumerate() {
@@ -417,20 +414,19 @@ impl MEVAnalyzer {
                     // Check for batch mint without limit
                     if (func_body.contains("amount") || func_body.contains("quantity"))
                         && !func_body.contains("maxMint")
-                            && !func_body.contains("MAX_")
-                            && !func_body.contains("limit")
-                        {
-                            vulnerabilities.push(Vulnerability::new(
-                                VulnerabilitySeverity::High,
-                                VulnerabilityCategory::DoSAttacks,
-                                "Unlimited Batch Mint".to_string(),
-                                "Batch mint without limit - whales can mint entire supply"
-                                    .to_string(),
-                                idx + 1,
-                                line.to_string(),
-                                "Add per-transaction and per-wallet mint limits".to_string(),
-                            ));
-                        }
+                        && !func_body.contains("MAX_")
+                        && !func_body.contains("limit")
+                    {
+                        vulnerabilities.push(Vulnerability::new(
+                            VulnerabilitySeverity::High,
+                            VulnerabilityCategory::DoSAttacks,
+                            "Unlimited Batch Mint".to_string(),
+                            "Batch mint without limit - whales can mint entire supply".to_string(),
+                            idx + 1,
+                            line.to_string(),
+                            "Add per-transaction and per-wallet mint limits".to_string(),
+                        ));
+                    }
 
                     // Check for block.timestamp randomness
                     if func_body.contains("block.timestamp") && func_body.contains("random") {
@@ -552,17 +548,18 @@ impl MEVAnalyzer {
 
             // Check for block.number usage
             if line.contains("block.number")
-                && (line.contains("== block.number") || line.contains("block.number ==")) {
-                    vulnerabilities.push(Vulnerability::new(
-                        VulnerabilitySeverity::Medium,
-                        VulnerabilityCategory::FrontRunning,
-                        "Block Number Equality Check".to_string(),
-                        "Exact block number comparison - can be targeted by miners".to_string(),
-                        idx + 1,
-                        line.to_string(),
-                        "Use block number ranges or commit-reveal instead".to_string(),
-                    ));
-                }
+                && (line.contains("== block.number") || line.contains("block.number =="))
+            {
+                vulnerabilities.push(Vulnerability::new(
+                    VulnerabilitySeverity::Medium,
+                    VulnerabilityCategory::FrontRunning,
+                    "Block Number Equality Check".to_string(),
+                    "Exact block number comparison - can be targeted by miners".to_string(),
+                    idx + 1,
+                    line.to_string(),
+                    "Use block number ranges or commit-reveal instead".to_string(),
+                ));
+            }
         }
 
         vulnerabilities

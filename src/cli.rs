@@ -923,11 +923,13 @@ fn merge_slither_findings(
                     if let Some(ref swara_f) = cf.swara_finding {
                         for v in vulnerabilities.iter_mut() {
                             if v.line_number == swara_f.line_number && v.title == swara_f.title {
-                                let pct =
-                                    (cf.adjusted_confidence * 100.0).round().clamp(0.0, 100.0) as u8;
+                                let pct = (cf.adjusted_confidence * 100.0).round().clamp(0.0, 100.0)
+                                    as u8;
                                 v.confidence_percent = pct;
                                 v.confidence =
-                                    crate::vulnerabilities::VulnerabilityConfidence::from_percent(pct);
+                                    crate::vulnerabilities::VulnerabilityConfidence::from_percent(
+                                        pct,
+                                    );
                                 v.severity = cf.unified_severity.clone();
                                 boosted += 1;
                                 break;
@@ -1098,7 +1100,10 @@ fn print_dynamic_analysis_report(report: &integrations::dynamic::DynamicAnalysis
     println!("\n{}", "Dynamic Analysis Pipeline".bright_cyan().bold());
     println!("{} {}", "Target:".cyan(), report.target);
     if report.dry_run {
-        println!("{}", "Mode: dry-run (no external commands executed)".yellow());
+        println!(
+            "{}",
+            "Mode: dry-run (no external commands executed)".yellow()
+        );
     }
 
     for run in &report.runs {
@@ -1275,7 +1280,11 @@ fn process_file(args: &Args, path: &PathBuf) -> i32 {
                         let has_failures = vulnerabilities
                             .iter()
                             .any(|v| fail_severity.matches(&v.severity));
-                        if has_failures { 1 } else { 0 }
+                        if has_failures {
+                            1
+                        } else {
+                            0
+                        }
                     } else if vulnerabilities.is_empty() {
                         0
                     } else {

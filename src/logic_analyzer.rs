@@ -18,9 +18,8 @@
 //!    which may further filter them through `false_positive_filter.rs` and
 //!    `reachability_analyzer.rs`.
 
-
-use once_cell::sync::Lazy;
 use crate::vulnerabilities::{Vulnerability, VulnerabilityCategory, VulnerabilitySeverity};
+use once_cell::sync::Lazy;
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
 
@@ -36,7 +35,6 @@ macro_rules! re {
         &*RE
     }};
 }
-
 
 /// Parsed representation of a single Solidity function, used for semantic analysis.
 ///
@@ -161,7 +159,9 @@ impl LogicAnalyzer {
         let mut functions = Vec::new();
 
         // Matches a Solidity function signature up to and including the opening brace.
-        let func_pattern = re!(r"function\s+(\w+)\s*\(([^)]*)\)\s*((?:external|public|internal|private|view|pure|payable|virtual|override|\s|,)*)\s*(?:returns\s*\(([^)]*)\))?\s*\{");
+        let func_pattern = re!(
+            r"function\s+(\w+)\s*\(([^)]*)\)\s*((?:external|public|internal|private|view|pure|payable|virtual|override|\s|,)*)\s*(?:returns\s*\(([^)]*)\))?\s*\{"
+        );
 
         // Captures individual modifier identifiers (ignoring their arguments).
         let modifier_pattern = re!(r"(\w+)(?:\([^)]*\))?");
@@ -170,8 +170,7 @@ impl LogicAnalyzer {
         // Heuristic for state writes: identifier followed by `=` but NOT `==`.
         let state_write_pattern = re!(r"\b([a-z_]\w*)\s*=[^=]");
         // Detects external call targets (address.call, .delegatecall, etc.).
-        let external_call_pattern =
-            re!(r"(\w+)\.(?:call|delegatecall|staticcall|transfer|send)\(");
+        let external_call_pattern = re!(r"(\w+)\.(?:call|delegatecall|staticcall|transfer|send)\(");
 
         let lines: Vec<&str> = content.lines().collect();
 
@@ -294,7 +293,9 @@ impl LogicAnalyzer {
     fn extract_state_variables(&self, content: &str) -> Vec<StateVariable> {
         let mut vars = Vec::new();
         // Pattern anchored to line start to avoid matching local variables inside functions.
-        let var_pattern = re!(r"^\s*(mapping\s*\([^)]+\)|address|uint\d*|int\d*|bool|bytes\d*|string|bytes)\s+(public|private|internal)?\s*(constant|immutable)?\s*(\w+)");
+        let var_pattern = re!(
+            r"^\s*(mapping\s*\([^)]+\)|address|uint\d*|int\d*|bool|bytes\d*|string|bytes)\s+(public|private|internal)?\s*(constant|immutable)?\s*(\w+)"
+        );
 
         // Track brace depth: state variables live at contract level (depth 1).
         // Anything deeper is a local declaration inside a function/block, and the
@@ -1097,22 +1098,23 @@ impl LogicAnalyzer {
             for (pattern1, pattern2, reason) in &impossible_conditions {
                 if func.body.contains(pattern1)
                     && (pattern2.is_empty() || func.body.contains(pattern2))
-                    && pattern1.contains("uint") && func.body.contains("uint") {
-                        // Check for actual < 0 comparison with uint
-                        let uint_negative_check =
-                            re!(r"uint\d*\s+\w+[^;]*<\s*0[^0-9]");
-                        if uint_negative_check.is_match(&func.body) {
-                            vulnerabilities.push(Vulnerability::new(
-                                VulnerabilitySeverity::Medium,
-                                VulnerabilityCategory::LogicError,
-                                format!("Impossible Condition in {}", func.name),
-                                format!("Condition can never be true: {}", reason),
-                                func.line_start,
-                                format!("function {}", func.name),
-                                "Remove impossible condition or fix logic".to_string(),
-                            ));
-                        }
+                    && pattern1.contains("uint")
+                    && func.body.contains("uint")
+                {
+                    // Check for actual < 0 comparison with uint
+                    let uint_negative_check = re!(r"uint\d*\s+\w+[^;]*<\s*0[^0-9]");
+                    if uint_negative_check.is_match(&func.body) {
+                        vulnerabilities.push(Vulnerability::new(
+                            VulnerabilitySeverity::Medium,
+                            VulnerabilityCategory::LogicError,
+                            format!("Impossible Condition in {}", func.name),
+                            format!("Condition can never be true: {}", reason),
+                            func.line_start,
+                            format!("function {}", func.name),
+                            "Remove impossible condition or fix logic".to_string(),
+                        ));
                     }
+                }
             }
 
             // Check for code after return/revert at function top-level only

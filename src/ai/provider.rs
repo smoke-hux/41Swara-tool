@@ -49,7 +49,6 @@ impl ProviderKind {
             _ => None,
         }
     }
-
 }
 
 /// Token prices in USD per million tokens.
@@ -239,7 +238,10 @@ impl AnthropicProvider {
         Ok(Self {
             api_key,
             model: model.unwrap_or(DEFAULT_ANTHROPIC_MODEL).to_string(),
-            base: base.unwrap_or(ANTHROPIC_BASE).trim_end_matches('/').to_string(),
+            base: base
+                .unwrap_or(ANTHROPIC_BASE)
+                .trim_end_matches('/')
+                .to_string(),
             effort: effort.to_string(),
             max_retries,
             agent: ureq::AgentBuilder::new()
@@ -294,7 +296,9 @@ impl AnthropicProvider {
                     body: format!(
                         "{}{}",
                         truncate(text.trim(), 400),
-                        retry_after.map(|s| format!(" [retry-after: {s}s]")).unwrap_or_default()
+                        retry_after
+                            .map(|s| format!(" [retry-after: {s}s]"))
+                            .unwrap_or_default()
                     ),
                 })
             }
@@ -499,9 +503,9 @@ impl OllamaProvider {
 
         match self.agent.post(&url).send_json(&body) {
             Ok(r) => {
-                let resp: Resp = r
-                    .into_json()
-                    .map_err(|e| AiError::Decode(format!("could not decode Ollama response: {e}")))?;
+                let resp: Resp = r.into_json().map_err(|e| {
+                    AiError::Decode(format!("could not decode Ollama response: {e}"))
+                })?;
                 Ok(Completion {
                     text: resp.message.map(|m| m.content).unwrap_or_default(),
                     input_tokens: resp.prompt_eval_count,
@@ -630,7 +634,10 @@ mod tests {
 
     #[test]
     fn retry_after_roundtrips_through_error_body() {
-        assert_eq!(parse_retry_after("rate limited [retry-after: 12s]"), Some(12));
+        assert_eq!(
+            parse_retry_after("rate limited [retry-after: 12s]"),
+            Some(12)
+        );
         assert_eq!(parse_retry_after("rate limited"), None);
     }
 
@@ -638,9 +645,13 @@ mod tests {
     fn anthropic_provider_requires_a_key() {
         // Only assert the error path when the environment genuinely has no key, so the
         // test is meaningful in CI and inert on a developer machine that exports one.
-        if std::env::var(ANTHROPIC_KEY_ENV).map(|v| v.trim().is_empty()).unwrap_or(true) {
-            let err =
-                AnthropicProvider::from_env(None, None, "medium", 30, 2, true).err().unwrap();
+        if std::env::var(ANTHROPIC_KEY_ENV)
+            .map(|v| v.trim().is_empty())
+            .unwrap_or(true)
+        {
+            let err = AnthropicProvider::from_env(None, None, "medium", 30, 2, true)
+                .err()
+                .unwrap();
             assert_eq!(err, AiError::MissingApiKey);
         }
     }

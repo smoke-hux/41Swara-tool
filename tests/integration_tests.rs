@@ -1192,9 +1192,9 @@ fn test_2026_midyear_exploits_detected() {
     let joined = titles.join("\n");
 
     for needle in [
-        "Transient Storage Clearing Bug", // 41S-085
-        "EIP-7702 Delegate Uses Raw Storage Slots", // 41S-086
-        "LayerZero Single Required DVN", // 41S-087
+        "Transient Storage Clearing Bug",               // 41S-085
+        "EIP-7702 Delegate Uses Raw Storage Slots",     // 41S-086
+        "LayerZero Single Required DVN",                // 41S-087
         "fill() Decodes originData Without Validation", // 41S-088
         "V4 Flash Accounting take() to Caller-Controlled Recipient", // 41S-089
     ] {

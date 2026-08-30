@@ -66,8 +66,8 @@ pub(crate) mod eip_analyzer; // ERC/EIP standard compliance checks
 pub(crate) mod false_positive_filter; // Multi-pass false positive reduction
 pub(crate) mod inheritance; // Cross-file import and inheritance resolution
 pub(crate) mod integrations; // Slither/Foundry correlation, dynamic analysis
-pub(crate) mod onchain; // Opt-in on-chain verified-source fetch (--fetch)
 pub(crate) mod logic_analyzer; // Business logic vulnerability detection
+pub(crate) mod onchain; // Opt-in on-chain verified-source fetch (--fetch)
 pub(crate) mod reachability_analyzer; // Dead-code / unreachable path filtering
 pub(crate) mod threat_model; // Automatic threat model generation
 

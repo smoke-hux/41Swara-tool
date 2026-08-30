@@ -5,7 +5,6 @@
 //! - Persisting cache to disk for CI/CD
 //! - Fast incremental analysis
 
-
 use blake3::Hasher;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
@@ -232,7 +231,6 @@ impl ScanCache {
         self.entries
             .retain(|_, entry| now - entry.scan_timestamp <= ttl_secs);
     }
-
 }
 
 impl Drop for ScanCache {

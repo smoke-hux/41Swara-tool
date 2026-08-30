@@ -3,7 +3,6 @@
 //! Specialized analyzers for DeFi protocols including AMM/DEX, lending,
 //! oracles, and MEV vulnerabilities.
 
-
 pub mod amm_analyzer;
 pub mod lending_analyzer;
 pub mod mev_analyzer;

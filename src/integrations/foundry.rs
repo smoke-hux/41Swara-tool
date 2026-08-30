@@ -108,7 +108,8 @@ fn extract_function_name(code: &str) -> Option<String> {
 /// Extract a `contract <Name>` identifier from surrounding context, if present.
 fn extract_contract_name(code: &str) -> Option<String> {
     static CONTRACT_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"(?:contract|interface|library)\s+([A-Za-z_]\w*)").expect("valid contract regex")
+        Regex::new(r"(?:contract|interface|library)\s+([A-Za-z_]\w*)")
+            .expect("valid contract regex")
     });
     CONTRACT_RE
         .captures(code)
@@ -162,7 +163,9 @@ impl FoundryIntegration {
             VulnerabilityCategory::Reentrancy | VulnerabilityCategory::CallbackReentrancy => {
                 self.generate_reentrancy_test(vuln, &test_name)
             }
-            VulnerabilityCategory::OracleManipulation => self.generate_oracle_test(vuln, &test_name),
+            VulnerabilityCategory::OracleManipulation => {
+                self.generate_oracle_test(vuln, &test_name)
+            }
             VulnerabilityCategory::AccessControl
             | VulnerabilityCategory::RoleBasedAccessControl => {
                 self.generate_access_control_test(vuln, &test_name)
@@ -179,11 +182,11 @@ impl FoundryIntegration {
 
     /// Common header comment naming the finding, severity, source line and snippet.
     fn header(&self, vuln: &Vulnerability, subtitle: &str) -> String {
-        let contract = extract_contract_name(
-            vuln.context_before.as_deref().unwrap_or(&vuln.code_snippet),
-        )
-        .unwrap_or_else(|| "Victim".to_string());
-        let func = extract_function_name(&vuln.code_snippet).unwrap_or_else(|| "target".to_string());
+        let contract =
+            extract_contract_name(vuln.context_before.as_deref().unwrap_or(&vuln.code_snippet))
+                .unwrap_or_else(|| "Victim".to_string());
+        let func =
+            extract_function_name(&vuln.code_snippet).unwrap_or_else(|| "target".to_string());
         format!(
             r#"// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
@@ -216,7 +219,8 @@ import "forge-std/Test.sol";
     }
 
     fn generate_reentrancy_test(&self, vuln: &Vulnerability, test_name: &str) -> String {
-        let func = extract_function_name(&vuln.code_snippet).unwrap_or_else(|| "withdraw".to_string());
+        let func =
+            extract_function_name(&vuln.code_snippet).unwrap_or_else(|| "withdraw".to_string());
         let contract_name = self.sanitize_name(&vuln.title);
         format!(
             r#"{header}
@@ -293,7 +297,10 @@ contract ReentrancyAttacker {{
     }}
 }}
 "#,
-            header = self.header(vuln, "Reentrancy (SWC-107): attacker re-enters before state update"),
+            header = self.header(
+                vuln,
+                "Reentrancy (SWC-107): attacker re-enters before state update"
+            ),
             contract = contract_name,
             test = test_name,
             func = func,
@@ -301,7 +308,8 @@ contract ReentrancyAttacker {{
     }
 
     fn generate_oracle_test(&self, vuln: &Vulnerability, test_name: &str) -> String {
-        let func = extract_function_name(&vuln.code_snippet).unwrap_or_else(|| "getPrice".to_string());
+        let func =
+            extract_function_name(&vuln.code_snippet).unwrap_or_else(|| "getPrice".to_string());
         let contract_name = self.sanitize_name(&vuln.title);
         format!(
             r#"{header}
@@ -344,7 +352,10 @@ contract {contract} is Test {{
     }}
 }}
 "#,
-            header = self.header(vuln, "Oracle manipulation: spot price used without TWAP/sanity checks"),
+            header = self.header(
+                vuln,
+                "Oracle manipulation: spot price used without TWAP/sanity checks"
+            ),
             contract = contract_name,
             test = test_name,
             func = func,
@@ -391,7 +402,10 @@ contract {contract} is Test {{
     }}
 }}
 "#,
-            header = self.header(vuln, "Access control (SWC-105): privileged function callable by anyone"),
+            header = self.header(
+                vuln,
+                "Access control (SWC-105): privileged function callable by anyone"
+            ),
             contract = contract_name,
             test = test_name,
             func = func,
@@ -438,7 +452,10 @@ contract {contract} is Test {{
     }}
 }}
 "#,
-            header = self.header(vuln, "MEV / sandwich: unbounded slippage lets a searcher extract value"),
+            header = self.header(
+                vuln,
+                "MEV / sandwich: unbounded slippage lets a searcher extract value"
+            ),
             contract = contract_name,
             test = test_name,
             func = func,
@@ -446,7 +463,8 @@ contract {contract} is Test {{
     }
 
     fn generate_flash_loan_test(&self, vuln: &Vulnerability, test_name: &str) -> String {
-        let func = extract_function_name(&vuln.code_snippet).unwrap_or_else(|| "execute".to_string());
+        let func =
+            extract_function_name(&vuln.code_snippet).unwrap_or_else(|| "execute".to_string());
         let contract_name = self.sanitize_name(&vuln.title);
         format!(
             r#"{header}
@@ -512,7 +530,10 @@ contract FlashLoanExploiter {{
     }}
 }}
 "#,
-            header = self.header(vuln, "Flash-loan attack: borrowed capital amplifies a state/price flaw"),
+            header = self.header(
+                vuln,
+                "Flash-loan attack: borrowed capital amplifies a state/price flaw"
+            ),
             contract = contract_name,
             test = test_name,
             func = func,
@@ -520,7 +541,8 @@ contract FlashLoanExploiter {{
     }
 
     fn generate_generic_test(&self, vuln: &Vulnerability, test_name: &str) -> String {
-        let func = extract_function_name(&vuln.code_snippet).unwrap_or_else(|| "target".to_string());
+        let func =
+            extract_function_name(&vuln.code_snippet).unwrap_or_else(|| "target".to_string());
         let contract_name = self.sanitize_name(&vuln.title);
         format!(
             r#"{header}
@@ -566,7 +588,10 @@ contract {contract} is Test {{
     ///
     /// Returns clean, recoverable errors for: forge not installed, the directory
     /// not being a Foundry project, and timeouts. Never panics.
-    pub fn run_tests(&self, test_pattern: Option<&str>) -> Result<Vec<ForgeTestResult>, ForgeRunError> {
+    pub fn run_tests(
+        &self,
+        test_pattern: Option<&str>,
+    ) -> Result<Vec<ForgeTestResult>, ForgeRunError> {
         // Cheap, deterministic guard: a Foundry project must have foundry.toml.
         if !Path::new(&self.project_path).join("foundry.toml").is_file() {
             return Err(ForgeRunError::NotAFoundryProject(self.project_path.clone()));
@@ -629,10 +654,7 @@ contract {contract} is Test {{
         if let Ok(root) = serde_json::from_str::<serde_json::Value>(stdout.trim()) {
             if let Some(suites) = root.as_object() {
                 for (_suite, suite_val) in suites {
-                    if let Some(tests) = suite_val
-                        .get("test_results")
-                        .and_then(|v| v.as_object())
-                    {
+                    if let Some(tests) = suite_val.get("test_results").and_then(|v| v.as_object()) {
                         for (name, tv) in tests {
                             if let Some(status) = tv.get("status").and_then(|s| s.as_str()) {
                                 results.push(ForgeTestResult {
@@ -776,13 +798,41 @@ mod tests {
     fn no_generated_poc_is_vacuous() {
         let fi = FoundryIntegration::new("/tmp/proj");
         let cases = [
-            (VulnerabilityCategory::Reentrancy, "Reentrancy in withdraw", "function withdraw() public { msg.sender.call{value: bal}(\"\"); }"),
-            (VulnerabilityCategory::OracleManipulation, "Spot price oracle", "function getPrice() public view returns (uint256)"),
-            (VulnerabilityCategory::AccessControl, "Missing owner check", "function setOwner(address a) external"),
-            (VulnerabilityCategory::MEVExploitable, "No slippage", "function swap(uint256 a) external"),
-            (VulnerabilityCategory::FrontRunning, "Frontrun swap", "function swap(uint256 a) external"),
-            (VulnerabilityCategory::FlashLoanAttack, "Flash loan drain", "function execute() external"),
-            (VulnerabilityCategory::LogicError, "Some logic bug", "function doThing() external"),
+            (
+                VulnerabilityCategory::Reentrancy,
+                "Reentrancy in withdraw",
+                "function withdraw() public { msg.sender.call{value: bal}(\"\"); }",
+            ),
+            (
+                VulnerabilityCategory::OracleManipulation,
+                "Spot price oracle",
+                "function getPrice() public view returns (uint256)",
+            ),
+            (
+                VulnerabilityCategory::AccessControl,
+                "Missing owner check",
+                "function setOwner(address a) external",
+            ),
+            (
+                VulnerabilityCategory::MEVExploitable,
+                "No slippage",
+                "function swap(uint256 a) external",
+            ),
+            (
+                VulnerabilityCategory::FrontRunning,
+                "Frontrun swap",
+                "function swap(uint256 a) external",
+            ),
+            (
+                VulnerabilityCategory::FlashLoanAttack,
+                "Flash loan drain",
+                "function execute() external",
+            ),
+            (
+                VulnerabilityCategory::LogicError,
+                "Some logic bug",
+                "function doThing() external",
+            ),
         ];
         for (cat, title, snippet) in cases {
             let v = vuln(cat, title, snippet);
@@ -791,7 +841,10 @@ mod tests {
                 !out.contains("assertTrue(true"),
                 "PoC for {title} is vacuous:\n{out}"
             );
-            assert!(out.contains("forge-std/Test.sol"), "missing import: {title}");
+            assert!(
+                out.contains("forge-std/Test.sol"),
+                "missing import: {title}"
+            );
             assert!(out.contains("is Test"), "missing Test base: {title}");
             // Non-vacuous means: either it skips loudly, or it fails loudly, or it
             // asserts a real inequality on impact.
@@ -802,7 +855,10 @@ mod tests {
                     || out.contains("SETUP REQUIRED"),
                 "PoC for {title} has no loud path:\n{out}"
             );
-            assert!(out.contains("line 42"), "header missing source line: {title}");
+            assert!(
+                out.contains("line 42"),
+                "header missing source line: {title}"
+            );
         }
     }
 
@@ -817,16 +873,26 @@ mod tests {
         let out = fi.generate_test_for_vulnerability(&v, 1);
         assert!(out.contains("contract ReentrancyAttacker"));
         assert!(out.contains("receive() external payable"));
-        assert!(out.contains("victim.claim()"), "attacker must re-enter claim():\n{out}");
-        assert!(out.contains("+ deposit"), "must assert over-withdraw beyond deposit");
+        assert!(
+            out.contains("victim.claim()"),
+            "attacker must re-enter claim():\n{out}"
+        );
+        assert!(
+            out.contains("+ deposit"),
+            "must assert over-withdraw beyond deposit"
+        );
         assert!(!out.contains("assertTrue(true"));
     }
 
     #[test]
     fn index_status_is_not_todo() {
         let fi = FoundryIntegration::new("/tmp/proj");
-        let idx = fi.generate_test_index(&["/tmp/proj/test/poc/PoC_01_Reentrancy.t.sol".to_string()]);
-        assert!(!idx.contains("| TODO |"), "index must not use the literal TODO status");
+        let idx =
+            fi.generate_test_index(&["/tmp/proj/test/poc/PoC_01_Reentrancy.t.sol".to_string()]);
+        assert!(
+            !idx.contains("| TODO |"),
+            "index must not use the literal TODO status"
+        );
         assert!(idx.contains("Needs setup"));
     }
 
@@ -884,7 +950,11 @@ mod tests {
     #[test]
     fn correlate_uses_status_and_index() {
         let fi = FoundryIntegration::new("/tmp/proj");
-        let v = vuln(VulnerabilityCategory::Reentrancy, "Reentrancy in claim", "function claim()");
+        let v = vuln(
+            VulnerabilityCategory::Reentrancy,
+            "Reentrancy in claim",
+            "function claim()",
+        );
         let results = vec![ForgeTestResult {
             name: "test_PoC_01_Reentrancy_in_claim()".to_string(),
             status: "pass".to_string(),

@@ -349,7 +349,12 @@ impl AiSession {
     }
 
     /// Project the cost of reviewing one file without contacting anything.
-    pub fn estimate_file(&self, path: &Path, source: &str, vulns: &[Vulnerability]) -> CostEstimate {
+    pub fn estimate_file(
+        &self,
+        path: &Path,
+        source: &str,
+        vulns: &[Vulnerability],
+    ) -> CostEstimate {
         let scrubbed = redact::redact(source);
         let lines: Vec<&str> = scrubbed.text.lines().collect();
         let briefs = self.build_briefs(&lines, vulns);
@@ -383,7 +388,11 @@ impl AiSession {
 
         let scrubbed = redact::redact(source);
         report.secrets_redacted = scrubbed.count;
-        report.secret_kinds = scrubbed.kinds.iter().map(|k| k.label().to_string()).collect();
+        report.secret_kinds = scrubbed
+            .kinds
+            .iter()
+            .map(|k| k.label().to_string())
+            .collect();
         let lines: Vec<&str> = scrubbed.text.lines().collect();
         let label = path.display().to_string();
 
@@ -409,8 +418,7 @@ impl AiSession {
         report.requests = after.sent - before.sent;
         report.input_tokens = after.input_tokens - before.input_tokens;
         report.output_tokens = after.output_tokens - before.output_tokens;
-        report.cost_usd =
-            (after.spent_micro_usd - before.spent_micro_usd) as f64 / 1_000_000.0;
+        report.cost_usd = (after.spent_micro_usd - before.spent_micro_usd) as f64 / 1_000_000.0;
 
         if let Ok(mut cache) = self.cache.lock() {
             report.cache_hits = cache.hits() - cache_before.0;
@@ -502,13 +510,23 @@ impl AiSession {
             };
             report.verdicts_applied += 1;
             if !verdict.is_false_positive {
-                annotate(&mut vulns[idx], "AI-Verified", &verdict, &self.label_model());
+                annotate(
+                    &mut vulns[idx],
+                    "AI-Verified",
+                    &verdict,
+                    &self.label_model(),
+                );
                 report.annotated += 1;
                 continue;
             }
             report.false_positives += 1;
             if verdict.confidence < self.config.min_confidence {
-                annotate(&mut vulns[idx], "AI-Uncertain", &verdict, &self.label_model());
+                annotate(
+                    &mut vulns[idx],
+                    "AI-Uncertain",
+                    &verdict,
+                    &self.label_model(),
+                );
                 report.annotated += 1;
                 continue;
             }
@@ -536,7 +554,12 @@ impl AiSession {
 
             match self.config.fp_policy {
                 FpPolicy::Annotate => {
-                    annotate(&mut vulns[idx], "AI-FalsePositive", &verdict, &self.label_model());
+                    annotate(
+                        &mut vulns[idx],
+                        "AI-FalsePositive",
+                        &verdict,
+                        &self.label_model(),
+                    );
                     report.annotated += 1;
                 }
                 // A severe finding under `drop` that missed the higher confidence bar
@@ -545,7 +568,12 @@ impl AiSession {
                     vulns[idx].severity = VulnerabilitySeverity::Info;
                     vulns[idx].confidence = VulnerabilityConfidence::Low;
                     vulns[idx].confidence_percent = 20;
-                    annotate(&mut vulns[idx], "AI-FalsePositive", &verdict, &self.label_model());
+                    annotate(
+                        &mut vulns[idx],
+                        "AI-FalsePositive",
+                        &verdict,
+                        &self.label_model(),
+                    );
                     report.downgraded += 1;
                 }
             }
@@ -604,8 +632,7 @@ impl AiSession {
             let system = prompt::fp_system_prompt(&nonce);
             let user = prompt::build_fp_user_prompt(label, &batch.items, &nonce);
             let input = estimate_tokens(&system) + estimate_tokens(&user);
-            let output =
-                OUTPUT_TOKENS_ENVELOPE + OUTPUT_TOKENS_PER_ITEM * batch.items.len() as u64;
+            let output = OUTPUT_TOKENS_ENVELOPE + OUTPUT_TOKENS_PER_ITEM * batch.items.len() as u64;
             estimate.add(CostEstimate {
                 requests: 1,
                 input_tokens: input,
@@ -919,7 +946,11 @@ mod tests {
         ];
         let (out, report) = s.review_file(&PathBuf::from("Vault.sol"), SOURCE, input);
 
-        assert_eq!(out.len(), 2, "no finding may be lost when the provider fails");
+        assert_eq!(
+            out.len(),
+            2,
+            "no finding may be lost when the provider fails"
+        );
         assert_eq!(out[0].title, "Reentrancy");
         assert_eq!(out[0].severity, VulnerabilitySeverity::Critical);
         assert_eq!(out[1].title, "Unchecked call");
@@ -1102,8 +1133,12 @@ mod tests {
     #[test]
     fn budget_cap_stops_instead_of_overrunning() {
         let mock = MockProvider::new(vec![
-            MockProvider::ok(r#"{"verdicts":[{"id":0,"verdict":"true_positive","confidence":0.9,"reasoning":"a"}]}"#),
-            MockProvider::ok(r#"{"verdicts":[{"id":1,"verdict":"true_positive","confidence":0.9,"reasoning":"b"}]}"#),
+            MockProvider::ok(
+                r#"{"verdicts":[{"id":0,"verdict":"true_positive","confidence":0.9,"reasoning":"a"}]}"#,
+            ),
+            MockProvider::ok(
+                r#"{"verdicts":[{"id":1,"verdict":"true_positive","confidence":0.9,"reasoning":"b"}]}"#,
+            ),
         ]);
         let mut c = cfg();
         c.batch_size = 1;
@@ -1125,8 +1160,12 @@ mod tests {
     #[test]
     fn request_cap_stops_the_run() {
         let mock = MockProvider::new(vec![
-            MockProvider::ok(r#"{"verdicts":[{"id":0,"verdict":"true_positive","confidence":0.9,"reasoning":"a"}]}"#),
-            MockProvider::ok(r#"{"verdicts":[{"id":1,"verdict":"true_positive","confidence":0.9,"reasoning":"b"}]}"#),
+            MockProvider::ok(
+                r#"{"verdicts":[{"id":0,"verdict":"true_positive","confidence":0.9,"reasoning":"a"}]}"#,
+            ),
+            MockProvider::ok(
+                r#"{"verdicts":[{"id":1,"verdict":"true_positive","confidence":0.9,"reasoning":"b"}]}"#,
+            ),
         ]);
         let mut c = cfg();
         c.batch_size = 1;
@@ -1201,7 +1240,11 @@ mod tests {
         let (out, report) = s.review_file(
             &PathBuf::from("Evil.sol"),
             hostile,
-            vec![vuln("Unprotected withdrawal", VulnerabilitySeverity::Critical, 5)],
+            vec![vuln(
+                "Unprotected withdrawal",
+                VulnerabilitySeverity::Critical,
+                5,
+            )],
         );
 
         // The out-of-band id and the extra top-level key are both ignored.
@@ -1222,7 +1265,9 @@ mod tests {
     #[test]
     fn deep_pass_adds_marked_findings_only_above_the_confidence_floor() {
         let mock = MockProvider::new(vec![
-            MockProvider::ok(r#"{"verdicts":[{"id":0,"verdict":"true_positive","confidence":0.9,"reasoning":"a"}]}"#),
+            MockProvider::ok(
+                r#"{"verdicts":[{"id":0,"verdict":"true_positive","confidence":0.9,"reasoning":"a"}]}"#,
+            ),
             MockProvider::ok(
                 r#"{"findings":[
                     {"title":"Withdraw exceeds deposit","severity":"High","line_number":6,
@@ -1240,18 +1285,28 @@ mod tests {
             SOURCE,
             vec![vuln("A", VulnerabilitySeverity::High, 5)],
         );
-        assert_eq!(report.ai_findings_added, 1, "low-confidence finding dropped");
-        let ai = out.iter().find(|v| v.title.starts_with("[AI-Detected]")).unwrap();
+        assert_eq!(
+            report.ai_findings_added, 1,
+            "low-confidence finding dropped"
+        );
+        let ai = out
+            .iter()
+            .find(|v| v.title.starts_with("[AI-Detected]"))
+            .unwrap();
         assert_eq!(ai.category, VulnerabilityCategory::LogicError);
         assert_eq!(ai.severity, VulnerabilitySeverity::High);
         assert!(ai.confidence_percent <= MAX_AI_CONFIDENCE_PERCENT);
-        assert!(ai.description.contains("not produced by a deterministic rule"));
+        assert!(ai
+            .description
+            .contains("not produced by a deterministic rule"));
     }
 
     #[test]
     fn deep_pass_failure_does_not_disturb_the_verified_findings() {
         let mock = MockProvider::new(vec![
-            MockProvider::ok(r#"{"verdicts":[{"id":0,"verdict":"true_positive","confidence":0.9,"reasoning":"a"}]}"#),
+            MockProvider::ok(
+                r#"{"verdicts":[{"id":0,"verdict":"true_positive","confidence":0.9,"reasoning":"a"}]}"#,
+            ),
             Err(AiError::Http {
                 status: 500,
                 body: "server error".to_string(),

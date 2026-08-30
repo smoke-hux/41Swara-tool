@@ -3,7 +3,6 @@
 //! Implements taint tracking for detecting user-controlled input reaching
 //! dangerous sinks like external calls, state writes, and require statements.
 
-
 use super::parser::{ContractDefinition, FunctionDefinition, SolidityAST, Statement, Visibility};
 use once_cell::sync::Lazy;
 use regex::Regex;
