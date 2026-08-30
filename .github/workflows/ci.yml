@@ -12,7 +12,7 @@ on:
 # full history of results.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: true
 
 # Least privilege by default. Individual jobs widen this where they must.
 permissions:
@@ -258,7 +258,7 @@ jobs:
       - name: Verify gating jobs succeeded
         run: |
           set -euo pipefail
-          results='${{ join(needs.*.result, ",") }}'
+          results="${{ join(needs.*.result, ',') }}"
           echo "gating job results: ${results}"
           case "${results}" in
             *failure*|*cancelled*) echo "::error::a required job did not succeed"; exit 1 ;;
