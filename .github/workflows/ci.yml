@@ -136,7 +136,7 @@ jobs:
   # ---------------------------------------------------------------------------
   # Minimum supported Rust version.
   #
-  # !! THE README'S "Rust 1.70+" BADGE IS UNVERIFIED AND ALMOST CERTAINLY WRONG !!
+  # The README previously claimed "Rust 1.70+". That was wrong.
   #
   # 1.70 was NOT tested and is not believed to be achievable with the committed
   # Cargo.lock. Reading `rust-version` out of every crate in the locked graph
@@ -152,17 +152,15 @@ jobs:
   # So 1.85.0 is the lowest version that can plausibly build this lockfile, and
   # that is what this job pins.
   #
-  # STATUS: 1.85.0 is DERIVED FROM THE LOCKFILE, NOT YET CONFIRMED BY A GREEN
-  # RUN. The first CI run on this workflow is the confirmation. If it passes,
-  # update the README badge from 1.70+ to 1.85+; if it fails, raise the pin here
-  # to whatever actually builds. Either way the README badge must not be left
-  # claiming 1.70.
+  # STATUS: CONFIRMED. 1.85.0 built this tree green in CI, and the README badge
+  # has been corrected from the previous (wrong) 1.70 claim. Raise this pin only
+  # alongside a dependency bump that actually requires it.
   #
   # `--locked` is essential: without it Cargo may resolve *newer* dependencies
   # with even higher MSRVs and the number measured here becomes meaningless.
   # ---------------------------------------------------------------------------
   msrv:
-    name: MSRV (1.85.0, unverified — see comment)
+    name: MSRV (1.85.0)
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:

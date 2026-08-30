@@ -5,7 +5,7 @@
 
 <p align="center">
   <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
-  <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/rust-1.70%2B-orange.svg" alt="Rust"></a>
+  <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/rust-1.85%2B-orange.svg" alt="Rust"></a>
   <img src="https://img.shields.io/badge/version-0.11.0-blue.svg" alt="Version">
   <img src="https://img.shields.io/badge/offline-100%25-green.svg" alt="Offline">
   <img src="https://img.shields.io/badge/CVSS_3.1-scoring-blueviolet.svg" alt="CVSS 3.1">
