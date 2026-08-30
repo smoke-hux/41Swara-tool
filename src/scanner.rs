@@ -51,6 +51,87 @@ struct MatchSite<'a, 'src> {
     scan_context: &'a ScanContext,
 }
 
+#[cfg(test)]
+mod review_regression_tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn fixture(name: &str, source: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "41swara-scanner-review-tests-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("create scanner test directory");
+        let path = dir.join(name);
+        std::fs::write(&path, source).expect("write scanner test fixture");
+        path
+    }
+
+    #[test]
+    fn oversized_file_is_an_error_not_a_clean_scan() {
+        let path = fixture("oversized.sol", "contract Oversized {}");
+        let scanner = ContractScanner::with_config(
+            false,
+            ScannerConfig {
+                max_file_size_bytes: 1,
+                ..ScannerConfig::default()
+            },
+        );
+
+        let error = scanner
+            .scan_file(&path)
+            .expect_err("oversized input must fail");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn unrelated_contract_layouts_are_not_proxy_collisions() {
+        let path = fixture(
+            "unrelated-layouts.sol",
+            r#"pragma solidity ^0.8.20;
+contract NamedProxyButNotAProxy { address public owner; }
+contract Treasury { uint256 public balance; }
+"#,
+        );
+        let result = ContractScanner::new(false)
+            .scan_file(&path)
+            .expect("scan succeeds");
+
+        assert!(
+            result
+                .vulnerabilities
+                .iter()
+                .all(|v| !v.title.starts_with("Storage Slot Collision:")),
+            "unrelated contracts must not be treated as proxy/implementation layouts"
+        );
+    }
+
+    #[test]
+    fn delegatecall_proxy_layout_collision_is_retained() {
+        let path = fixture(
+            "proxy-layouts.sol",
+            r#"pragma solidity ^0.8.20;
+contract VaultProxy {
+    address public implementation;
+    fallback() external payable {
+        (bool ok,) = implementation.delegatecall(msg.data);
+        require(ok);
+    }
+}
+contract VaultImplementation { uint256 public totalSupply; }
+"#,
+        );
+        let result = ContractScanner::new(false)
+            .scan_file(&path)
+            .expect("scan succeeds");
+
+        assert!(result
+            .vulnerabilities
+            .iter()
+            .any(|v| v.title.starts_with("Storage Slot Collision:")));
+    }
+}
+
 /// The result of scanning a single Solidity file.
 /// Bundles detected vulnerabilities together with compiler version information
 /// so callers get both analysis results and contract metadata in one return value.
@@ -755,10 +836,14 @@ impl ContractScanner {
                 metadata.len() / (1024 * 1024),
                 self.config.max_file_size_bytes / (1024 * 1024)
             );
-            return Ok(ScanResult {
-                vulnerabilities: Vec::new(),
-                compiler_info: None,
-            });
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "{} exceeds the configured {} byte file-size limit",
+                    file_path.as_ref().display(),
+                    self.config.max_file_size_bytes
+                ),
+            ));
         }
 
         let content = self.parser.read_file(&file_path)?;
@@ -826,7 +911,11 @@ impl ContractScanner {
     ///
     /// Returns nothing when inheritance could not be resolved, when the file declares
     /// fewer than two storage-bearing contracts, or when the layouts agree.
-    fn detect_proxy_storage_collisions(&self, scan_context: &ScanContext) -> Vec<Vulnerability> {
+    fn detect_proxy_storage_collisions(
+        &self,
+        scan_context: &ScanContext,
+        stripped_content: &str,
+    ) -> Vec<Vulnerability> {
         use crate::vulnerabilities::{VulnerabilityCategory, VulnerabilitySeverity};
 
         let mut findings = Vec::new();
@@ -834,7 +923,16 @@ impl ContractScanner {
             return findings;
         };
 
-        // Only contracts that actually occupy storage can collide.
+        // A storage mismatch matters only when one layout is used through the other
+        // via delegatecall. Comparing every pair of contracts in an ordinary source
+        // file produces high-severity false positives for unrelated contracts.
+        if !stripped_content.contains("delegatecall") {
+            return findings;
+        }
+
+        // Only contracts that actually occupy storage can collide. Require one side
+        // to be recognisably proxy-like as a conservative relationship check; a full
+        // call-target proof is outside this regex-based scanner's current model.
         let storage_bearing: Vec<_> = resolved
             .contracts
             .iter()
@@ -843,6 +941,11 @@ impl ContractScanner {
 
         for (i, left) in storage_bearing.iter().enumerate() {
             for right in storage_bearing.iter().skip(i + 1) {
+                let proxy_pair = left.name.to_ascii_lowercase().contains("proxy")
+                    || right.name.to_ascii_lowercase().contains("proxy");
+                if !proxy_pair {
+                    continue;
+                }
                 for collision in left.storage.collisions_with(&right.storage) {
                     findings.push(Vulnerability::new(
                         VulnerabilitySeverity::High,
@@ -1365,7 +1468,7 @@ impl ContractScanner {
 
         // Enrich all findings with CVSS scores, exploit references, and attack paths
         timed!("enrichment", {
-            vulnerabilities.extend(self.detect_proxy_storage_collisions(&scan_context));
+            vulnerabilities.extend(self.detect_proxy_storage_collisions(&scan_context, stripped));
 
             crate::cvss::enrich_with_cvss(&mut vulnerabilities);
             crate::exploit_db::enrich_with_exploits(&mut vulnerabilities);
