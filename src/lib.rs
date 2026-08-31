@@ -70,6 +70,7 @@ pub(crate) mod logic_analyzer; // Business logic vulnerability detection
 pub(crate) mod onchain; // Opt-in on-chain verified-source fetch (--fetch)
 pub(crate) mod reachability_analyzer; // Dead-code / unreachable path filtering
 pub(crate) mod threat_model; // Automatic threat model generation
+pub(crate) mod unused_declarations; // Declared-but-never-enforced analysis (41S-093, 41S-094)
 
 // --- Convenience re-exports ---------------------------------------------------------
 
